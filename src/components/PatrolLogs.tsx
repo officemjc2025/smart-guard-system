@@ -235,21 +235,6 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                 />
               )}
 
-              {/* Demo Fast Sandbox selection */}
-              <div className="border-t border-slate-100 pt-5 w-full mt-4">
-                <span className="text-xs font-bold text-slate-400 block mb-2.5 text-center">ตัวเลือกทดสอบด่วน (Sandbox Bypass)</span>
-                <div className="grid grid-cols-2 gap-2 max-w-md mx-auto">
-                  {patrolPoints.map(p => (
-                    <button
-                      key={p.patrol_point_id}
-                      onClick={() => handleQRScanSuccess(p.qr_code_value)}
-                      className="px-3 py-2 border border-slate-200 hover:border-indigo-300 text-[11px] font-bold text-slate-600 hover:text-indigo-600 rounded-lg text-center cursor-pointer bg-slate-50 hover:bg-indigo-50/20"
-                    >
-                      📌 {p.point_name}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </div>
           ) : (
             /* POINT SCANNED FORM */

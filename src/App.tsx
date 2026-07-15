@@ -9,8 +9,6 @@ import {
   handleRedirectResult,
   logout, 
   onAuthStateChange, 
-  bypassLoginForSandbox,
-  isSandboxLoginEnabled,
   db
 } from './firebase';
 import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
@@ -18,17 +16,6 @@ import { readSheet, appendSheetRow, writeAuditLog } from './googleApi';
 import ConfirmModal from './components/ConfirmModal';
 
 console.log('[Smart Guard Build] v3.1.1 Firebase-only build loaded');
-
-// Determine if running inside preview frame or local dev
-const isDevelopmentPreview = (): boolean => {
-  const hostname = window.location.hostname;
-  return (
-    hostname.includes('localhost') || 
-    hostname.includes('127.0.0.1') || 
-    hostname.includes('ais-dev') || 
-    window.self !== window.top
-  );
-};
 
 // Component Imports
 import Dashboard from './components/Dashboard';
@@ -135,12 +122,11 @@ export default function App() {
         console.log('[Smart Guard API] Auth state changed:', firebaseUser?.email || 'No user');
         if (isMounted) {
           if (firebaseUser) {
-            const sandboxEnabled = isSandboxLoginEnabled();
-            if (firebaseUser.email === 'sandbox@example.com' && !sandboxEnabled) {
-              console.warn('[Smart Guard API] Blocking sandbox user in production!');
+            if (firebaseUser.email?.trim().toLowerCase() === 'sandbox@example.com') {
+              console.warn('[Smart Guard API] Blocking sandbox user in all environments.');
               setUser(null);
               setAuthLoading(false);
-              setInitError('บัญชีจำลอง (Sandbox) ไม่ได้รับอนุญาตในระบบจริง กรุณาลงชื่อเข้าใช้ด้วยบัญชี Google ส่วนบุคคลหรือองค์กรที่ได้รับอนุญาต');
+              setInitError('บัญชีจำลอง (Sandbox) ไม่ได้รับอนุญาตในระบบ Smart Guard กรุณาลงชื่อเข้าใช้ด้วยบัญชี Google ที่ได้รับอนุญาต');
               await logout();
               return;
             }
@@ -207,8 +193,7 @@ export default function App() {
         if (matches.length === 0) {
           // Auto-bootstrap only the explicitly configured administrator.
           const bootstrapAdminEmail = ((import.meta as any).env?.VITE_BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
-          const isBootstrapEmail = (bootstrapAdminEmail && normalizedEmail === bootstrapAdminEmail) ||
-                                   (isSandboxLoginEnabled() && normalizedEmail === 'sandbox@example.com');
+          const isBootstrapEmail = Boolean(bootstrapAdminEmail && normalizedEmail === bootstrapAdminEmail);
 
           if (isBootstrapEmail) {
             console.log('[Smart Guard Auth] No profile found. Auto-bootstrapping Master Admin profile...');
@@ -216,7 +201,7 @@ export default function App() {
             const adminOp = {
               user_id: user.uid,
               login_email: normalizedEmail,
-              operator_name: normalizedEmail === 'sandbox@example.com' ? 'สมชาย แสนดี (Sandbox)' : 'แอดมิน สูงสุด (MJC)',
+              operator_name: 'แอดมิน สูงสุด (MJC)',
               role: 'Admin' as const,
               shift: 'ทั่วไป',
               phone: '0899999999',
@@ -323,18 +308,6 @@ export default function App() {
     }
   };
 
-  const handleBypassSignIn = async () => {
-    setInitError(null);
-    console.log('[Smart Guard API] login mode: Sandbox Login Selected');
-    try {
-      await bypassLoginForSandbox();
-      console.log('[Smart Guard API] Sandbox Login: SUCCESS');
-    } catch (err: any) {
-      console.error('[Smart Guard API] Sandbox Login FAILED:', err);
-      setInitError(`ไม่สามารถลงชื่อเข้าใช้ด้วย Sandbox Login ได้: ${err.message || err}`);
-    }
-  };
-
   const handleSignOut = async () => {
     setIsLogoutModalOpen(true);
   };
@@ -361,7 +334,6 @@ export default function App() {
 
   // Login Screen with Emblem
   if (!user) {
-    const isPreview = isDevelopmentPreview();
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 font-sans">
         <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 flex flex-col gap-6 shadow-2xl relative overflow-hidden">
@@ -371,15 +343,9 @@ export default function App() {
 
           {/* Shield Emblem & Environment Badge */}
           <div className="flex flex-col items-center text-center gap-2 relative z-10">
-            {isPreview ? (
-              <div className="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-full text-[10px] font-black tracking-wider uppercase mb-1">
-                ⚡ AI Studio Sandbox Active
-              </div>
-            ) : (
-              <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-[10px] font-black tracking-wider uppercase mb-1">
-                🌐 Production Mode
-              </div>
-            )}
+            <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-[10px] font-black tracking-wider uppercase mb-1">
+              🌐 Google Authentication
+            </div>
             
             <div className="p-4 bg-blue-600/10 text-blue-500 rounded-2xl border border-blue-500/20">
               <Shield className="w-12 h-12" />
@@ -399,28 +365,13 @@ export default function App() {
               </div>
             )}
 
-            {isPreview ? (
-              <>
-                {/* Primary Sandbox Login for Preview Frame */}
-                <button
-                  onClick={handleBypassSignIn}
-                  className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20 active:scale-98 flex justify-center items-center gap-3 cursor-pointer text-sm font-sans"
-                >
-                  🚀 เข้าใช้งานผ่านระบบจำลอง (Sandbox Login)
-                </button>
-              </>
-            ) : (
-              <>
-                {/* Primary Google Auth for Production */}
-                <button
-                  onClick={handleGoogleSignIn}
-                  className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/10 active:scale-98 flex justify-center items-center gap-3 cursor-pointer text-sm font-sans"
-                >
-                  <Smartphone className="w-5 h-5 shrink-0" />
-                  เชื่อมต่อและลงชื่อเข้าใช้งานด้วย Google
-                </button>
-              </>
-            )}
+            <button
+              onClick={handleGoogleSignIn}
+              className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/10 active:scale-98 flex justify-center items-center gap-3 cursor-pointer text-sm font-sans"
+            >
+              <Smartphone className="w-5 h-5 shrink-0" />
+              เชื่อมต่อและลงชื่อเข้าใช้งานด้วย Google
+            </button>
 
             {/* Test API connection panel */}
             <div className="mt-2 p-4 bg-slate-800/30 border border-slate-800/80 rounded-2xl flex flex-col gap-2.5">
@@ -505,7 +456,7 @@ export default function App() {
                 }}
                 className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20 text-sm font-sans cursor-pointer text-center"
               >
-                👈 ย้อนกลับและใช้ระบบจำลอง (Back to Sandbox Login)
+                👈 กลับไปยังหน้าเข้าสู่ระบบ Google
               </button>
             </div>
           ) : usersLoading || apiInitializing ? (
