@@ -1,0 +1,422 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { useState, useEffect } from 'react';
+import { 
+  Car, Users, Key, ShieldCheck, AlertTriangle, 
+  ArrowUpRight, ArrowDownLeft, RefreshCw, Clock
+} from 'lucide-react';
+import { readSheet } from '../googleApi';
+import { VehicleLogRecord, ContractorLogRecord, KeyLogRecord, PatrolLogRecord, IncidentReportRecord } from '../types';
+
+interface DashboardProps {
+  onNavigate: (page: string) => void;
+  activeRole: string;
+}
+
+export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState({
+    vehiclesIn: 0,
+    vehiclesOut: 0,
+    vehiclesCurrent: 0,
+    contractorGroupsActive: 0,
+    contractorPeopleRemaining: 0,
+    keysCheckedOut: 0,
+    patrolDone: 0,
+    patrolPending: 4, // out of 4 total PP
+    patrolNormal: 0,
+    patrolAbnormal: 0,
+    patrolFollowUp: 0,
+    incidentsToday: 0,
+    blacklistAlerts: 0
+  });
+
+  const [recentIncidents, setRecentIncidents] = useState<IncidentReportRecord[]>([]);
+
+  const fetchStats = async () => {
+    setLoading(true);
+    try {
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      // Read logs from Firestore
+      const [vehicles, contractors, keys, patrols, incidents] = await Promise.all([
+        readSheet<VehicleLogRecord>('VehicleLogs'),
+        readSheet<ContractorLogRecord>('ContractorLogs'),
+        readSheet<KeyLogRecord>('KeyLogs'),
+        readSheet<PatrolLogRecord>('PatrolLogs'),
+        readSheet<IncidentReportRecord>('IncidentReports')
+      ]);
+
+      // Calculate stats based on today's logs
+      const vehiclesToday = vehicles.filter(v => v.entry_time.startsWith(todayStr));
+      const vIn = vehiclesToday.length;
+      const vOut = vehiclesToday.filter(v => v.status === 'ออกแล้ว').length;
+      const vCurrent = vehicles.filter(v => v.status === 'กำลังจอด').length;
+
+      // Contractor Group and People metrics
+      const activeGroups = contractors.filter(c => c.status === 'กำลังปฏิบัติงาน').length;
+      const peopleRemaining = contractors
+        .filter(c => c.status === 'กำลังปฏิบัติงาน')
+        .reduce((acc, curr) => acc + (curr.people_remaining ?? curr.total_people ?? 1), 0);
+
+      const kCheckedOut = keys.filter(k => k.status === 'ถูกเบิก').length;
+
+      // Patrol stats
+      const patrolToday = patrols.filter(p => p.checkin_time.startsWith(todayStr));
+      const uniquePatrolledPoints = new Set(patrolToday.map(p => p.patrol_point_id));
+      const pDone = uniquePatrolledPoints.size;
+      const totalPoints = 4; // Total PP (Lobby, B1, Electricity M, Roof)
+      const pPending = Math.max(0, totalPoints - pDone);
+
+      // Breakdown of today's checks
+      const pNormal = patrolToday.filter(p => p.status === 'ปกติ').length;
+      const pAbnormal = patrolToday.filter(p => p.status === 'ผิดปกติ').length;
+      const pFollowUp = patrolToday.filter(p => p.status === 'ต้องติดตาม').length;
+
+      const incToday = incidents.filter(i => i.incident_datetime.startsWith(todayStr)).length;
+      
+      setData({
+        vehiclesIn: vIn,
+        vehiclesOut: vOut,
+        vehiclesCurrent: vCurrent,
+        contractorGroupsActive: activeGroups,
+        contractorPeopleRemaining: peopleRemaining,
+        keysCheckedOut: kCheckedOut,
+        patrolDone: pDone,
+        patrolPending: pPending,
+        patrolNormal: pNormal,
+        patrolAbnormal: pAbnormal,
+        patrolFollowUp: pFollowUp,
+        incidentsToday: incToday,
+        blacklistAlerts: 0
+      });
+
+      // Filter and display recent incident reports (last 3)
+      setRecentIncidents(incidents.slice(-3).reverse());
+    } catch (error) {
+      console.error('Error fetching dashboard stats:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStats();
+  }, []);
+
+  // Format date helper
+  const formatTime = (isoString: string) => {
+    if (!isoString) return '';
+    try {
+      const d = new Date(isoString);
+      return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.';
+    } catch {
+      return '';
+    }
+  };
+
+  const navigateTo = (tab: string) => {
+    console.log('[Dashboard QuickAction] navigate:', tab);
+    onNavigate(tab);
+  };
+
+  return (
+    <div className="flex flex-col gap-6 w-full max-w-7xl mx-auto px-1">
+      {/* Header Panel */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+        <div>
+          <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">ยินดีต้อนรับ • แดชบอร์ดความปลอดภัย</span>
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-1 flex items-center gap-2">
+            Smart Guard System
+            <span className="text-xs bg-blue-50 border border-blue-200 text-blue-700 font-bold px-2.5 py-0.5 rounded-full font-sans">
+              สิทธิ์: {activeRole}
+            </span>
+          </h1>
+        </div>
+        <button
+          onClick={fetchStats}
+          disabled={loading}
+          className="flex items-center gap-2 bg-slate-900 hover:bg-slate-950 text-white font-semibold py-3 px-5 rounded-xl text-sm transition-all shadow-sm active:scale-95 disabled:opacity-50 cursor-pointer"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          {loading ? 'กำลังซิงค์...' : 'รีเฟรชข้อมูล'}
+        </button>
+      </div>
+
+      {/* Grid: Main KPIs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Vehicles */}
+        <div 
+          onClick={() => navigateTo('vehicles')}
+          className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-blue-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex flex-col">
+              <span className="text-sm font-bold text-slate-500">ยานพาหนะสะสมวันนี้</span>
+              <span className="text-3xl font-black text-slate-800 mt-2 flex items-baseline gap-1.5">
+                {data.vehiclesCurrent} <span className="text-xs font-medium text-slate-400">คันที่ยังจอด</span>
+              </span>
+            </div>
+            <div className="p-3 bg-blue-50 text-blue-600 rounded-xl group-hover:scale-110 transition-transform">
+              <Car className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="flex gap-4 text-xs font-semibold text-slate-500 pt-3 border-t border-slate-100 mt-3">
+            <span className="flex items-center gap-1 text-emerald-600">
+              <ArrowUpRight className="w-3.5 h-3.5" /> เข้า: {data.vehiclesIn}
+            </span>
+            <span className="flex items-center gap-1 text-slate-500">
+              <ArrowDownLeft className="w-3.5 h-3.5" /> ออกแล้ว: {data.vehiclesOut}
+            </span>
+          </div>
+        </div>
+
+        {/* Contractors - Updated with Group and Remaining count */}
+        <div 
+          onClick={() => navigateTo('contractors')}
+          className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-amber-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex flex-col">
+              <span className="text-sm font-bold text-slate-500">ผู้รับเหมาในพื้นที่</span>
+              <span className="text-3xl font-black text-slate-800 mt-2 flex items-baseline gap-1.5">
+                {data.contractorGroupsActive} <span className="text-xs font-medium text-slate-400">กลุ่ม ({data.contractorPeopleRemaining} คนเหลือ)</span>
+              </span>
+            </div>
+            <div className="p-3 bg-amber-50 text-amber-600 rounded-xl group-hover:scale-110 transition-transform">
+              <Users className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="text-xs text-amber-700 font-bold bg-amber-50 px-2 py-1 rounded-lg w-fit mt-3">
+            {data.contractorPeopleRemaining > 0 ? `⚠️ มีทีมงาน ${data.contractorPeopleRemaining} คน ปฏิบัติหน้าที่อยู่` : '✅ ไม่มีงานช่างตกค้าง'}
+          </div>
+        </div>
+
+        {/* Unreturned Keys */}
+        <div 
+          onClick={() => navigateTo('keys')}
+          className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-red-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex flex-col">
+              <span className="text-sm font-bold text-slate-500">กุญแจที่ถูกเบิก</span>
+              <span className="text-3xl font-black text-slate-800 mt-2 flex items-baseline gap-1.5">
+                {data.keysCheckedOut} <span className="text-xs font-medium text-slate-400">ชุดยังไม่คืน</span>
+              </span>
+            </div>
+            <div className="p-3 bg-red-50 text-red-600 rounded-xl group-hover:scale-110 transition-transform">
+              <Key className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="text-xs text-red-700 font-bold bg-red-50 px-2 py-1 rounded-lg w-fit mt-3">
+            {data.keysCheckedOut > 0 ? '🚨 มีกุญแจสำคัญถูกเบิกค้างคืน' : '✅ กุญแจทุกลูกจัดเก็บครบ'}
+          </div>
+        </div>
+
+        {/* Patrol coverage - Updated with Detailed Counts */}
+        <div 
+          onClick={() => navigateTo('patrol')}
+          className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-emerald-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex flex-col">
+              <span className="text-sm font-bold text-slate-500">การเดินตรวจวันปัจจุบัน</span>
+              <span className="text-3xl font-black text-slate-800 mt-2 flex items-baseline gap-1.5">
+                {data.patrolDone}/4 <span className="text-xs font-medium text-slate-400">จุดตรวจแล้ว</span>
+              </span>
+            </div>
+            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="flex flex-col gap-1 text-[11px] font-semibold pt-3 border-t border-slate-100 mt-3 text-slate-500">
+            <div className="flex justify-between items-center text-slate-400 font-bold">
+              <span>รอดำเนินการ: {data.patrolPending} จุด</span>
+            </div>
+            <div className="flex gap-2.5 mt-0.5 flex-wrap">
+              <span className="text-emerald-600">🟢 ปกติ: {data.patrolNormal}</span>
+              <span className="text-red-600">🔴 ผิดปกติ: {data.patrolAbnormal}</span>
+              <span className="text-amber-600">🟡 ติดตาม: {data.patrolFollowUp}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Row: Analytics Gauge & Recent Incidents */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Patrol Progress Gauge - SVG Gauge (Custom design) */}
+        <div className="lg:col-span-4 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col items-center justify-between min-h-[320px]">
+          <h2 className="text-base font-bold text-slate-800 self-start">เป้าหมายความปลอดภัยประมวลผล</h2>
+          
+          <div className="relative flex items-center justify-center my-4">
+            <svg className="w-44 h-44 transform -rotate-90">
+              {/* Background ring */}
+              <circle
+                cx="88"
+                cy="88"
+                r="74"
+                className="stroke-slate-100 fill-transparent"
+                strokeWidth="14"
+              />
+              {/* Foreground progress ring */}
+              <circle
+                cx="88"
+                cy="88"
+                r="74"
+                className="stroke-blue-600 fill-transparent transition-all duration-1000 ease-out"
+                strokeWidth="14"
+                strokeDasharray={464}
+                strokeDashoffset={464 - (464 * (data.patrolDone / 4))}
+                strokeLinecap="round"
+              />
+            </svg>
+            <div className="absolute flex flex-col items-center justify-center">
+              <span className="text-4xl font-black text-slate-800">
+                {Math.round((data.patrolDone / 4) * 100)}%
+              </span>
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-0.5">Patrol Coverage</span>
+            </div>
+          </div>
+
+          <p className="text-center text-xs text-slate-500 font-medium max-w-[220px]">
+            {data.patrolDone === 4 
+              ? '🎉 ยอดเยี่ยม! รปภ. เดินตรวจครบทุกจุดตรวจความเรียบร้อยครบ 100%' 
+              : `เหลืออีกเพียง ${data.patrolPending} จุดตรวจ จะบรรลุเป้าหมายการเดินตรวจรอบปัจจุบัน`}
+          </p>
+        </div>
+
+        {/* Recent Incidents and System Events */}
+        <div className="lg:col-span-8 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between min-h-[320px]">
+          <div>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber-500" />
+                รายงานเหตุด่วนผิดปกติล่าสุด (Incident Log)
+              </h2>
+              <button 
+                onClick={() => navigateTo('incidents')} 
+                className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+              >
+                + แจ้งเหตุการณ์ใหม่
+              </button>
+            </div>
+
+            {recentIncidents.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-10 text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                <ShieldCheck className="w-10 h-10 text-slate-300 mb-2" />
+                <span className="text-sm font-medium">ยังไม่มีรายงานเหตุผิดปกติในวันนี้</span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {recentIncidents.map((incident, idx) => (
+                  <div 
+                    key={incident.incident_id || idx}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all gap-4"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={`p-2.5 rounded-lg shrink-0 mt-0.5 ${
+                        incident.status === 'ปิดงานแล้ว' ? 'bg-slate-200 text-slate-600' : 'bg-red-50 text-red-600'
+                      }`}>
+                        <AlertTriangle className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-slate-800">{incident.incident_type}</span>
+                          <span className="text-[10px] text-slate-400 flex items-center gap-1 font-mono">
+                            <Clock className="w-3 h-3" /> {formatTime(incident.incident_datetime)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1 line-clamp-1">{incident.description}</p>
+                        <span className="text-[11px] font-bold text-slate-600 block mt-1 font-mono">📍 {incident.location}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 self-end sm:self-center">
+                      <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                        incident.status === 'แจ้งแล้ว' ? 'bg-red-100 text-red-700' :
+                        incident.status === 'กำลังดำเนินการ' ? 'bg-amber-100 text-amber-700' :
+                        'bg-emerald-100 text-emerald-700'
+                      }`}>
+                        {incident.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between items-center pt-4 border-t border-slate-100 mt-4">
+            <span className="text-xs font-semibold text-slate-400 flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5" />
+              เวลาเซิร์ฟเวอร์ประมวลผล: {new Date().toLocaleTimeString('th-TH')} น.
+            </span>
+            <button 
+              onClick={() => navigateTo('history')} 
+              className="text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1 hover:underline cursor-pointer"
+            >
+              ดูประวัติเดินตรวจย้อนหลังทั้งหมด
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom Grid: Quick Actions Panel */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+        <h2 className="text-base font-bold text-slate-800 mb-4 font-sans">เมนูลัดสำหรับ รปภ. (Quick Guard Actions)</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <button 
+            id="qa-vehicle-in"
+            onClick={() => navigateTo('vehicles')}
+            className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-blue-50/40 hover:bg-blue-50 hover:border-blue-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
+          >
+            <Car className="w-6 h-6 text-blue-600" />
+            <span className="text-xs font-bold text-slate-700">รถเข้าอาคาร</span>
+          </button>
+          <button 
+            id="qa-contractor-in"
+            onClick={() => navigateTo('contractors')}
+            className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-amber-50/40 hover:bg-amber-50 hover:border-amber-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
+          >
+            <Users className="w-6 h-6 text-amber-600" />
+            <span className="text-xs font-bold text-slate-700">ลงทะเบียนช่าง</span>
+          </button>
+          <button 
+            id="qa-key-out"
+            onClick={() => navigateTo('keys')}
+            className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-red-50/40 hover:bg-red-50 hover:border-red-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
+          >
+            <Key className="w-6 h-6 text-red-600" />
+            <span className="text-xs font-bold text-slate-700">เบิกกุญแจห้อง</span>
+          </button>
+          <button 
+            id="qa-patrol-check"
+            onClick={() => navigateTo('patrol')}
+            className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
+          >
+            <ShieldCheck className="w-6 h-6 text-emerald-600" />
+            <span className="text-xs font-bold text-slate-700">สแกนเดินตรวจ</span>
+          </button>
+          <button 
+            id="qa-report-incident"
+            onClick={() => navigateTo('incidents')}
+            className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
+          >
+            <AlertTriangle className="w-6 h-6 text-slate-600" />
+            <span className="text-xs font-bold text-slate-700">รายงานเหตุผิดปกติ</span>
+          </button>
+          <button 
+            id="qa-search-history"
+            onClick={() => navigateTo('history')}
+            className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
+          >
+            <RefreshCw className="w-6 h-6 text-slate-600" />
+            <span className="text-xs font-bold text-slate-700">ค้นหาประวัติ</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

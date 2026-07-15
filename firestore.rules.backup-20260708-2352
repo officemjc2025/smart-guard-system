@@ -1,0 +1,319 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Reusable Hardened Global Helpers (Phase 3 Primitives)
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSandboxUser() {
+      return request.auth.token.email == 'sandbox@example.com';
+    }
+
+    function isEmailVerified() {
+      return request.auth.token.email_verified == true || isSandboxUser();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Cost-Optimized Role Management (Reads user document once per request)
+    function isActiveUser() {
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'Active';
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isGuard() {
+      return isActiveUser() && getUserRole() == 'Guard';
+    }
+
+    function isShiftLeader() {
+      return isActiveUser() && getUserRole() == 'Shift Leader';
+    }
+
+    function isManagerRole() {
+      return isActiveUser() && getUserRole() == 'Manager';
+    }
+
+    function isAdminRole() {
+      return isActiveUser() && getUserRole() == 'Admin';
+    }
+
+    // Role hierarchies
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'office.mjc2025@gmail.com' ||
+        isSandboxUser() ||
+        isAdminRole()
+      );
+    }
+
+    function isManager() {
+      return isSignedIn() && (
+        request.auth.token.email == 'manager@example.com' ||
+        request.auth.token.email == 'office.mjc2025@gmail.com' ||
+        isSandboxUser() ||
+        isManagerRole() ||
+        isAdminRole()
+      );
+    }
+
+    function isOperationalUser() {
+      return isAdmin() || isManager() || (
+        isActiveUser() && (
+          getUserRole() == 'Admin' ||
+          getUserRole() == 'Manager' ||
+          getUserRole() == 'Shift Leader' ||
+          getUserRole() == 'Guard'
+        )
+      );
+    }
+
+    // 2. Strict Entity Validation Blueprints (Anti-Update-Gap)
+
+    function isValidVehicleLog(data) {
+      return data.log_id is string && data.log_id.size() <= 128 &&
+             data.card_number is string && data.card_number.size() <= 128 &&
+             data.vehicle_plate is string && data.vehicle_plate.size() <= 64 &&
+             data.vehicle_type is string && (data.vehicle_type == 'รถยนต์' || data.vehicle_type == 'จักรยานยนต์' || data.vehicle_type == 'รถส่งของ' || data.vehicle_type == 'อื่นๆ') &&
+             data.visitor_name is string && data.visitor_name.size() <= 256 &&
+             data.visitor_phone is string && data.visitor_phone.size() <= 32 &&
+             data.target_room is string && data.target_room.size() <= 64 &&
+             data.target_unit_id is string && data.target_unit_id.size() <= 128 &&
+             data.purpose is string && data.purpose.size() <= 256 &&
+             data.visitor_category is string && (data.visitor_category == 'ผู้มาติดต่อ' || data.visitor_category == 'ผู้รับเหมา' || data.visitor_category == 'ญาติผู้พักอาศัย' || data.visitor_category == 'ส่งของ/เดลิเวอรี่' || data.visitor_category == 'อื่นๆ') &&
+             data.entry_time is string && data.entry_time.size() <= 64 &&
+             data.entry_plate_photo_url is string && data.entry_plate_photo_url.size() <= 1024 &&
+             data.entry_vehicle_photo_url is string && data.entry_vehicle_photo_url.size() <= 1024 &&
+             data.status is string && (data.status == 'กำลังจอด' || data.status == 'ออกแล้ว') &&
+             data.workflow_status is string && (data.workflow_status == 'opened' || data.workflow_status == 'completed') &&
+             data.recorded_by is string && data.recorded_by.size() <= 128 &&
+             data.note is string && data.note.size() <= 1024 &&
+             data.created_at is string && data.created_at.size() <= 64 &&
+             data.updated_at is string && data.updated_at.size() <= 64 &&
+             data.login_email is string && data.login_email.size() <= 128 &&
+             data.operator_name is string && data.operator_name.size() <= 128 &&
+             (!('lost_card' in data) || data.lost_card is bool) &&
+             (!('lost_card_note' in data) || (data.lost_card_note is string && data.lost_card_note.size() <= 1024)) &&
+             (!('exit_time' in data) || (data.exit_time is string && data.exit_time.size() <= 64)) &&
+             (!('exit_plate_photo_url' in data) || (data.exit_plate_photo_url is string && data.exit_plate_photo_url.size() <= 1024)) &&
+             (!('exit_vehicle_photo_url' in data) || (data.exit_vehicle_photo_url is string && data.exit_vehicle_photo_url.size() <= 1024));
+    }
+
+    function isValidAuditLog(data) {
+      return data.audit_id is string && data.audit_id.size() <= 128 &&
+             data.user_name is string && data.user_name.size() <= 128 &&
+             data.action is string && data.action.size() <= 256 &&
+             data.module_name is string && data.module_name.size() <= 128 &&
+             data.record_id is string && data.record_id.size() <= 128 &&
+             data.old_value is string && data.old_value.size() <= 1024 &&
+             data.new_value is string && data.new_value.size() <= 1024 &&
+             data.created_at is string && data.created_at.size() <= 64 &&
+             data.login_email is string && data.login_email.size() <= 128 &&
+             data.operator_name is string && data.operator_name.size() <= 128 &&
+             (!('action_result' in data) || (data.action_result is string && data.action_result.size() <= 64)) &&
+             (!('ip_or_session_id' in data) || (data.ip_or_session_id is string && data.ip_or_session_id.size() <= 128));
+    }
+
+    function isValidParkingCard(data) {
+      return data.card_id is string && data.card_id.size() <= 128 &&
+             data.card_number is string && data.card_number.size() <= 128 &&
+             data.qr_code_value is string && data.qr_code_value.size() <= 128 &&
+             data.status is string && (data.status == 'ว่าง' || data.status == 'ใช้งานอยู่' || data.status == 'ระงับ') &&
+             (!('current_vehicle_plate' in data) || (data.current_vehicle_plate is string && data.current_vehicle_plate.size() <= 64)) &&
+             (!('current_vehicle_log_id' in data) || (data.current_vehicle_log_id is string && data.current_vehicle_log_id.size() <= 128)) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 1024)) &&
+             data.created_at is string && data.created_at.size() <= 64 &&
+             data.updated_at is string && data.updated_at.size() <= 64;
+    }
+
+    // Default catch-all deny rule
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 3. Collection Rules
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create, update, delete: if isAdmin() || isManager();
+    }
+
+    // ParkingCards collection
+    match /parkingCards/{cardId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create, delete: if isAdmin() || isManager();
+      allow update: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidParkingCard(incoming()) &&
+        (
+          (existing().status == 'ว่าง' && incoming().status == 'ใช้งานอยู่') ||
+          (existing().status == 'ใช้งานอยู่' && incoming().status == 'ว่าง') ||
+          (existing().status == 'ใช้งานอยู่' && incoming().status == 'ระงับ')
+        ) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'current_vehicle_plate', 'current_vehicle_log_id', 'updated_at'])
+      );
+    }
+
+    // VehicleLogs collection (Guards can create/update active entries, but cannot delete or alter exited entries)
+    match /vehicleLogs/{logId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidId(logId) &&
+        isValidVehicleLog(incoming()) &&
+        incoming().login_email == request.auth.token.email &&
+        incoming().status == 'กำลังจอด' &&
+        (incoming().workflow_status == 'opened' || incoming().workflow_status == 'completed')
+      );
+      allow update: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        existing().status == 'กำลังจอด' &&
+        isValidVehicleLog(incoming()) &&
+        (
+          // Case 1: Vehicle Exit (Normal or Lost Card Exit)
+          (
+            incoming().status == 'ออกแล้ว' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'exit_time',
+              'exit_plate_photo_url',
+              'exit_vehicle_photo_url',
+              'status',
+              'updated_at',
+              'lost_card',
+              'lost_card_note'
+            ])
+          ) ||
+          // Case 2: Complete Entry (Two-Guard Entry Complete)
+          (
+            existing().workflow_status == 'opened' &&
+            incoming().workflow_status == 'completed' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'visitor_name',
+              'visitor_phone',
+              'target_unit_id',
+              'target_room',
+              'purpose',
+              'visitor_category',
+              'entry_plate_photo_url',
+              'entry_vehicle_photo_url',
+              'workflow_status',
+              'updated_at',
+              'note'
+            ])
+          )
+        )
+      );
+      allow delete: if isAdmin() || isManager();
+    }
+
+    // ContractorLogs collection
+    match /contractorLogs/{contractorLogId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidId(contractorLogId)
+      );
+      allow update, delete: if isAdmin() || isManager();
+    }
+
+    // KeyLogs collection
+    match /keyLogs/{keyLogId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidId(keyLogId)
+      );
+      allow update, delete: if isAdmin() || isManager();
+    }
+
+    // PatrolPoints collection
+    match /patrolPoints/{patrolPointId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow write: if isAdmin() || isManager();
+    }
+
+    // PatrolLogs collection
+    match /patrolLogs/{patrolLogId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidId(patrolLogId)
+      );
+      allow update, delete: if isAdmin() || isManager();
+    }
+
+    // IncidentReports collection
+    match /incidentReports/{incidentId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidId(incidentId)
+      );
+      allow update, delete: if isAdmin() || isManager();
+    }
+
+    // Blacklist collection
+    match /blacklist/{blacklistId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow write: if isAdmin() || isManager();
+    }
+
+    // DailyReports collection
+    match /dailyReports/{reportId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidId(reportId)
+      );
+      allow update, delete: if isAdmin() || isManager();
+    }
+
+    // AuditLogs collection (Guards can create during operations, absolutely immutable once written)
+    match /auditLogs/{auditId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create: if isAdmin() || isManager() || (
+        isEmailVerified() && (isGuard() || isShiftLeader()) &&
+        isValidId(auditId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().login_email == request.auth.token.email
+      );
+      allow update, delete: if false;
+    }
+
+    // Keys collection
+    match /keys/{keyId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow create, delete: if isAdmin() || isManager();
+      allow update: if isAdmin() || isManager() || isOperationalUser();
+    }
+
+    // SystemSettings collection
+    match /systemSettings/{settingKey} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow write: if isAdmin() || isManager();
+    }
+
+    // Units collection
+    match /units/{unitId} {
+      allow read: if isAdmin() || isManager() || isOperationalUser();
+      allow write: if isAdmin() || isManager();
+    }
+  }
+}

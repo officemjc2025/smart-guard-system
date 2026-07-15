@@ -1,0 +1,101 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "vehicleLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "entry_time", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "vehicleLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "contractorLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "entry_time", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "contractorLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keyLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "keyLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "patrolLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "patrolLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "incidentReports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "incidentReports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "dailyReports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

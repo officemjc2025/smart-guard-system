@@ -1,0 +1,374 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Smart Guard Operator User accounts",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" },
+        "role": { "type": "string", "enum": ["Guard", "Shift Leader", "Manager", "Admin"] },
+        "shift": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["user_id", "login_email", "operator_name", "role", "status"]
+    },
+    "ParkingCard": {
+      "title": "ParkingCard",
+      "description": "Physical parking cards with QR codes",
+      "type": "object",
+      "properties": {
+        "card_id": { "type": "string" },
+        "card_number": { "type": "string" },
+        "qr_code_value": { "type": "string" },
+        "status": { "type": "string", "enum": ["ว่าง", "ใช้งานอยู่"] },
+        "current_vehicle_plate": { "type": "string" },
+        "note": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["card_id", "card_number", "qr_code_value", "status"]
+    },
+    "VehicleLog": {
+      "title": "VehicleLog",
+      "description": "Visitor vehicle entry and exit log",
+      "type": "object",
+      "properties": {
+        "log_id": { "type": "string" },
+        "card_number": { "type": "string" },
+        "vehicle_plate": { "type": "string" },
+        "vehicle_type": { "type": "string", "enum": ["รถยนต์", "จักรยานยนต์", "รถส่งของ", "อื่นๆ"] },
+        "visitor_name": { "type": "string" },
+        "visitor_phone": { "type": "string" },
+        "target_room": { "type": "string" },
+        "purpose": { "type": "string" },
+        "entry_time": { "type": "string", "format": "date-time" },
+        "exit_time": { "type": "string", "format": "date-time" },
+        "entry_plate_photo_url": { "type": "string" },
+        "entry_vehicle_photo_url": { "type": "string" },
+        "exit_plate_photo_url": { "type": "string" },
+        "exit_vehicle_photo_url": { "type": "string" },
+        "status": { "type": "string", "enum": ["กำลังจอด", "ออกแล้ว"] },
+        "recorded_by": { "type": "string" },
+        "note": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" }
+      },
+      "required": ["log_id", "card_number", "vehicle_plate", "vehicle_type", "visitor_name", "status", "entry_time"]
+    },
+    "ContractorLog": {
+      "title": "ContractorLog",
+      "description": "Contractor or technician entry and exit log",
+      "type": "object",
+      "properties": {
+        "contractor_log_id": { "type": "string" },
+        "contractor_name": { "type": "string" },
+        "id_card_number": { "type": "string" },
+        "phone": { "type": "string" },
+        "company": { "type": "string" },
+        "target_room": { "type": "string" },
+        "owner_name": { "type": "string" },
+        "work_type": { "type": "string" },
+        "entry_time": { "type": "string", "format": "date-time" },
+        "exit_time": { "type": "string", "format": "date-time" },
+        "id_card_photo_url": { "type": "string" },
+        "face_photo_url": { "type": "string" },
+        "status": { "type": "string", "enum": ["กำลังปฏิบัติงาน", "ออกแล้ว"] },
+        "recorded_by": { "type": "string" },
+        "note": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" }
+      },
+      "required": ["contractor_log_id", "contractor_name", "id_card_number", "entry_time", "status"]
+    },
+    "KeyLog": {
+      "title": "KeyLog",
+      "description": "Keys borrowing and return log",
+      "type": "object",
+      "properties": {
+        "key_log_id": { "type": "string" },
+        "room_number": { "type": "string" },
+        "key_type": { "type": "string", "enum": ["ห้องพัก", "ห้องไฟฟ้า", "ห้องเครื่องจักร", "พื้นที่ส่วนกลาง", "อื่นๆ"] },
+        "borrower_name": { "type": "string" },
+        "borrower_phone": { "type": "string" },
+        "borrower_id_number": { "type": "string" },
+        "purpose": { "type": "string" },
+        "checkout_time": { "type": "string", "format": "date-time" },
+        "return_time": { "type": "string", "format": "date-time" },
+        "issued_by": { "type": "string" },
+        "returned_by": { "type": "string" },
+        "signature_image_url": { "type": "string" },
+        "borrower_photo_url": { "type": "string" },
+        "document_photo_url": { "type": "string" },
+        "status": { "type": "string", "enum": ["ถูกเบิก", "คืนแล้ว"] },
+        "note": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" }
+      },
+      "required": ["key_log_id", "room_number", "key_type", "borrower_name", "checkout_time", "status"]
+    },
+    "PatrolPoint": {
+      "title": "PatrolPoint",
+      "description": "Configured guard patrol checkpoints",
+      "type": "object",
+      "properties": {
+        "patrol_point_id": { "type": "string" },
+        "point_name": { "type": "string" },
+        "location_detail": { "type": "string" },
+        "qr_code_value": { "type": "string" },
+        "required_interval_minutes": { "type": "integer" },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["patrol_point_id", "point_name", "qr_code_value", "status"]
+    },
+    "PatrolLog": {
+      "title": "PatrolLog",
+      "description": "Log of completed patrol checkpoints",
+      "type": "object",
+      "properties": {
+        "patrol_log_id": { "type": "string" },
+        "patrol_point_id": { "type": "string" },
+        "point_name": { "type": "string" },
+        "guard_name": { "type": "string" },
+        "shift_type": { "type": "string", "enum": ["เช้า", "กลางคืน"] },
+        "checkin_time": { "type": "string", "format": "date-time" },
+        "photo_url": { "type": "string" },
+        "status": { "type": "string", "enum": ["ปกติ", "ผิดปกติ", "ต้องติดตาม"] },
+        "abnormal_detail": { "type": "string" },
+        "incident_photo_url": { "type": "string" },
+        "note": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" }
+      },
+      "required": ["patrol_log_id", "patrol_point_id", "point_name", "guard_name", "checkin_time", "status"]
+    },
+    "IncidentReport": {
+      "title": "IncidentReport",
+      "description": "Security or maintenance incident reports",
+      "type": "object",
+      "properties": {
+        "incident_id": { "type": "string" },
+        "incident_datetime": { "type": "string", "format": "date-time" },
+        "location": { "type": "string" },
+        "incident_type": { "type": "string", "enum": ["อัคคีภัย", "น้ำท่วม/ท่อแตก", "โจรกรรม/ลักทรัพย์", "ทะเลาะวิวาท", "อุปกรณ์ชำรุด", "อื่นๆ"] },
+        "description": { "type": "string" },
+        "photo_url": { "type": "string" },
+        "reported_by": { "type": "string" },
+        "shift_leader": { "type": "string" },
+        "management_note": { "type": "string" },
+        "status": { "type": "string", "enum": ["แจ้งแล้ว", "กำลังดำเนินการ", "ปิดงานแล้ว"] },
+        "severity": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "assigned_to": { "type": "string" },
+        "resolved_at": { "type": "string", "format": "date-time" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" }
+      },
+      "required": ["incident_id", "incident_datetime", "location", "incident_type", "description", "reported_by", "status"]
+    },
+    "Blacklist": {
+      "title": "Blacklist",
+      "description": "Restricted vehicles or individuals database",
+      "type": "object",
+      "properties": {
+        "blacklist_id": { "type": "string" },
+        "type": { "type": "string", "enum": ["ทะเบียนรถ", "เลขบัตรประชาชน", "ชื่อบุคคล"] },
+        "vehicle_plate": { "type": "string" },
+        "id_card_number": { "type": "string" },
+        "name": { "type": "string" },
+        "reason": { "type": "string" },
+        "severity": { "type": "string", "enum": ["เตือนภัยระดับต่ำ", "ห้ามเข้าเด็ดขาด", "เฝ้าระวังพิเศษ"] },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["blacklist_id", "type", "reason", "severity", "status"]
+    },
+    "DailyReport": {
+      "title": "DailyReport",
+      "description": "Shift leader end of shift reports",
+      "type": "object",
+      "properties": {
+        "report_id": { "type": "string" },
+        "report_date": { "type": "string" },
+        "shift_type": { "type": "string", "enum": ["เช้า", "กลางคืน"] },
+        "total_vehicle_in": { "type": "integer" },
+        "total_vehicle_out": { "type": "integer" },
+        "total_contractors": { "type": "integer" },
+        "total_keys_not_returned": { "type": "integer" },
+        "total_patrol_missing": { "type": "integer" },
+        "total_incidents": { "type": "integer" },
+        "blacklist_alerts": { "type": "integer" },
+        "shift_leader": { "type": "string" },
+        "note": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" }
+      },
+      "required": ["report_id", "report_date", "shift_type", "shift_leader"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System action log for debugging and trace",
+      "type": "object",
+      "properties": {
+        "audit_id": { "type": "string" },
+        "user_name": { "type": "string" },
+        "action": { "type": "string" },
+        "module_name": { "type": "string" },
+        "record_id": { "type": "string" },
+        "old_value": { "type": "string" },
+        "new_value": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "login_email": { "type": "string" },
+        "operator_name": { "type": "string" },
+        "action_result": { "type": "string" },
+        "ip_or_session_id": { "type": "string" }
+      },
+      "required": ["audit_id", "user_name", "action", "module_name", "record_id", "created_at"]
+    },
+    "Key": {
+      "title": "Key",
+      "description": "Keys inventory master",
+      "type": "object",
+      "properties": {
+        "key_id": { "type": "string" },
+        "room_number": { "type": "string" },
+        "key_type": { "type": "string", "enum": ["ห้องพัก", "ห้องไฟฟ้า", "ห้องเครื่องจักร", "พื้นที่ส่วนกลาง", "อื่นๆ"] },
+        "key_label": { "type": "string" },
+        "status": { "type": "string", "enum": ["Available", "Checked Out"] },
+        "current_borrower_name": { "type": "string" },
+        "current_checkout_log_id": { "type": "string" },
+        "note": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["key_id", "room_number", "key_type", "status"]
+    },
+    "SystemSetting": {
+      "title": "SystemSetting",
+      "description": "Key-Value store for system configuration",
+      "type": "object",
+      "properties": {
+        "setting_key": { "type": "string" },
+        "setting_value": { "type": "string" },
+        "setting_type": { "type": "string" },
+        "description": { "type": "string" },
+        "updated_by": { "type": "string" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["setting_key", "setting_value"]
+    },
+    "Account": {
+      "title": "Account",
+      "description": "System access login accounts associated with a unique login email",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "login_email": { "type": "string" },
+        "account_name": { "type": "string" },
+        "account_type": { "type": "string", "enum": ["Guard", "ShiftLeader", "Manager", "Admin"] },
+        "site_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "login_email", "account_name", "account_type", "site_id", "status"]
+    },
+    "Operator": {
+      "title": "Operator",
+      "description": "Human operator profiles performing security tasks",
+      "type": "object",
+      "properties": {
+        "operator_id": { "type": "string" },
+        "operator_name": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["Guard", "Shift Leader", "Manager", "Admin"] },
+        "shift": { "type": "string" },
+        "login_email": { "type": "string" },
+        "account_uid": { "type": "string" },
+        "site_id": { "type": "string" },
+        "status": { "type": "string", "enum": ["Active", "Inactive"] },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["operator_id", "operator_name", "role", "login_email", "account_uid", "site_id", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Operator list and user details"
+    },
+    "/accounts/{uid}": {
+      "schema": { "$ref": "#/entities/Account" },
+      "description": "Google accounts mapped to system types"
+    },
+    "/operators/{operatorId}": {
+      "schema": { "$ref": "#/entities/Operator" },
+      "description": "Human operators associated with google login accounts"
+    },
+    "/parkingCards/{cardId}": {
+      "schema": { "$ref": "#/entities/ParkingCard" },
+      "description": "Parking cards tracking"
+    },
+    "/vehicleLogs/{logId}": {
+      "schema": { "$ref": "#/entities/VehicleLog" },
+      "description": "Vehicle check-ins and check-outs"
+    },
+    "/contractorLogs/{contractorLogId}": {
+      "schema": { "$ref": "#/entities/ContractorLog" },
+      "description": "Contractor or technician entries"
+    },
+    "/keyLogs/{keyLogId}": {
+      "schema": { "$ref": "#/entities/KeyLog" },
+      "description": "Keys borrowing and returns history"
+    },
+    "/patrolPoints/{patrolPointId}": {
+      "schema": { "$ref": "#/entities/PatrolPoint" },
+      "description": "Configured checkpoints for guards"
+    },
+    "/patrolLogs/{patrolLogId}": {
+      "schema": { "$ref": "#/entities/PatrolLog" },
+      "description": "Completed check-in records for points"
+    },
+    "/incidentReports/{incidentId}": {
+      "schema": { "$ref": "#/entities/IncidentReport" },
+      "description": "Logged security incidents"
+    },
+    "/blacklist/{blacklistId}": {
+      "schema": { "$ref": "#/entities/Blacklist" },
+      "description": "Blacklisted plates or people"
+    },
+    "/dailyReports/{reportId}": {
+      "schema": { "$ref": "#/entities/DailyReport" },
+      "description": "End of shift guard reports"
+    },
+    "/auditLogs/{auditId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Activity logs for operators"
+    },
+    "/keys/{keyId}": {
+      "schema": { "$ref": "#/entities/Key" },
+      "description": "Keys inventory"
+    },
+    "/systemSettings/{settingKey}": {
+      "schema": { "$ref": "#/entities/SystemSetting" },
+      "description": "System configuration parameters"
+    }
+  }
+}

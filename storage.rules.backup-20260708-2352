@@ -1,0 +1,35 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Global Auth helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSandboxUser() {
+      return request.auth.token.email == 'sandbox@example.com';
+    }
+
+    function isEmailVerified() {
+      return request.auth.token.email_verified == true || isSandboxUser();
+    }
+
+    // Match files inside folders used in the application: vehicle-logs, contractor-logs, key-logs, patrol-logs, incident-reports, general-uploads
+    match /{folderName}/{dateStr}/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() &&
+                      isEmailVerified() &&
+                      (
+                        folderName == 'vehicle-logs' || 
+                        folderName == 'contractor-logs' || 
+                        folderName == 'key-logs' || 
+                        folderName == 'patrol-logs' || 
+                        folderName == 'incident-reports' || 
+                        folderName == 'general-uploads'
+                      ) &&
+                      request.resource.size <= 2 * 1024 * 1024 &&
+                      request.resource.contentType.matches('image/.*');
+    }
+  }
+}
