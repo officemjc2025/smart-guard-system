@@ -1,8 +1,153 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // 1. Reusable Hardened Global Helpers (Phase 3 Primitives)
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSandboxUser() {
+      return request.auth.token.email == 'sandbox@example.com';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'office.mjc2025@gmail.com' ||
+        isSandboxUser()
+      );
+    }
+
+    function isManager() {
+      return isSignedIn() && (
+        request.auth.token.email == 'manager@example.com' ||
+        request.auth.token.email == 'office.mjc2025@gmail.com' ||
+        isSandboxUser()
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Default catch-all deny rule
     match /{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
+    }
+
+    // 2. Collection Rules
+    
+    // Users collection
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ParkingCards collection
+    match /parkingCards/{cardId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isSignedIn() && (
+        isAdmin() || 
+        (incoming().status in ['ว่าง', 'ใช้งานอยู่'])
+      );
+    }
+
+    // VehicleLogs collection (Guards can create, but cannot edit or delete)
+    match /vehicleLogs/{logId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && 
+                    isValidId(logId) &&
+                    incoming().login_email == request.auth.token.email;
+      allow update, delete: if isAdmin();
+    }
+
+    // ContractorLogs collection (Guards can create, but cannot edit or delete)
+    match /contractorLogs/{contractorLogId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && 
+                    isValidId(contractorLogId) &&
+                    incoming().login_email == request.auth.token.email;
+      allow update, delete: if isAdmin();
+    }
+
+    // KeyLogs collection (Guards can create, but cannot edit or delete)
+    match /keyLogs/{keyLogId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && 
+                    isValidId(keyLogId) &&
+                    incoming().login_email == request.auth.token.email;
+      allow update, delete: if isAdmin();
+    }
+
+    // PatrolPoints collection
+    match /patrolPoints/{patrolPointId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // PatrolLogs collection (Guards can create, but cannot edit or delete)
+    match /patrolLogs/{patrolLogId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && 
+                    isValidId(patrolLogId) &&
+                    incoming().login_email == request.auth.token.email;
+      allow update, delete: if isAdmin();
+    }
+
+    // IncidentReports collection
+    match /incidentReports/{incidentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && 
+                    isValidId(incidentId) &&
+                    incoming().login_email == request.auth.token.email;
+      allow update: if isAdmin() || isManager(); // Only Admin & Manager can update status / report workflows
+      allow delete: if isAdmin();
+    }
+
+    // Blacklist collection
+    match /blacklist/{blacklistId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // DailyReports collection
+    match /dailyReports/{reportId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && 
+                    isValidId(reportId) &&
+                    incoming().login_email == request.auth.token.email;
+      allow update, delete: if isAdmin();
+    }
+
+    // AuditLogs collection (Only Admin can read, guards can only append, absolutely immutable once written)
+    match /auditLogs/{auditId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn() && 
+                    isValidId(auditId) &&
+                    incoming().login_email == request.auth.token.email;
+      allow update, delete: if false;
+    }
+
+    // Keys collection (Inventory list: Admin manages list, guards can update checkout status)
+    match /keys/{keyId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isSignedIn();
+    }
+
+    // SystemSettings collection
+    match /systemSettings/{settingKey} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
   }
 }

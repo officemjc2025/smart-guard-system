@@ -12,28 +12,23 @@ import {
   deleteDoc,
   writeBatch
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { db, auth, storage } from './firebase';
-import firebaseConfig from '../firebase-applet-config.json';
 
 export const SCHEMA = {
   Users: ['user_id', 'login_email', 'operator_name', 'role', 'shift', 'phone', 'status', 'created_at', 'updated_at'],
   ParkingCards: ['card_id', 'card_number', 'qr_code_value', 'status', 'current_vehicle_plate', 'note', 'created_at', 'updated_at'],
-  VehicleLogs: ['log_id', 'card_number', 'vehicle_plate', 'vehicle_type', 'visitor_name', 'visitor_phone', 'target_room', 'purpose', 'entry_time', 'exit_time', 'entry_plate_photo_url', 'entry_vehicle_photo_url', 'exit_plate_photo_url', 'exit_vehicle_photo_url', 'status', 'recorded_by', 'note', 'created_at', 'updated_at', 'login_email', 'operator_name', 'visitor_category', 'workflow_status', 'card_id', 'target_unit_id', 'lost_card', 'lost_card_note'],
-  ContractorLogs: ['contractor_log_id', 'contractor_name', 'id_card_number', 'phone', 'company', 'target_room', 'owner_name', 'work_type', 'entry_time', 'exit_time', 'id_card_photo_url', 'face_photo_url', 'status', 'recorded_by', 'note', 'created_at', 'updated_at', 'login_email', 'operator_name', 'team_member_count', 'total_people', 'team_member_names', 'group_note', 'work_permit_number', 'hiring_party', 'people_exited', 'people_remaining', 'exit_all_confirmed'],
+  VehicleLogs: ['log_id', 'card_number', 'vehicle_plate', 'vehicle_type', 'visitor_name', 'visitor_phone', 'target_room', 'purpose', 'entry_time', 'exit_time', 'entry_plate_photo_url', 'entry_vehicle_photo_url', 'exit_plate_photo_url', 'exit_vehicle_photo_url', 'status', 'recorded_by', 'note', 'created_at', 'updated_at', 'login_email', 'operator_name'],
+  ContractorLogs: ['contractor_log_id', 'contractor_name', 'id_card_number', 'phone', 'company', 'target_room', 'owner_name', 'work_type', 'entry_time', 'exit_time', 'id_card_photo_url', 'face_photo_url', 'status', 'recorded_by', 'note', 'created_at', 'updated_at', 'login_email', 'operator_name'],
   KeyLogs: ['key_log_id', 'room_number', 'key_type', 'borrower_name', 'borrower_phone', 'borrower_id_number', 'purpose', 'checkout_time', 'return_time', 'issued_by', 'returned_by', 'signature_image_url', 'borrower_photo_url', 'document_photo_url', 'status', 'note', 'created_at', 'updated_at', 'login_email', 'operator_name'],
   PatrolPoints: ['patrol_point_id', 'point_name', 'location_detail', 'qr_code_value', 'required_interval_minutes', 'status', 'created_at', 'updated_at'],
-  PatrolLogs: ['patrol_log_id', 'patrol_point_id', 'point_name', 'guard_name', 'shift_type', 'checkin_time', 'photo_url', 'status', 'abnormal_detail', 'incident_photo_url', 'note', 'created_at', 'login_email', 'operator_name', 'patrol_detail', 'follow_up_note', 'action_taken', 'requires_follow_up', 'incident_created', 'source_incident_id'],
-  IncidentReports: ['incident_id', 'incident_datetime', 'location', 'incident_type', 'description', 'photo_url', 'reported_by', 'shift_leader', 'management_note', 'status', 'created_at', 'updated_at', 'severity', 'assigned_to', 'resolved_at', 'login_email', 'operator_name', 'source_patrol_log_id', 'patrol_point_id'],
+  PatrolLogs: ['patrol_log_id', 'patrol_point_id', 'point_name', 'guard_name', 'shift_type', 'checkin_time', 'photo_url', 'status', 'abnormal_detail', 'incident_photo_url', 'note', 'created_at', 'login_email', 'operator_name'],
+  IncidentReports: ['incident_id', 'incident_datetime', 'location', 'incident_type', 'description', 'photo_url', 'reported_by', 'shift_leader', 'management_note', 'status', 'created_at', 'updated_at', 'severity', 'assigned_to', 'resolved_at', 'login_email', 'operator_name'],
   Blacklist: ['blacklist_id', 'type', 'vehicle_plate', 'id_card_number', 'name', 'reason', 'severity', 'status', 'created_at', 'updated_at'],
   DailyReports: ['report_id', 'report_date', 'shift_type', 'total_vehicle_in', 'total_vehicle_out', 'total_contractors', 'total_keys_not_returned', 'total_patrol_missing', 'total_incidents', 'blacklist_alerts', 'shift_leader', 'note', 'created_at', 'login_email', 'operator_name'],
   AuditLogs: ['audit_id', 'user_name', 'action', 'module_name', 'record_id', 'old_value', 'new_value', 'created_at', 'login_email', 'operator_name', 'action_result', 'ip_or_session_id'],
   Keys: ['key_id', 'room_number', 'key_type', 'key_label', 'status', 'current_borrower_name', 'current_checkout_log_id', 'note', 'created_at', 'updated_at'],
-  SystemSettings: ['setting_key', 'setting_value', 'setting_type', 'description', 'updated_by', 'updated_at'],
-  Units: ['unit_id', 'site_id', 'room_code', 'room_number', 'floor', 'ratio', 'area', 'owner_name', 'phone', 'email', 'occupancy_status', 'searchable_text', 'search_key', 'import_batch_id', 'source_file_name', 'is_active', 'created_at', 'updated_at'],
-  UnitsArchive: ['archive_id', 'backup_batch_id', 'archived_at', 'original_doc_id', 'unit_id', 'site_id', 'room_code', 'room_number', 'floor', 'ratio', 'area', 'owner_name', 'phone', 'email', 'occupancy_status', 'searchable_text', 'search_key', 'import_batch_id', 'source_file_name', 'is_active', 'created_at', 'updated_at'],
-  Accounts: ['uid', 'login_email', 'account_name', 'account_type', 'site_id', 'status', 'created_at', 'updated_at'],
-  Operators: ['operator_id', 'operator_name', 'phone', 'role', 'shift', 'login_email', 'account_uid', 'site_id', 'status', 'created_at', 'updated_at']
+  SystemSettings: ['setting_key', 'setting_value', 'setting_type', 'description', 'updated_by', 'updated_at']
 };
 
 export const COLLECTION_MAPPING: Record<string, string> = {
@@ -50,10 +45,6 @@ export const COLLECTION_MAPPING: Record<string, string> = {
   AuditLogs: 'auditLogs',
   Keys: 'keys',
   SystemSettings: 'systemSettings',
-  Units: 'units',
-  UnitsArchive: 'units_archive',
-  Accounts: 'accounts',
-  Operators: 'operators'
 };
 
 export const ID_COLUMNS: Record<string, string> = {
@@ -70,10 +61,6 @@ export const ID_COLUMNS: Record<string, string> = {
   AuditLogs: 'audit_id',
   Keys: 'key_id',
   SystemSettings: 'setting_key',
-  Units: 'unit_id',
-  UnitsArchive: 'archive_id',
-  Accounts: 'uid',
-  Operators: 'operator_id'
 };
 
 enum OperationType {
@@ -155,31 +142,6 @@ export async function compressImageBase64(base64Str: string, maxWidth = 800, max
 }
 
 /**
- * Helper to convert base64 image string to Blob
- */
-function base64ToBlob(base64Str: string, defaultType = 'image/jpeg'): Blob {
-  if (base64Str.startsWith('data:')) {
-    const parts = base64Str.split(';base64,');
-    const contentType = parts[0].split(':')[1] || defaultType;
-    const raw = window.atob(parts[1]);
-    const rawLength = raw.length;
-    const uInt8Array = new Uint8Array(rawLength);
-    for (let i = 0; i < rawLength; ++i) {
-      uInt8Array[i] = raw.charCodeAt(i);
-    }
-    return new Blob([uInt8Array], { type: contentType });
-  } else {
-    const raw = window.atob(base64Str);
-    const rawLength = raw.length;
-    const uInt8Array = new Uint8Array(rawLength);
-    for (let i = 0; i < rawLength; ++i) {
-      uInt8Array[i] = raw.charCodeAt(i);
-    }
-    return new Blob([uInt8Array], { type: defaultType });
-  }
-}
-
-/**
  * Upload image to Firebase Storage
  */
 export async function uploadImageToStorage(base64Data: string, folderName: string, fileName: string): Promise<string> {
@@ -201,15 +163,7 @@ export async function uploadImageToStorage(base64Data: string, folderName: strin
     const path = `${folderName}/${todayStr}/${cleanFileName}`;
     
     const storageRef = ref(storage, path);
-    const blob = base64ToBlob(compressed);
-    
-    console.log('[Smart Guard Storage Upload]', {
-      configuredBucket: firebaseConfig.storageBucket,
-      runtimeBucket: storage.app.options.storageBucket,
-      fullPath: storageRef.fullPath
-    });
-    
-    await uploadBytes(storageRef, blob, { contentType: blob.type });
+    await uploadString(storageRef, compressed, 'data_url');
     
     const downloadUrl = await getDownloadURL(storageRef);
     console.log('[Firebase Storage] Upload completed successfully:', downloadUrl);
@@ -245,103 +199,10 @@ export async function fetchDriveImageAsUrl(fileId: string): Promise<string> {
   return `https://images.unsplash.com/photo-1557683316-973673baf926?w=400&h=300&fit=crop&q=80`;
 }
 
-function isMockModeActive(): boolean {
-  return typeof window !== 'undefined' && sessionStorage.getItem('g_mock_user') !== null;
-}
-
-function getLocalStorageData<T>(sheetName: keyof typeof SCHEMA): T[] {
-  const key = `smart_guard_db_${sheetName}`;
-  const data = localStorage.getItem(key);
-  if (data) {
-    try {
-      return JSON.parse(data);
-    } catch (e) {
-      console.error('[Mock DB] Failed to parse local storage data:', e);
-    }
-  }
-
-  // Seed default data if not exists
-  const now = new Date().toISOString();
-  const seedData: Record<string, any[][]> = {
-    Users: [
-      ['U001', 'office.mjc2025@gmail.com', 'แอดมิน สูงสุด', 'Admin', 'ทั่วไป', '0899999999', 'Active', now, now],
-      ['U002', 'guard@example.com', 'สมชาย แสนดี', 'Guard', 'กะเช้า (06:00 - 18:00)', '0812345678', 'Active', now, now],
-      ['U003', 'guard@example.com', 'วิชัย มีทอง', 'Guard', 'กะเช้า (06:00 - 18:00)', '0823456789', 'Active', now, now],
-      ['U004', 'leader@example.com', 'ประเสริฐ สิงห์โต', 'Shift Leader', 'กะเช้า (06:00 - 18:00)', '0856789012', 'Active', now, now],
-      ['U005', 'manager@example.com', 'จารุวรรณ ณ นคร', 'Manager', 'ทั่วไป', '0878901234', 'Active', now, now],
-      ['U101', 'sandbox@example.com', 'สมชาย แสนดี (รปภ.)', 'Guard', 'กะเช้า (06:00 - 18:00)', '0812345678', 'Active', now, now],
-      ['U102', 'sandbox@example.com', 'ประเสริฐ สิงห์โต (หัวหน้ากะ)', 'Shift Leader', 'กะกลางวัน (06:00 - 18:00)', '0856789012', 'Active', now, now],
-      ['U103', 'sandbox@example.com', 'แอดมิน สูงสุด (แอดมิน)', 'Admin', 'ทั่วไป', '0899999999', 'Active', now, now]
-    ],
-    ParkingCards: [
-      ['C001', 'P001', 'P001_QR', 'ใช้งานอยู่', 'กข 1234', 'บัตรจอดรถชั่วคราว VIP', now, now],
-      ['C002', 'P002', 'P002_QR', 'ว่าง', '', 'บัตรจอดรถชั่วคราวทั่วไป', now, now],
-      ['C003', 'P003', 'P003_QR', 'ใช้งานอยู่', '3กข 5678', 'บัตรจอดรถผู้รับเหมา', now, now],
-      ['C004', 'P004', 'P004_QR', 'ว่าง', '', 'บัตรจอดรถชั่วคราวทั่วไป', now, now],
-      ['C005', 'P005', 'P005_QR', 'ว่าง', '', 'บัตรจอดรถชั่วคราวทั่วไป', now, now]
-    ],
-    PatrolPoints: [
-      ['PP001', 'จุดตรวจ Lobby ชั้น 1', 'เสาด้านหน้าทางเข้าหลักหน้าเคาน์เตอร์นิติ', 'PP001_QR', '60', 'Active', now, now],
-      ['PP002', 'จุดตรวจ ลานจอดรถ B1 เสา B12', 'เสาโครงสร้างใกล้พัดลมดูดอากาศตัวใหญ่', 'PP002_QR', '120', 'Active', now, now],
-      ['PP003', 'จุดตรวจ ห้องควบคุมไฟฟ้าชั้น M', 'หน้าประตูห้องควบคุมควบคุมไฟฟ้าประธาน', 'PP003_QR', '120', 'Active', now, now]
-    ],
-    Keys: [
-      ['KEY_R001', '101', 'ห้องพัก', 'กุญแจห้องพักสำรอง', 'Available', '', '', 'ตรวจสอบความปลอดภัยแล้ว', now, now],
-      ['KEY_R002', 'EE01', 'ห้องไฟฟ้า', 'กุญแจห้องไฟฟ้าชั้น M', 'Checked Out', 'นายสมคิด ช่างไฟฟ้า', 'CON001', 'สำหรับเข้าปฏิบัติงานซ่อมบำรุง', now, now],
-      ['KEY_R003', 'ME01', 'ห้องเครื่องจักร', 'กุญแจห้องควบคุมระบบปั๊มน้ำ', 'Available', '', '', 'กรุณาคืนหลังกะปฏิบัติการ', now, now]
-    ],
-    SystemSettings: [
-      ['building_name', 'วิจิตรบรรจง คอนโดมิเนียม', 'text', 'ชื่อของโครงการหรืออาคารในระบบ', 'แอดมิน สูงสุด', now],
-      ['condo_name', 'Vichitbanjong Condominium', 'text', 'ชื่อคอนโดภาษาอังกฤษ', 'แอดมิน สูงสุด', now],
-      ['default_shift_times', '06:00 - 18:00 / 18:00 - 06:00', 'text', 'เวลาเปลี่ยนกะมาตรฐานในระบบ', 'แอดมิน สูงสุด', now],
-      ['patrol_interval_default', '60', 'number', 'รอบความถี่ในการเดินตรวจขั้นต่ำ (นาที)', 'แอดมิน สูงสุด', now],
-      ['require_vehicle_photo', 'true', 'boolean', 'บังคับถ่ายรูปรถยนต์และป้ายทะเบียนตอนบันทึกเข้า', 'แอดมิน สูงสุด', now],
-      ['require_key_signature', 'true', 'boolean', 'เปิดปิดการบังคับเซ็นชื่อเวลาเบิกกุญแจ', 'แอดมิน สูงสุด', now],
-      ['require_patrol_qr', 'true', 'boolean', 'เปิดปิดการสแกน QR Code สำหรับตรวจสอบจุดตรวจพิกัด', 'แอดมิน สูงสุด', now]
-    ]
-  };
-
-  const headers = SCHEMA[sheetName];
-  const list = seedData[sheetName] || [];
-  const records: any[] = [];
-
-  list.forEach(row => {
-    const record: any = {};
-    headers.forEach((col, idx) => {
-      const val = row[idx];
-      if (col === 'required_interval_minutes' || col.startsWith('total_') || col === 'blacklist_alerts') {
-        record[col] = val ? Number(val) : 0;
-      } else {
-        record[col] = val !== undefined ? String(val) : '';
-      }
-    });
-    records.push(record);
-  });
-
-  localStorage.setItem(key, JSON.stringify(records));
-  return records as T[];
-}
-
-function setLocalStorageData<T>(sheetName: keyof typeof SCHEMA, records: T[]): void {
-  const key = `smart_guard_db_${sheetName}`;
-  localStorage.setItem(key, JSON.stringify(records));
-}
-
 /**
  * Read records from a Firestore collection
  */
 export async function readSheet<T>(sheetName: keyof typeof SCHEMA): Promise<T[]> {
-  if (isMockModeActive()) {
-    const records = getLocalStorageData<T>(sheetName);
-    // Sort descending by created_at or other time attributes
-    records.sort((a: any, b: any) => {
-      const timeA = a.created_at || a.entry_time || a.checkout_time || '';
-      const timeB = b.created_at || b.entry_time || b.checkout_time || '';
-      return String(timeB).localeCompare(String(timeA));
-    });
-    return records;
-  }
-
   const collectionName = COLLECTION_MAPPING[sheetName] || String(sheetName);
   try {
     const querySnapshot = await getDocs(collection(db, collectionName));
@@ -379,148 +240,41 @@ export async function readSheet<T>(sheetName: keyof typeof SCHEMA): Promise<T[]>
 }
 
 /**
- * Helper to get the active operator session details for auditing and identity validation
- */
-export function getActiveSessionDetails() {
-  try {
-    const sessionStr = sessionStorage.getItem('authenticated_session');
-    if (sessionStr) {
-      const session = JSON.parse(sessionStr);
-      return {
-        account_uid: session.account_uid || '',
-        login_email: session.login_email || '',
-        operator_id: session.operator_id || '',
-        operator_name: session.operator_name || '',
-        role: session.role || 'Guard',
-        site_id: session.site_id || 'site-01',
-        recorded_by: session.operator_name || 'System'
-      };
-    }
-  } catch (e) {
-    console.warn('[Smart Guard API] Failed to parse authenticated_session:', e);
-  }
-
-  // Fallback to individual sessionStorage entries or current Auth user
-  const fallbackEmail = sessionStorage.getItem('selected_login_email') || auth.currentUser?.email || '';
-  const fallbackName = sessionStorage.getItem('selected_operator_name') || 'Unknown';
-  const fallbackRole = sessionStorage.getItem('selected_user_role') || 'Guard';
-  const fallbackOperatorId = sessionStorage.getItem('selected_operator_id') || '';
-  
-  return {
-    account_uid: auth.currentUser?.uid || '',
-    login_email: fallbackEmail,
-    operator_id: fallbackOperatorId,
-    operator_name: fallbackName,
-    role: fallbackRole as any,
-    site_id: 'site-01',
-    recorded_by: fallbackName
-  };
-}
-
-/**
- * Sanitize objects to redact base64 images and huge strings from audit logs
- */
-function sanitizeForAuditLog(obj: any): string {
-  if (!obj) return '';
-  try {
-    const cleanObj = { ...obj };
-    Object.keys(cleanObj).forEach(key => {
-      const val = cleanObj[key];
-      if (
-        key.includes('photo') || 
-        key.includes('image') || 
-        key.includes('signature') || 
-        key.includes('Base64') ||
-        (typeof val === 'string' && val.length > 500)
-      ) {
-        cleanObj[key] = '[REDACTED_IMAGE_OR_LARGE_DATA]';
-      }
-    });
-    return JSON.stringify(cleanObj);
-  } catch (e) {
-    return '[UNABLE_TO_SERIALIZE_PAYLOAD]';
-  }
-}
-
-/**
- * Append a record to a Firestore collection with an atomic audit log in a single writeBatch()
+ * Append a record to a Firestore collection
  */
 export async function appendSheetRow<T extends object>(sheetName: keyof typeof SCHEMA, record: T): Promise<void> {
   const collectionName = COLLECTION_MAPPING[sheetName] || String(sheetName);
   const idCol = ID_COLUMNS[sheetName];
   const finalRecord = { ...record } as any;
 
-  // Pin current session credentials and auditing info (The 9 required fields)
-  const session = getActiveSessionDetails();
-  finalRecord.account_uid = session.account_uid;
-  finalRecord.login_email = session.login_email;
-  finalRecord.operator_id = session.operator_id;
-  finalRecord.operator_name = session.operator_name;
-  finalRecord.role = session.role;
-  finalRecord.site_id = session.site_id;
-  finalRecord.recorded_by = session.recorded_by;
-  
-  if (!finalRecord.created_at) {
+  // Pin operator credentials if available in session
+  const columns = SCHEMA[sheetName];
+  if (columns.includes('login_email') && !finalRecord.login_email) {
+    finalRecord.login_email = sessionStorage.getItem('selected_login_email') || auth.currentUser?.email || '';
+  }
+  if (columns.includes('operator_name') && !finalRecord.operator_name) {
+    finalRecord.operator_name = sessionStorage.getItem('selected_operator_name') || '';
+  }
+  if (columns.includes('created_at') && !finalRecord.created_at) {
     finalRecord.created_at = new Date().toISOString();
   }
-  finalRecord.updated_at = new Date().toISOString();
+  if (columns.includes('updated_at') && !finalRecord.updated_at) {
+    finalRecord.updated_at = new Date().toISOString();
+  }
 
   const idValue = finalRecord[idCol] || `${sheetName.toUpperCase()}_${Math.floor(Math.random() * 1000000)}`;
   finalRecord[idCol] = idValue;
 
-  if (isMockModeActive()) {
-    const records = getLocalStorageData<any>(sheetName);
-    records.push(finalRecord);
-    setLocalStorageData(sheetName, records);
-    console.log(`[Mock DB] Appended row to ${sheetName}:`, finalRecord);
-    return;
-  }
-
   try {
-    const batch = writeBatch(db);
-    
-    // Write 1: The target document
-    const targetDocRef = doc(db, collectionName, idValue);
-    batch.set(targetDocRef, finalRecord);
-    
-    // Write 2: Synchronous Audit Log in the same batch
-    if (sheetName !== 'AuditLogs') {
-      const auditId = 'AUD' + Math.floor(Math.random() * 100000);
-      const auditDocRef = doc(db, 'auditLogs', auditId);
-      
-      const auditRecord = {
-        audit_id: auditId,
-        user_name: session.operator_name || 'System',
-        action: `Create ${sheetName}`,
-        module_name: sheetName,
-        record_id: idValue,
-        old_value: '',
-        new_value: sanitizeForAuditLog(finalRecord),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        login_email: session.login_email,
-        operator_name: session.operator_name,
-        action_result: 'Success',
-        ip_or_session_id: sessionStorage.getItem('selected_session_id') || 'local-session',
-        account_uid: session.account_uid,
-        operator_id: session.operator_id,
-        role: session.role,
-        site_id: session.site_id,
-        recorded_by: session.recorded_by
-      };
-      
-      batch.set(auditDocRef, auditRecord);
-    }
-    
-    await batch.commit();
-    console.log(`[Smart Guard DB] Successfully committed append writeBatch for ${collectionName}: ${idValue}`);
+    await setDoc(doc(db, collectionName, idValue), finalRecord);
+    console.log(`[Smart Guard DB] Successfully appended to ${collectionName}: ${idValue}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `${collectionName}/${idValue}`);
   }
 }
 
 /**
- * Update a specific record in a Firestore collection with an atomic audit log in a single writeBatch()
+ * Update a specific record in a Firestore collection
  */
 export async function updateSheetRow<T extends object>(
   sheetName: keyof typeof SCHEMA,
@@ -531,75 +285,20 @@ export async function updateSheetRow<T extends object>(
   const collectionName = COLLECTION_MAPPING[sheetName] || String(sheetName);
   const finalFields = { ...updatedFields } as any;
 
-  // Inject current session credentials and auditing info (The 9 required fields)
-  const session = getActiveSessionDetails();
-  finalFields.account_uid = session.account_uid;
-  finalFields.login_email = session.login_email;
-  finalFields.operator_id = session.operator_id;
-  finalFields.operator_name = session.operator_name;
-  finalFields.role = session.role;
-  finalFields.site_id = session.site_id;
-  finalFields.recorded_by = session.recorded_by;
-  finalFields.updated_at = new Date().toISOString();
-
-  if (isMockModeActive()) {
-    const records = getLocalStorageData<any>(sheetName);
-    const index = records.findIndex((r: any) => String(r[idColumn]) === String(idValue));
-    if (index !== -1) {
-      records[index] = { ...records[index], ...finalFields };
-      setLocalStorageData(sheetName, records);
-      console.log(`[Mock DB] Updated row in ${sheetName} for ID ${idValue}:`, finalFields);
-    } else {
-      console.warn(`[Mock DB] Update failed: record not found in ${sheetName} for ID ${idValue}`);
-    }
-    return;
+  if (SCHEMA[sheetName].includes('updated_at')) {
+    finalFields.updated_at = new Date().toISOString();
   }
 
   try {
-    const batch = writeBatch(db);
-    
-    // Write 1: Update target document
-    const targetDocRef = doc(db, collectionName, idValue);
-    batch.update(targetDocRef, finalFields);
-    
-    // Write 2: Synchronous Audit Log in the same batch
-    if (sheetName !== 'AuditLogs') {
-      const auditId = 'AUD' + Math.floor(Math.random() * 100000);
-      const auditDocRef = doc(db, 'auditLogs', auditId);
-      
-      const auditRecord = {
-        audit_id: auditId,
-        user_name: session.operator_name || 'System',
-        action: `Update ${sheetName}`,
-        module_name: sheetName,
-        record_id: idValue,
-        old_value: 'N/A',
-        new_value: sanitizeForAuditLog(finalFields),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        login_email: session.login_email,
-        operator_name: session.operator_name,
-        action_result: 'Success',
-        ip_or_session_id: sessionStorage.getItem('selected_session_id') || 'local-session',
-        account_uid: session.account_uid,
-        operator_id: session.operator_id,
-        role: session.role,
-        site_id: session.site_id,
-        recorded_by: session.recorded_by
-      };
-      
-      batch.set(auditDocRef, auditRecord);
-    }
-    
-    await batch.commit();
-    console.log(`[Smart Guard DB] Successfully committed update writeBatch for ${collectionName}/${idValue}`);
+    await updateDoc(doc(db, collectionName, idValue), finalFields);
+    console.log(`[Smart Guard DB] Successfully updated ${collectionName}/${idValue}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `${collectionName}/${idValue}`);
   }
 }
 
 /**
- * Delete a specific record in a Firestore collection with an atomic audit log in a single writeBatch()
+ * Delete a specific record in a Firestore collection
  */
 export async function deleteSheetRow(
   sheetName: keyof typeof SCHEMA,
@@ -607,61 +306,16 @@ export async function deleteSheetRow(
   idValue: string
 ): Promise<void> {
   const collectionName = COLLECTION_MAPPING[sheetName] || String(sheetName);
-
-  if (isMockModeActive()) {
-    const records = getLocalStorageData<any>(sheetName);
-    const filtered = records.filter((r: any) => String(r[idColumn]) !== String(idValue));
-    setLocalStorageData(sheetName, filtered);
-    console.log(`[Mock DB] Deleted row in ${sheetName} for ID ${idValue}`);
-    return;
-  }
-
   try {
-    const session = getActiveSessionDetails();
-    const batch = writeBatch(db);
-    
-    // Write 1: Delete target document
-    const targetDocRef = doc(db, collectionName, idValue);
-    batch.delete(targetDocRef);
-    
-    // Write 2: Synchronous Audit Log in the same batch
-    if (sheetName !== 'AuditLogs') {
-      const auditId = 'AUD' + Math.floor(Math.random() * 100000);
-      const auditDocRef = doc(db, 'auditLogs', auditId);
-      
-      const auditRecord = {
-        audit_id: auditId,
-        user_name: session.operator_name || 'System',
-        action: `Delete ${sheetName}`,
-        module_name: sheetName,
-        record_id: idValue,
-        old_value: idValue,
-        new_value: 'DELETED',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        login_email: session.login_email,
-        operator_name: session.operator_name,
-        action_result: 'Success',
-        ip_or_session_id: sessionStorage.getItem('selected_session_id') || 'local-session',
-        account_uid: session.account_uid,
-        operator_id: session.operator_id,
-        role: session.role,
-        site_id: session.site_id,
-        recorded_by: session.recorded_by
-      };
-      
-      batch.set(auditDocRef, auditRecord);
-    }
-    
-    await batch.commit();
-    console.log(`[Smart Guard DB] Successfully committed delete writeBatch for ${collectionName}/${idValue}`);
+    await deleteDoc(doc(db, collectionName, idValue));
+    console.log(`[Smart Guard DB] Successfully deleted ${collectionName}/${idValue}`);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `${collectionName}/${idValue}`);
   }
 }
 
 /**
- * Write a change record to the AuditLogs collection (backward compatible wrapper)
+ * Write a change record to the AuditLogs collection
  */
 export async function writeAuditLog(
   userName: string,
@@ -680,7 +334,6 @@ export async function writeAuditLog(
   
   const finalEmail = loginEmail || sessionStorage.getItem('selected_login_email') || auth.currentUser?.email || '';
   const finalOperator = operatorName || sessionStorage.getItem('selected_operator_name') || userName || '';
-  const session = getActiveSessionDetails();
   
   const log = {
     audit_id,
@@ -691,25 +344,12 @@ export async function writeAuditLog(
     old_value: String(oldValue),
     new_value: String(newValue),
     created_at: now,
-    updated_at: now,
     login_email: finalEmail,
     operator_name: finalOperator,
     action_result: actionResult,
-    ip_or_session_id: ipOrSessionId || sessionStorage.getItem('selected_session_id') || 'local-session',
-    account_uid: session.account_uid,
-    operator_id: session.operator_id,
-    role: session.role,
-    site_id: session.site_id,
-    recorded_by: session.recorded_by
+    ip_or_session_id: ipOrSessionId || sessionStorage.getItem('selected_session_id') || 'local-session'
   };
-  
-  // Directly append to database without creating a secondary audit log of an audit log
-  const collectionName = COLLECTION_MAPPING['AuditLogs'] || 'auditLogs';
-  try {
-    await setDoc(doc(db, collectionName, audit_id), log);
-  } catch (error) {
-    console.error('Failed to write audit log directly:', error);
-  }
+  await appendSheetRow('AuditLogs', log);
 }
 
 /**
@@ -791,26 +431,6 @@ async function seedCollection(sheetName: keyof typeof SCHEMA) {
 export async function initializeSystemData(operatorName: string, loginEmail: string): Promise<void> {
   console.log('[Smart Guard DB] Explicit "Initialize System Data" action triggered.');
   
-  if (isMockModeActive()) {
-    const collectionsToSeed: (keyof typeof SCHEMA)[] = ['Users', 'ParkingCards', 'PatrolPoints', 'Keys', 'SystemSettings'];
-    for (const sheetName of collectionsToSeed) {
-      const key = `smart_guard_db_${sheetName}`;
-      localStorage.removeItem(key);
-      getLocalStorageData(sheetName);
-    }
-    await writeAuditLog(
-      operatorName,
-      'เริ่มสร้างค่าระบบเริ่มต้น (Initialize System Data)',
-      'SystemSettings',
-      'SYSTEM_INIT',
-      '',
-      'จัดเตรียมข้อมูลโครงสร้างพื้นฐานสำหรับระบบเป็นราย collection ที่ว่างอยู่โดยไม่เขียนทับข้อมูลจริง',
-      loginEmail,
-      operatorName
-    );
-    return;
-  }
-
   const collectionsToSeed: (keyof typeof SCHEMA)[] = ['Users', 'ParkingCards', 'PatrolPoints', 'Keys', 'SystemSettings'];
   
   for (const sheetName of collectionsToSeed) {

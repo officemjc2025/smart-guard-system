@@ -40,19 +40,7 @@ export const db = getFirestore(
   'ai-studio-smartguardsystem-e2a4586d-b4ef-4694-9036-1c64c9967e71'
 );
 
-const storageBucket = String(firebaseConfig.storageBucket || '').trim();
-
-if (!storageBucket) {
-  throw new Error('Firebase storageBucket is missing');
-}
-
-export const storage = getStorage(app, `gs://${storageBucket}`);
-
-console.log('[Smart Guard Storage Config]', {
-  configuredBucket: storageBucket,
-  runtimeBucket: storage.app.options.storageBucket,
-  origin: window.location.origin
-});
+export const storage = getStorage(app);
 
 export const provider = new GoogleAuthProvider();
 
@@ -122,23 +110,7 @@ export const onAuthStateChange = (
 
 export const isSandboxLoginEnabled = (): boolean => {
   const env = (import.meta as any).env;
-  
-  // Production environment check: strictly block sandbox login in production mode
-  if (env?.PROD === true || env?.MODE === 'production') {
-    return false;
-  }
-
-  const isBypassEnabled = env?.VITE_ENABLE_SANDBOX_LOGIN === 'true' || env?.VITE_ENABLE_SANDBOX_LOGIN === true;
-  
-  // Determine if running inside preview frame or local dev
-  const isPreview = typeof window !== 'undefined' && (
-    window.location.hostname.includes('localhost') || 
-    window.location.hostname.includes('127.0.0.1') || 
-    window.location.hostname.includes('ais-dev') || 
-    window.self !== window.top
-  );
-
-  return (isBypassEnabled || isPreview) && env?.DEV === true;
+  return env?.DEV === true && env?.VITE_ENABLE_SANDBOX_LOGIN === 'true';
 };
 
 export const bypassLoginForSandbox = async () => {

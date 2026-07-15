@@ -8,8 +8,7 @@ import {
   Key, Search, Check, Camera, RefreshCw, AlertTriangle
 } from 'lucide-react';
 import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '../googleApi';
-import { KeyLogRecord, UnitRecord } from '../types';
-import { UnitSearchSelect } from './UnitSearchSelect';
+import { KeyLogRecord } from '../types';
 import SignaturePad from './SignaturePad';
 import ConfirmModal from './ConfirmModal';
 
@@ -27,26 +26,14 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
   const [keyToReturn, setKeyToReturn] = useState<KeyLogRecord | null>(null);
 
   // Checkout Form State
-  const [checkoutForm, setCheckoutForm] = useState<{
-    room_number: string;
-    key_type: 'ห้องพัก' | 'ห้องไฟฟ้า' | 'ห้องเครื่องจักร' | 'พื้นที่ส่วนกลาง' | 'อื่นๆ';
-    borrower_name: string;
-    borrower_phone: string;
-    borrower_id_number: string;
-    purpose: string;
-    note: string;
-    target_unit_id?: string;
-    unit_lookup_status?: 'matched' | 'manual';
-  }>({
+  const [checkoutForm, setCheckoutForm] = useState({
     room_number: '',
     key_type: 'ห้องพัก' as any,
     borrower_name: '',
     borrower_phone: '',
     borrower_id_number: '',
     purpose: '',
-    note: '',
-    target_unit_id: '',
-    unit_lookup_status: undefined
+    note: ''
   });
   const [borrowerPhoto, setBorrowerPhoto] = useState<string>('');
   const [signatureImage, setSignatureImage] = useState<string>('');
@@ -128,8 +115,6 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
         signature_image_url: sigUrl,
         borrower_photo_url: bPhotoUrl,
         status: 'ถูกเบิก',
-        target_unit_id: checkoutForm.target_unit_id,
-        unit_lookup_status: checkoutForm.unit_lookup_status,
         note: checkoutForm.note,
         created_at: nowStr,
         updated_at: nowStr
@@ -159,9 +144,7 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
         borrower_phone: '',
         borrower_id_number: '',
         purpose: '',
-        note: '',
-        target_unit_id: '',
-        unit_lookup_status: undefined
+        note: ''
       });
       setBorrowerPhoto('');
       setSignatureImage('');
@@ -273,30 +256,14 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
               
               {/* Room number */}
               <div className="flex flex-col gap-1.5">
-                <UnitSearchSelect
+                <label className="text-xs font-bold text-slate-600">เลขห้องพัก / พื้นที่กุญแจ *</label>
+                <input
+                  type="text"
                   value={checkoutForm.room_number}
-                  selectedUnitId={checkoutForm.target_unit_id}
-                  allowManualEntry={true}
-                  label="เลขห้องพัก / พื้นที่กุญแจ"
-                  placeholder="ค้นหาห้องพักอาศัย หรือพิมพ์พื้นที่ส่วนกลาง..."
-                  required={true}
-                  onSelect={(unit) => {
-                    if (unit) {
-                      setCheckoutForm(prev => ({
-                        ...prev,
-                        room_number: unit.room_number,
-                        target_unit_id: unit.unit_id || '',
-                        unit_lookup_status: unit.unit_id ? 'matched' : 'manual'
-                      }));
-                    } else {
-                      setCheckoutForm(prev => ({
-                        ...prev,
-                        room_number: '',
-                        target_unit_id: '',
-                        unit_lookup_status: undefined
-                      }));
-                    }
-                  }}
+                  onChange={(e) => setCheckoutForm(prev => ({ ...prev, room_number: e.target.value }))}
+                  placeholder="เช่น ห้องไฟฟ้า M, 501/22"
+                  className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold"
+                  required
                 />
               </div>
 

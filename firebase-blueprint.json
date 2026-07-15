@@ -272,55 +272,12 @@
         "updated_at": { "type": "string", "format": "date-time" }
       },
       "required": ["setting_key", "setting_value"]
-    },
-    "Account": {
-      "title": "Account",
-      "description": "System access login accounts associated with a unique login email",
-      "type": "object",
-      "properties": {
-        "uid": { "type": "string" },
-        "login_email": { "type": "string" },
-        "account_name": { "type": "string" },
-        "account_type": { "type": "string", "enum": ["Guard", "ShiftLeader", "Manager", "Admin"] },
-        "site_id": { "type": "string" },
-        "status": { "type": "string", "enum": ["Active", "Inactive"] },
-        "created_at": { "type": "string", "format": "date-time" },
-        "updated_at": { "type": "string", "format": "date-time" }
-      },
-      "required": ["uid", "login_email", "account_name", "account_type", "site_id", "status"]
-    },
-    "Operator": {
-      "title": "Operator",
-      "description": "Human operator profiles performing security tasks",
-      "type": "object",
-      "properties": {
-        "operator_id": { "type": "string" },
-        "operator_name": { "type": "string" },
-        "phone": { "type": "string" },
-        "role": { "type": "string", "enum": ["Guard", "Shift Leader", "Manager", "Admin"] },
-        "shift": { "type": "string" },
-        "login_email": { "type": "string" },
-        "account_uid": { "type": "string" },
-        "site_id": { "type": "string" },
-        "status": { "type": "string", "enum": ["Active", "Inactive"] },
-        "created_at": { "type": "string", "format": "date-time" },
-        "updated_at": { "type": "string", "format": "date-time" }
-      },
-      "required": ["operator_id", "operator_name", "role", "login_email", "account_uid", "site_id", "status"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },
       "description": "Operator list and user details"
-    },
-    "/accounts/{uid}": {
-      "schema": { "$ref": "#/entities/Account" },
-      "description": "Google accounts mapped to system types"
-    },
-    "/operators/{operatorId}": {
-      "schema": { "$ref": "#/entities/Operator" },
-      "description": "Human operators associated with google login accounts"
     },
     "/parkingCards/{cardId}": {
       "schema": { "$ref": "#/entities/ParkingCard" },

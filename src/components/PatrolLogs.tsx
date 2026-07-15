@@ -6,10 +6,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, ShieldAlert, Camera, MapPin, Check, 
-  Clock, AlertTriangle, RefreshCw, Eye, X, FileText, Info
+  Clock, AlertTriangle, RefreshCw, Eye
 } from 'lucide-react';
 import { readSheet, appendSheetRow, uploadImageToDrive } from '../googleApi';
-import { PatrolLogRecord, PatrolPointRecord, IncidentReportRecord } from '../types';
+import { PatrolLogRecord, PatrolPointRecord } from '../types';
 import QRScanner from './QRScanner';
 
 interface PatrolLogsProps {
@@ -29,17 +29,10 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [scannedPoint, setScannedPoint] = useState<PatrolPointRecord | null>(null);
 
-  // Point Specific History State (For Patrol Monitor)
-  const [selectedPointForHistory, setSelectedPointForHistory] = useState<PatrolPointRecord | null>(null);
-
-  // Form State - Upgraded with Sprint 1 specifications
+  // Form State
   const [shiftType, setShiftType] = useState<'เช้า' | 'กลางคืน'>('เช้า');
   const [patrolStatus, setPatrolStatus] = useState<'ปกติ' | 'ผิดปกติ' | 'ต้องติดตาม'>('ปกติ');
-  const [patrolDetail, setPatrolDetail] = useState('');
   const [abnormalDetail, setAbnormalDetail] = useState('');
-  const [followUpNote, setFollowUpNote] = useState('');
-  const [actionTaken, setActionTaken] = useState('');
-  const [createIncident, setCreateIncident] = useState(true);
   const [patrolPhoto, setPatrolPhoto] = useState('');
   const [abnormalPhoto, setAbnormalPhoto] = useState('');
 
@@ -94,16 +87,6 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
     e.preventDefault();
     if (!scannedPoint) return;
 
-    if (patrolStatus !== 'ปกติ' && !abnormalDetail) {
-      setStatusMessage({ type: 'error', text: '❌ กรุณาระบุรายละเอียดข้อบกพร่อง/เหตุผิดปกติ' });
-      return;
-    }
-
-    if (patrolStatus === 'ต้องติดตาม' && !followUpNote) {
-      setStatusMessage({ type: 'error', text: '❌ กรุณาระบุแผนงานติดตามผลสำหรับจุดตรวจที่มีสถานะติดตาม' });
-      return;
-    }
-
     setLoading(true);
     setStatusMessage(null);
 
@@ -120,11 +103,7 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
 
       const nowStr = new Date().toISOString();
       const patrolLogId = 'PL' + Math.floor(Math.random() * 1000000);
-      const incidentId = 'INC' + Math.floor(Math.random() * 1000000);
 
-      const triggerIncident = patrolStatus !== 'ปกติ' && createIncident;
-
-      // Construct dynamic checkin record
       const newLog: PatrolLogRecord = {
         patrol_log_id: patrolLogId,
         patrol_point_id: scannedPoint.patrol_point_id,
@@ -136,15 +115,7 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
         status: patrolStatus,
         abnormal_detail: patrolStatus !== 'ปกติ' ? abnormalDetail : '',
         incident_photo_url: patrolStatus !== 'ปกติ' ? incidentPhotoUrl : '',
-        note: patrolStatus === 'ปกติ' ? patrolDetail : '',
-        created_at: nowStr,
-        // Added fields from specifications
-        patrol_detail: patrolDetail || '',
-        follow_up_note: patrolStatus === 'ต้องติดตาม' ? followUpNote : '',
-        action_taken: patrolStatus !== 'ปกติ' ? actionTaken : '',
-        requires_follow_up: patrolStatus === 'ต้องติดตาม',
-        incident_created: triggerIncident,
-        source_incident_id: triggerIncident ? incidentId : ''
+        created_at: nowStr
       };
 
       await appendSheetRow('PatrolLogs', newLog);
@@ -157,46 +128,34 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
         module_name: 'PatrolLogs',
         record_id: patrolLogId,
         old_value: '',
-        new_value: `${scannedPoint.point_name} [สถานะ: ${patrolStatus}]`,
+        new_value: `${scannedPoint.point_name} [${patrolStatus}]`,
         created_at: nowStr
       });
 
-      // If abnormal/follow-up and create_incident is selected, automatically register an Incident Report
-      if (triggerIncident) {
-        const incidentDesc = `[รายงานตรวจจุด: ${scannedPoint.point_name}] พบเหตุผิดปกติ: ${abnormalDetail}${actionTaken ? ` | แก้ไขเบื้องต้น: ${actionTaken}` : ''}${followUpNote ? ` | ข้อเสนอแนะติดตาม: ${followUpNote}` : ''}`;
-        
+      // If abnormal, we can automatically trigger an Incident Report!
+      if (patrolStatus !== 'ปกติ') {
+        const incidentId = 'INC' + Math.floor(Math.random() * 1000000);
         await appendSheetRow('IncidentReports', {
           incident_id: incidentId,
           incident_datetime: nowStr,
           location: scannedPoint.point_name,
-          incident_type: 'เหตุผิดปกติจากการเดินตรวจ',
-          description: incidentDesc,
+          incident_type: 'อุปกรณ์ชำรุด',
+          description: `แจ้งเหตุผิดปกติจากการเดินตรวจ: ${abnormalDetail}`,
           photo_url: incidentPhotoUrl || mainPhotoUrl,
           reported_by: guardName,
           shift_leader: guardName,
           status: 'แจ้งแล้ว',
           created_at: nowStr,
-          updated_at: nowStr,
-          source_patrol_log_id: patrolLogId,
-          patrol_point_id: scannedPoint.patrol_point_id
+          updated_at: nowStr
         });
       }
 
-      setStatusMessage({ 
-        type: 'success', 
-        text: `บันทึกเช็คอินจุดตรวจ "${scannedPoint.point_name}" สำเร็จเสร็จสิ้น! ${triggerIncident ? `(ส่งแจ้งเหตุใบงาน ${incidentId} อัตโนมัติแล้ว)` : ''}` 
-      });
-
-      // Reset
+      setStatusMessage({ type: 'success', text: `บันทึกเช็คอินจุดตรวจ "${scannedPoint.point_name}" เรียบร้อยดี!` });
       setScannedPoint(null);
       setPatrolPhoto('');
       setAbnormalPhoto('');
       setAbnormalDetail('');
-      setPatrolDetail('');
-      setFollowUpNote('');
-      setActionTaken('');
       setPatrolStatus('ปกติ');
-      setCreateIncident(true);
     } catch (err: any) {
       console.error(err);
       setStatusMessage({ type: 'error', text: `เกิดข้อผิดพลาด: ${err.message}` });
@@ -205,14 +164,9 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
     }
   };
 
-  // Helper calculations for patrol status overview
+  // Helper calculation for patrol status overview
   const todayStr = new Date().toISOString().split('T')[0];
   const logsToday = patrolLogs.filter(l => l.checkin_time.startsWith(todayStr));
-
-  // Point Specific History filter
-  const pointHistoryLogs = selectedPointForHistory
-    ? patrolLogs.filter(l => l.patrol_point_id === selectedPointForHistory.patrol_point_id)
-    : [];
 
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col gap-5 px-1 pb-10">
@@ -266,7 +220,7 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
 
               <button
                 onClick={() => setShowQRScanner(!showQRScanner)}
-                className="w-full max-w-xs h-[60px] bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-sm active:scale-95 cursor-pointer text-sm flex justify-center items-center gap-2"
+                className="w-full max-w-xs py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-sm active:scale-95 cursor-pointer text-sm flex justify-center items-center gap-2"
               >
                 <Camera className="w-5 h-5" />
                 {showQRScanner ? 'ปิดระบบสแกน' : 'เริ่มสแกน QR Code'}
@@ -298,17 +252,17 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
               </div>
             </div>
           ) : (
-            /* POINT SCANNED FORM - UPGRADED SIZING */
-            <div className="border-2 border-indigo-200 rounded-2xl p-6 bg-indigo-50/30 flex flex-col gap-5">
-              <div className="flex justify-between items-start pb-4 border-b border-indigo-100">
+            /* POINT SCANNED FORM */
+            <div className="border border-indigo-200 rounded-xl p-5 bg-indigo-50/30 flex flex-col gap-5">
+              <div className="flex justify-between items-start pb-3 border-b border-indigo-100">
                 <div>
-                  <span className="text-xs font-black text-indigo-600 uppercase tracking-wide block">ตำแหน่งยืนยันพิกัดสำเร็จ</span>
-                  <h3 className="text-[19px] font-black text-slate-800 leading-tight">{scannedPoint.point_name}</h3>
-                  <p className="text-xs text-slate-500 font-bold mt-0.5">{scannedPoint.location_detail}</p>
+                  <span className="text-xs font-bold text-indigo-600 uppercase">ตำแหน่งยืนยันพิกัดสำเร็จ</span>
+                  <h3 className="text-lg font-black text-slate-800">{scannedPoint.point_name}</h3>
+                  <p className="text-xs text-slate-500 font-medium">{scannedPoint.location_detail}</p>
                 </div>
                 <button
                   onClick={() => setScannedPoint(null)}
-                  className="text-xs text-slate-500 font-extrabold hover:text-slate-800 cursor-pointer border border-slate-300 bg-white px-2.5 py-1.5 rounded-lg shrink-0"
+                  className="text-xs text-slate-500 font-bold hover:text-slate-800 cursor-pointer"
                 >
                   สแกนจุดอื่น
                 </button>
@@ -318,11 +272,11 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {/* Shift type */}
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-[15px] font-bold text-slate-700">กะการทำงาน *</label>
+                    <label className="text-xs font-bold text-slate-600">กะการทำงาน</label>
                     <select
                       value={shiftType}
                       onChange={(e) => setShiftType(e.target.value as any)}
-                      className="p-4 border-2 border-slate-200 bg-white rounded-xl text-[17px] font-semibold outline-none focus:border-indigo-600"
+                      className="p-3 border border-slate-300 bg-white rounded-xl text-sm font-semibold"
                     >
                       <option value="เช้า">☀️ กะเช้า (06:00 - 18:00)</option>
                       <option value="กลางคืน">🌙 กะกลางคืน (18:00 - 06:00)</option>
@@ -331,14 +285,14 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
 
                   {/* Status selection */}
                   <div className="flex flex-col gap-1.5">
-                    <label className="text-[15px] font-bold text-slate-700">ประเมินสถานะความปลอดภัยจุดตรวจ *</label>
+                    <label className="text-xs font-bold text-slate-600">ประเมินความปลอดภัยจุดตรวจ</label>
                     <div className="grid grid-cols-3 gap-2">
                       <button
                         type="button"
                         onClick={() => setPatrolStatus('ปกติ')}
-                        className={`h-[56px] text-sm font-bold rounded-xl border-2 text-center transition-all cursor-pointer flex items-center justify-center ${
+                        className={`py-2 px-1 text-xs font-bold rounded-xl border text-center transition-all cursor-pointer ${
                           patrolStatus === 'ปกติ' 
-                            ? 'bg-emerald-100 border-emerald-500 text-emerald-800 font-black' 
+                            ? 'bg-emerald-100 border-emerald-400 text-emerald-800 font-extrabold' 
                             : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                         }`}
                       >
@@ -347,9 +301,9 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                       <button
                         type="button"
                         onClick={() => setPatrolStatus('ผิดปกติ')}
-                        className={`h-[56px] text-sm font-bold rounded-xl border-2 text-center transition-all cursor-pointer flex items-center justify-center ${
+                        className={`py-2 px-1 text-xs font-bold rounded-xl border text-center transition-all cursor-pointer ${
                           patrolStatus === 'ผิดปกติ' 
-                            ? 'bg-red-100 border-red-500 text-red-800 font-black' 
+                            ? 'bg-red-100 border-red-400 text-red-800 font-extrabold' 
                             : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                         }`}
                       >
@@ -358,9 +312,9 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                       <button
                         type="button"
                         onClick={() => setPatrolStatus('ต้องติดตาม')}
-                        className={`h-[56px] text-sm font-bold rounded-xl border-2 text-center transition-all cursor-pointer flex items-center justify-center ${
+                        className={`py-2 px-1 text-xs font-bold rounded-xl border text-center transition-all cursor-pointer ${
                           patrolStatus === 'ต้องติดตาม' 
-                            ? 'bg-amber-100 border-amber-500 text-amber-800 font-black' 
+                            ? 'bg-amber-100 border-amber-400 text-amber-800 font-extrabold' 
                             : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                         }`}
                       >
@@ -370,76 +324,22 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                   </div>
                 </div>
 
-                {/* Normal / General detail note input */}
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[15px] font-bold text-slate-700">บันทึกรายละเอียดตรวจการณ์ทั่วไป (รอบตรวจทั่วไป)</label>
-                  <textarea
-                    value={patrolDetail}
-                    onChange={(e) => setPatrolDetail(e.target.value)}
-                    placeholder="ระบุ เช่น สภาพโดยทั่วไปปกติเรียบร้อยดี, ล็อคประตูตู้ไฟแล้ว..."
-                    className="p-4 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-[17px] bg-white h-[90px]"
-                  />
-                </div>
-
-                {/* Dynamic Fields for Abnormal / Follow-up Statuses */}
                 {patrolStatus !== 'ปกติ' && (
-                  <div className="flex flex-col gap-4 border border-red-200 bg-red-50/40 p-5 rounded-2xl">
-                    <span className="text-xs font-black text-red-800 uppercase tracking-wider flex items-center gap-1">
-                      <AlertTriangle className="w-4 h-4 text-red-600" />
-                      รายงานตรวจพบข้อบกพร่อง / ปัญหาผิดปกติพิกัดตรวจ
-                    </span>
-
+                  <div className="flex flex-col gap-3 border border-red-100 bg-red-50/50 p-4 rounded-xl">
                     <div className="flex flex-col gap-1.5">
-                      <label className="text-[15px] font-bold text-red-800">ระบุรายละเอียดความผิดปกติชำรุด *</label>
+                      <label className="text-xs font-bold text-red-800">ระบุรายละเอียดความผิดปกติ *</label>
                       <textarea
                         value={abnormalDetail}
                         onChange={(e) => setAbnormalDetail(e.target.value)}
-                        placeholder="เช่น พบน้ำซึมจากเพดานห้องใกล้ตู้สายส่งสัญญาณ, ตู้คีย์ล็อคไม่ได้..."
-                        className="p-4 border-2 border-red-200 rounded-xl outline-none focus:border-red-500 text-[17px] bg-white"
+                        placeholder="เช่น พบประกายไฟกะพริบจากสะพานไฟตัวคุม, แม่กุญแจโดนงัดแงะชำรุด..."
+                        className="p-3 border-2 border-red-200 rounded-xl outline-none focus:border-red-500 text-sm bg-white"
                         rows={3}
                         required
                       />
                     </div>
 
                     <div className="flex flex-col gap-1.5">
-                      <label className="text-[15px] font-bold text-slate-700">บันทึกการดำเนินการแก้ไขเบื้องต้นแล้ว (Action Taken)</label>
-                      <textarea
-                        value={actionTaken}
-                        onChange={(e) => setActionTaken(e.target.value)}
-                        placeholder="ระบุ เช่น นำกรวยส้มมากั้นเขตและปิดวาล์วน้ำหลักเพื่อลดการรั่วไหลซึมชั่วคราว..."
-                        className="p-4 border-2 border-slate-200 rounded-xl outline-none focus:border-red-500 text-[17px] bg-white h-[86px]"
-                      />
-                    </div>
-
-                    {patrolStatus === 'ต้องติดตาม' && (
-                      <div className="flex flex-col gap-1.5 border-t border-red-200/50 pt-3.5">
-                        <label className="text-[15px] font-bold text-amber-800">บันทึกแผนและข้อความติดตามผล (Follow-up Action Note) *</label>
-                        <textarea
-                          value={followUpNote}
-                          onChange={(e) => setFollowUpNote(e.target.value)}
-                          placeholder="แผนงานติดตามผล เช่น ต้องประสานงานช่างอาคารมาเปลี่ยนอะไหล่สายท่อรั่วในวันถัดไป..."
-                          className="p-4 border-2 border-amber-300 rounded-xl outline-none focus:border-amber-500 text-[17px] bg-white"
-                          rows={2}
-                          required
-                        />
-                      </div>
-                    )}
-
-                    <div className="flex items-center gap-2.5 mt-1 p-1 bg-white border border-red-200/50 rounded-xl p-3 shadow-sm">
-                      <input
-                        type="checkbox"
-                        id="auto-incident-checkbox"
-                        checked={createIncident}
-                        onChange={(e) => setCreateIncident(e.target.checked)}
-                        className="w-5 h-5 accent-indigo-600 rounded cursor-pointer shrink-0"
-                      />
-                      <label htmlFor="auto-incident-checkbox" className="text-xs font-black text-slate-700 cursor-pointer">
-                        🚨 สร้างใบแจ้งเหตุส่งต่อศูนย์ควบคุมหลักโดยอัตโนมัติ (Create Incident Report)
-                      </label>
-                    </div>
-
-                    <div className="flex flex-col gap-1.5 mt-1">
-                      <label className="text-[15px] font-bold text-red-800">ถ่ายรูปประกอบความชำรุดชำรุด (เพื่อส่งใบแจ้งเหตุ)</label>
+                      <label className="text-xs font-bold text-red-800">ถ่ายรูปประกอบความชำรุดชำรุด (ไม่บังคับ)</label>
                       <input
                         type="file"
                         accept="image/*"
@@ -450,14 +350,14 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                       />
                       <label
                         htmlFor="abnormal-photo"
-                        className="flex flex-col items-center justify-center h-28 border-2 border-dashed border-red-300 bg-white rounded-xl cursor-pointer hover:bg-slate-50 transition-all"
+                        className="flex flex-col items-center justify-center h-24 border-2 border-dashed border-red-300 bg-white rounded-lg cursor-pointer"
                       >
                         {abnormalPhoto ? (
-                          <img src={abnormalPhoto} alt="Abnormal report" className="h-full w-full object-cover rounded-xl" />
+                          <img src={abnormalPhoto} alt="Abnormal report" className="h-full w-full object-cover rounded-lg" />
                         ) : (
                           <div className="flex flex-col items-center gap-1 text-red-400">
                             <Camera className="w-6 h-6" />
-                            <span className="text-[11px] font-bold">กดเพื่อถ่ายรูปภาพยืนยันปัญหา</span>
+                            <span className="text-[10px] font-bold">กดเพื่อถ่ายรูปภาพยืนยัน</span>
                           </div>
                         )}
                       </label>
@@ -466,8 +366,8 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                 )}
 
                 {/* Primary Patrol Photo */}
-                <div className="flex flex-col gap-1.5 bg-slate-50 p-4 rounded-2xl border border-slate-200">
-                  <span className="text-[15px] font-bold text-slate-700">ถ่ายรูปพยานหลักฐานจุดตรวจเพื่อเช็คอินยืนยันพิกัด</span>
+                <div className="flex flex-col gap-1.5 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                  <span className="text-xs font-bold text-slate-600">ถ่ายรูปจุดตรวจพัสดุ/ความสงบเรียบร้อยเพื่อเช็คอิน</span>
                   <input
                     type="file"
                     accept="image/*"
@@ -478,14 +378,14 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                   />
                   <label
                     htmlFor="patrol-main-photo"
-                    className="flex flex-col items-center justify-center h-28 border-2 border-dashed border-slate-300 bg-white rounded-xl cursor-pointer hover:bg-slate-50 transition-all"
+                    className="flex flex-col items-center justify-center h-28 border-2 border-dashed border-slate-300 bg-white rounded-lg cursor-pointer"
                   >
                     {patrolPhoto ? (
-                      <img src={patrolPhoto} alt="Patrol checkin" className="h-full w-full object-cover rounded-xl" />
+                      <img src={patrolPhoto} alt="Patrol checkin" className="h-full w-full object-cover rounded-lg" />
                     ) : (
                       <div className="flex flex-col items-center gap-1 text-slate-400">
                         <Camera className="w-6 h-6" />
-                        <span className="text-xs font-bold">กดถ่ายภาพพิกัดและพัสดุสิ่งของโดยรอบ</span>
+                        <span className="text-xs font-bold">กดถ่ายภาพเพื่อบันทึกพยานหลักฐาน</span>
                       </div>
                     )}
                   </label>
@@ -494,9 +394,9 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full h-[60px] flex items-center justify-center bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-sm active:scale-95 disabled:opacity-50 cursor-pointer text-[17px]"
+                  className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow-sm active:scale-95 disabled:opacity-50 cursor-pointer text-sm"
                 >
-                  {loading ? 'กำลังเชื่อมโยงโครงข่ายและบันทึก...' : '💾 บันทึกสแกนตรวจจุดสำเร็จเสร็จสิ้น'}
+                  {loading ? 'กำลังบันทึกข้อมูลและรายงาน...' : '💾 บันทึกสแกนตรวจจุดสำเร็จเสร็จสิ้น'}
                 </button>
               </form>
             </div>
@@ -509,13 +409,12 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
             <h2 className="text-lg font-black text-slate-800">สรุปความเรียบร้อยรอบพื้นที่ประจำวัน (วันนี้)</h2>
             <button
               onClick={fetchInitialPatrolData}
-              className="p-2 border border-slate-200 hover:border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors shrink-0"
+              className="p-2 border border-slate-200 hover:border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors"
             >
               <RefreshCw className="w-4 h-4 text-slate-600" />
             </button>
           </div>
 
-          {/* Grid Layout of Patrol Points */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {patrolPoints.map(point => {
               // Find latest log for this point today
@@ -526,43 +425,32 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
               return (
                 <div 
                   key={point.patrol_point_id}
-                  onClick={() => setSelectedPointForHistory(point)}
-                  className={`border-2 rounded-2xl p-5 flex flex-col justify-between min-h-[150px] shadow-sm relative overflow-hidden transition-all cursor-pointer hover:shadow-md ${
+                  className={`border rounded-2xl p-5 flex flex-col justify-between min-h-36 shadow-sm relative overflow-hidden transition-all ${
                     isChecked 
                       ? lastLog?.status === 'ปกติ' 
-                        ? 'bg-emerald-50/50 border-emerald-300 hover:border-emerald-400'
-                        : lastLog?.status === 'ต้องติดตาม'
-                          ? 'bg-amber-50/40 border-amber-300 hover:border-amber-400'
-                          : 'bg-red-50/40 border-red-300 hover:border-red-400'
+                        ? 'bg-emerald-50/50 border-emerald-200 hover:border-emerald-300'
+                        : 'bg-red-50/40 border-red-200 hover:border-red-300'
                       : 'bg-slate-50/50 border-slate-200 hover:border-slate-300'
                   }`}
                 >
                   <div>
-                    <span className="text-[10px] font-black text-slate-400 block tracking-wider uppercase font-mono">{point.patrol_point_id}</span>
+                    <span className="text-[10px] font-bold text-slate-400 block tracking-wider uppercase font-mono">{point.patrol_point_id}</span>
                     <h3 className="text-sm font-black text-slate-800 mt-1 line-clamp-1">{point.point_name}</h3>
-                    <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5 font-semibold">{point.location_detail}</p>
+                    <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{point.location_detail}</p>
                   </div>
 
                   <div className="flex justify-between items-center mt-3 border-t border-slate-100 pt-2.5">
-                    <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                       isChecked 
                         ? lastLog?.status === 'ปกติ' 
                           ? 'bg-emerald-100 text-emerald-800' 
-                          : lastLog?.status === 'ต้องติดตาม'
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-red-100 text-red-800'
+                          : 'bg-red-100 text-red-800'
                         : 'bg-slate-100 text-slate-500'
                     }`}>
-                      {isChecked 
-                        ? lastLog?.status === 'ปกติ' 
-                          ? '🟢 ตรวจแล้ว' 
-                          : lastLog?.status === 'ต้องติดตาม'
-                            ? '🟡 ต้องติดตาม'
-                            : '🔴 มีปัญหา' 
-                        : '⚪ รอตรวจ'}
+                      {isChecked ? lastLog?.status === 'ปกติ' ? '🟢 ตรวจแล้ว' : '🔴 มีปัญหา' : '⚪ รอตรวจ'}
                     </span>
                     {isChecked && lastLog && (
-                      <span className="text-[10px] font-mono font-bold text-slate-400">
+                      <span className="text-[10px] font-mono text-slate-400">
                         {new Date(lastLog.checkin_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
                       </span>
                     )}
@@ -572,17 +460,11 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
             })}
           </div>
 
-          {/* Interactive instruction banner */}
-          <div className="bg-indigo-50 border border-indigo-100 p-3.5 rounded-xl text-xs font-semibold text-indigo-800 flex items-center gap-2">
-            <Info className="w-4 h-4 shrink-0" />
-            <span>💡 แตะที่การ์ดจุดตรวจด้านบน เพื่อเปิดประวัติเดินตรวจรายพิกัด และแสดงข้อความติดตามผล รูปภาพ หรือ แผนการดำเนินการอย่างละเอียด</span>
-          </div>
-
-          {/* Hourly logs timeline (Today Global) */}
+          {/* Hourly logs timeline */}
           <div className="border-t border-slate-100 pt-5 mt-3">
             <h3 className="text-sm font-black text-slate-800 mb-4 flex items-center gap-1.5">
               <Clock className="w-4.5 h-4.5 text-slate-500" />
-              รายงานประวัติและพยานการเดินตรวจอาคารล่าสุดของวันนี้ (ภาพรวม)
+              รายงานประวัติและพยานการเดินตรวจอาคารล่าสุด (วันนี้)
             </h3>
 
             {logsToday.length === 0 ? (
@@ -590,48 +472,28 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                 ยังไม่มีการตรวจตราจุดตรวจในรอบวันปัจจุบัน
               </div>
             ) : (
-              <div className="flex flex-col gap-2.5 max-h-72 overflow-y-auto pr-1">
+              <div className="flex flex-col gap-2.5 max-h-72 overflow-y-auto">
                 {logsToday.slice().reverse().map((log, idx) => (
                   <div 
                     key={log.patrol_log_id || idx}
                     className="flex justify-between items-start p-3 bg-slate-50 border border-slate-200 rounded-xl"
                   >
                     <div>
-                      <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-2">
                         <span className="text-xs font-black text-slate-800">{log.point_name}</span>
-                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
-                          log.status === 'ปกติ' 
-                            ? 'bg-emerald-100 text-emerald-800' 
-                            : log.status === 'ต้องติดตาม'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-red-100 text-red-800'
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          log.status === 'ปกติ' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
                         }`}>
                           {log.status}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500 font-bold mt-0.5">
-                        โดย: <span className="text-slate-700 font-extrabold">{log.guard_name}</span> • กะ: {log.shift_type}
+                      <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                        โดย รปภ: <span className="font-bold">{log.guard_name}</span> • กะ: {log.shift_type}
                       </p>
-                      
-                      {log.patrol_detail && (
-                        <p className="text-[11px] text-slate-600 bg-white p-2 border border-slate-100 rounded-lg mt-1 font-medium leading-relaxed">
-                          📝 ตรวจทั่วไป: {log.patrol_detail}
-                        </p>
-                      )}
-
                       {log.abnormal_detail && (
-                        <div className="text-[11px] text-red-800 bg-red-50 p-2.5 rounded-lg border border-red-100 mt-2 font-bold flex flex-col gap-1">
-                          <span>⚠️ พบความชำรุด: {log.abnormal_detail}</span>
-                          {log.action_taken && (
-                            <span className="text-emerald-700 font-semibold">🛠️ แก้ไขเบื้องต้น: {log.action_taken}</span>
-                          )}
-                          {log.follow_up_note && (
-                            <span className="text-amber-700 font-semibold">📌 ติดตาม: {log.follow_up_note}</span>
-                          )}
-                          {log.source_incident_id && (
-                            <span className="text-indigo-600 font-mono text-[10px] uppercase">🚨 ส่งใบแจ้งเหตุเลขที่: {log.source_incident_id}</span>
-                          )}
-                        </div>
+                        <p className="text-[11px] text-red-700 bg-red-50 p-1.5 rounded border border-red-100 mt-1.5 font-bold">
+                          ⚠️ รายละเอียดปัญหา: {log.abnormal_detail}
+                        </p>
                       )}
                     </div>
                     <span className="text-[10px] font-mono font-bold text-slate-400">
@@ -641,148 +503,6 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                 ))}
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* POINT-SPECIFIC HISTORY INTERACTIVE DIALOG */}
-      {selectedPointForHistory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedPointForHistory(null)} />
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-xl z-10 w-full max-w-2xl text-left relative flex flex-col gap-4 max-h-[85vh] overflow-hidden">
-            
-            {/* Header */}
-            <div className="flex justify-between items-start border-b border-slate-100 pb-3">
-              <div>
-                <span className="text-[10px] font-black text-indigo-600 font-mono block tracking-wider uppercase">
-                  รหัสจุดตรวจ: {selectedPointForHistory.patrol_point_id}
-                </span>
-                <h3 className="text-lg font-black text-slate-800">{selectedPointForHistory.point_name}</h3>
-                <p className="text-xs text-slate-500 font-bold mt-0.5">{selectedPointForHistory.location_detail}</p>
-              </div>
-              <button
-                onClick={() => setSelectedPointForHistory(null)}
-                className="p-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-400 hover:text-slate-600 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* List area */}
-            <div className="flex-1 overflow-y-auto flex flex-col gap-3.5 pr-1.5">
-              <span className="text-xs font-black text-slate-400 block">ประวัติการตรวจเช็คอินจุดตรวจนี้ย้อนหลัง</span>
-
-              {pointHistoryLogs.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 border-2 border-dashed border-slate-100 rounded-xl">
-                  ไม่พบข้อมูลประวัติการสแกนเช็คอินย้อนหลังของพิกัดตรวจนี้ในระบบ
-                </div>
-              ) : (
-                pointHistoryLogs.slice().reverse().map((log, idx) => (
-                  <div 
-                    key={log.patrol_log_id || idx}
-                    className={`border p-4 rounded-xl flex flex-col gap-3 ${
-                      log.status === 'ปกติ' 
-                        ? 'bg-slate-50/50 border-slate-200' 
-                        : log.status === 'ต้องติดตาม'
-                          ? 'bg-amber-50/30 border-amber-200'
-                          : 'bg-red-50/30 border-red-200'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start gap-2 flex-wrap">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
-                          log.status === 'ปกติ' 
-                            ? 'bg-emerald-100 text-emerald-800' 
-                            : log.status === 'ต้องติดตาม'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-red-100 text-red-800'
-                        }`}>
-                          {log.status === 'ปกติ' ? '🟢 ตรวจปกติ' : log.status === 'ต้องติดตาม' ? '🟡 แผนติดตาม' : '🔴 พบข้อขัดข้อง'}
-                        </span>
-                        <span className="text-xs font-semibold text-slate-400 font-mono">
-                          {new Date(log.checkin_time).toLocaleString('th-TH')}
-                        </span>
-                      </div>
-                      <span className="text-xs font-bold text-slate-500">
-                        รปภ: <span className="font-extrabold text-slate-700">{log.guard_name}</span> • กะ: {log.shift_type}
-                      </span>
-                    </div>
-
-                    {/* Patrol Detail */}
-                    {log.patrol_detail && (
-                      <p className="text-xs text-slate-600 font-medium leading-relaxed bg-white p-2.5 rounded-lg border border-slate-100">
-                        <strong>📝 ตรวจทั่วไป:</strong> {log.patrol_detail}
-                      </p>
-                    )}
-
-                    {/* Abnormal & incident details */}
-                    {log.status !== 'ปกติ' && (
-                      <div className="p-3 bg-white border border-slate-200/60 rounded-lg flex flex-col gap-2">
-                        {log.abnormal_detail && (
-                          <p className="text-xs text-red-800 font-bold leading-relaxed">
-                            <strong>⚠️ รายละเอียดบกพร่อง:</strong> {log.abnormal_detail}
-                          </p>
-                        )}
-                        {log.action_taken && (
-                          <p className="text-xs text-emerald-700 font-bold leading-relaxed">
-                            <strong>🛠️ การจัดการเบื้องต้น:</strong> {log.action_taken}
-                          </p>
-                        )}
-                        {log.follow_up_note && (
-                          <p className="text-xs text-amber-700 font-bold leading-relaxed">
-                            <strong>📌 แผนงานติดตามผล:</strong> {log.follow_up_note}
-                          </p>
-                        )}
-                        {log.source_incident_id && (
-                          <div className="text-[10px] font-mono text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-1.5 rounded-md inline-block uppercase font-bold self-start mt-1">
-                            🚨 ส่งแจ้งเหตุในระบบย่อย: {log.source_incident_id}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Render Photos if they exist */}
-                    {(log.photo_url || log.incident_photo_url) && (
-                      <div className="grid grid-cols-2 gap-2 mt-1">
-                        {log.photo_url && (
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[10px] text-slate-400 font-bold">📷 รูปยืนยันพิกัด</span>
-                            <img 
-                              src={log.photo_url} 
-                              alt="Patrol main" 
-                              className="h-28 w-full object-cover rounded-lg border border-slate-200 shadow-sm"
-                              referrerPolicy="no-referrer"
-                            />
-                          </div>
-                        )}
-                        {log.incident_photo_url && (
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[10px] text-red-400 font-bold">📸 รูปหลักฐานปัญหา</span>
-                            <img 
-                              src={log.incident_photo_url} 
-                              alt="Patrol incident" 
-                              className="h-28 w-full object-cover rounded-lg border border-red-200 shadow-sm"
-                              referrerPolicy="no-referrer"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="border-t border-slate-100 pt-3 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setSelectedPointForHistory(null)}
-                className="px-5 py-3 border border-slate-200 rounded-xl hover:bg-slate-50 font-bold text-slate-700 cursor-pointer text-sm"
-              >
-                ปิดหน้าต่างประวัติ
-              </button>
-            </div>
           </div>
         </div>
       )}

@@ -3,8 +3,7 @@
   "appId": "1:549875129616:web:9ce24e04265d2312dd5995",
   "apiKey": "AIzaSyAEbvyYh0Q5qWaE3cdYLPAPTnEy8ViopGw",
   "authDomain": "amped-impulse-cdw25.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-smartguardsystem-e2a4586d-b4ef-4694-9036-1c64c9967e71",
-  "storageBucket": "amped-impulse-cdw25.appspot.com",
+  "storageBucket": "amped-impulse-cdw25.firebasestorage.app",
   "messagingSenderId": "549875129616",
   "measurementId": ""
 }

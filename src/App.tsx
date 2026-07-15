@@ -1,1589 +1,934 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  Shield,
-  Clock,
-  Plus,
-  ClipboardList,
-  AlertTriangle,
-  User,
-  Key,
-  Car,
-  Briefcase,
-  Calendar,
-  History,
-  Database,
-  Filter,
-  ChevronRight,
-  RefreshCw
+import { useState, useEffect } from 'react';
+import { 
+  Shield, LogOut, Loader2, Home, Car, Users, Key, 
+  MapPin, AlertTriangle, Search, Settings, ShieldCheck,
+  Smartphone, User, RefreshCw
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  getDocs,
-  orderBy,
-  limit,
-  updateDoc,
-  doc
-} from 'firebase/firestore';
-import { db, buildSiteScopedQuery, createTransactionDoc, runLegacyMigration } from './services/firebase';
-import {
-  AuthenticatedSession,
-  VehicleLog,
-  ContractorLog,
-  KeyLog,
-  PatrolLog,
-  IncidentReport,
-  AuditLog,
-  DailyReport
-} from './types';
+import { 
+  signInWithGoogle,
+  handleRedirectResult,
+  logout, 
+  onAuthStateChange, 
+  bypassLoginForSandbox,
+  isSandboxLoginEnabled,
+  db
+} from './firebase';
+import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { readSheet, appendSheetRow, writeAuditLog } from './googleApi';
+import ConfirmModal from './components/ConfirmModal';
+
+console.log('[Smart Guard Build] v3.1.1 Firebase-only build loaded');
+
+// Determine if running inside preview frame or local dev
+const isDevelopmentPreview = (): boolean => {
+  const hostname = window.location.hostname;
+  return (
+    hostname.includes('localhost') || 
+    hostname.includes('127.0.0.1') || 
+    hostname.includes('ais-dev') || 
+    window.self !== window.top
+  );
+};
+
+// Component Imports
+import Dashboard from './components/Dashboard';
+import VehicleEntryExit from './components/VehicleEntryExit';
+import ContractorLogs from './components/ContractorLogs';
+import KeyLogs from './components/KeyLogs';
+import PatrolLogs from './components/PatrolLogs';
+import IncidentReports from './components/IncidentReports';
+import SearchHistory from './components/SearchHistory';
+import MasterData from './components/MasterData';
+import AdminPanel from './components/AdminPanel';
+
+type TabType = 'dashboard' | 'vehicles' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'history' | 'settings' | 'admin';
 
 export default function App() {
-  // Current session simulation/state
-  const [session, setSession] = useState<AuthenticatedSession>({
-    uid: 'qctgasVxGbWboRJfS9J8DVgR6B32', // Default to Guard
-    email: 'guard-site01@smartguard.com',
-    role: 'guard',
-    siteId: 'site-01',
-    operatorId: 'OP-SITE01-01',
-    operatorName: 'Sgt. Somchai (Guard)',
-    recorded_by: 'Sgt. Somchai (Guard)'
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoadingMessage, setAuthLoadingMessage] = useState<string>('กำลังตรวจสอบบัญชี Google...');
+  const [apiInitializing, setApiInitializing] = useState(false);
+  const [apiReady, setApiReady] = useState(false);
+  const [initError, setInitError] = useState<string | null>(null);
+
+  // Active view state
+  const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+
+  // Identity States
+  const [guardName, setGuardName] = useState(() => sessionStorage.getItem('selected_operator_name') || 'แอดมิน สูงสุด');
+  const [userRole, setUserRole] = useState<'Guard' | 'Shift Leader' | 'Manager' | 'Admin'>(() => {
+    return (sessionStorage.getItem('selected_user_role') as any) || 'Admin';
   });
 
-  const [time, setTime] = useState<string>(new Date().toLocaleTimeString('th-TH'));
-  const [activeTab, setActiveTab] = useState<string>('vehicleLogs');
-  const [errorText, setErrorText] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [siteFilter, setSiteFilter] = useState<string>('all');
+  // Operators List and selectedOperator state
+  const [usersList, setUsersList] = useState<any[]>([]);
+  const [operatorsForEmail, setOperatorsForEmail] = useState<any[]>([]);
+  const [selectedOperator, setSelectedOperator] = useState<any | null>(null);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
 
-  // Transaction Lists state
-  const [vehicleLogs, setVehicleLogs] = useState<VehicleLog[]>([]);
-  const [contractorLogs, setContractorLogs] = useState<ContractorLog[]>([]);
-  const [keyLogs, setKeyLogs] = useState<KeyLog[]>([]);
-  const [patrolLogs, setPatrolLogs] = useState<PatrolLog[]>([]);
-  const [incidentReports, setIncidentReports] = useState<IncidentReport[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
-  const [dailyReports, setDailyReports] = useState<DailyReport[]>([]);
+  // Connection Testing States
+  const [apiTestingStatus, setApiTestingStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
+  const [apiTestDetails, setApiTestDetails] = useState<string | null>(null);
 
-  // Forms inputs state
-  // 1. Vehicle Logs Form
-  const [vehiclePlate, setVehiclePlate] = useState('');
-  const [vehicleType, setVehicleType] = useState('รถยนต์สี่ล้อ');
-  const [driverName, setDriverName] = useState('');
-  const [vehiclePurpose, setVehiclePurpose] = useState('');
-
-  // 2. Contractor Logs Form
-  const [contractorName, setContractorName] = useState('');
-  const [contractorCompany, setContractorCompany] = useState('');
-  const [contractorPurpose, setContractorPurpose] = useState('');
-
-  // 3. Key Logs Form
-  const [keyName, setKeyName] = useState('');
-  const [keyBorrower, setKeyBorrower] = useState('');
-  const [keyPurpose, setKeyPurpose] = useState('');
-
-  // 4. Patrol Logs Form
-  const [patrolCheckpoint, setPatrolCheckpoint] = useState('');
-  const [patrolStatus, setPatrolStatus] = useState<'Pass' | 'Fail' | 'Issue Found'>('Pass');
-  const [patrolNotes, setPatrolNotes] = useState('');
-
-  // 5. Incident Reports Form
-  const [incidentTitle, setIncidentTitle] = useState('');
-  const [incidentDesc, setIncidentDesc] = useState('');
-  const [incidentSeverity, setIncidentSeverity] = useState<'Low' | 'Medium' | 'High'>('Medium');
-  const [incidentImgUrl, setIncidentImgUrl] = useState('');
-
-  // 6. Daily Reports Form
-  const [reportDate, setReportDate] = useState(new Date().toISOString().split('T')[0]);
-  const [reportSummary, setReportSummary] = useState('');
-
-  // Migration States
-  const [migrationDryRun, setMigrationDryRun] = useState(true);
-  const [migrationRunning, setMigrationRunning] = useState(false);
-  const [migrationConsole, setMigrationConsole] = useState<string[]>([]);
-  const [migrationStats, setMigrationStats] = useState<Record<string, { scanned: number; updated: number; skipped: number; failed: number }> | null>(null);
-
-  // Time updater
+  // Initial diagnostics log when API is ready and authenticated
   useEffect(() => {
-    const interval = setInterval(() => {
-      setTime(new Date().toLocaleTimeString('th-TH'));
-    }, 1000);
-    return () => clearInterval(interval);
+    if (!apiReady) return;
+    console.log('[Smart Guard Firestore] Initializing App. Checking Firestore database status...');
+    
+    // Automated ping test to check connection on load
+    const runInitialPing = async () => {
+      setApiTestingStatus('testing');
+      try {
+        console.log('[Smart Guard Firestore] Checking connection to cloud database...');
+        await readSheet('SystemSettings');
+        setApiTestingStatus('success');
+        setApiTestDetails('เชื่อมต่อฐานข้อมูล Firestore สำเร็จ! ระบบฐานข้อมูลและ Firebase Storage ของคุณพร้อมใช้งานแล้ว 100%');
+      } catch (err: any) {
+        console.warn('[Smart Guard Firestore] Health check failed:', err);
+        setApiTestingStatus('failed');
+        setApiTestDetails(err.message || 'ไม่สามารถติดต่อฐานข้อมูล Cloud Firestore ได้ในกะนี้');
+      }
+    };
+    runInitialPing();
+  }, [apiReady]);
+
+  const handleTestApi = async () => {
+    setApiTestingStatus('testing');
+    setApiTestDetails(null);
+    try {
+      console.log('[Smart Guard Firestore] Initiating manual Firestore database test...');
+      await readSheet('SystemSettings');
+      setApiTestingStatus('success');
+      setApiTestDetails('ฐานข้อมูล Firestore ตอบสนองปกติ! สามารถบันทึกประวัติ อัปโหลดรูปภาพ และใช้งานระบบได้ทันที');
+    } catch (err: any) {
+      console.error('[Smart Guard Firestore] Manual check failed:', err);
+      setApiTestingStatus('failed');
+      setApiTestDetails(err.message || 'ไม่สามารถตอบรับจาก Firebase Firestore ได้สำเร็จ');
+    }
+  };
+
+  // Track Firebase Authentication State and Redirect
+  useEffect(() => {
+    let isMounted = true;
+    let unsubscribe: (() => void) | null = null;
+
+    async function runAuthInit() {
+      setAuthLoading(true);
+      setAuthLoadingMessage('กำลังตรวจสอบบัญชี Google...');
+
+      if (!isMounted) return;
+
+      // Complete a pending redirect first so OAuth errors are surfaced.
+      try {
+        await handleRedirectResult();
+      } catch (error: any) {
+        console.error('[Smart Guard Auth] Redirect completion failed:', error);
+        if (isMounted) {
+          setInitError(`การลงชื่อเข้าใช้ด้วย Google ล้มเหลว: ${error?.message || error}`);
+          setAuthLoading(false);
+        }
+      }
+
+      // Subscribe to Auth State changes
+      unsubscribe = onAuthStateChange(async (firebaseUser) => {
+        console.log('[Smart Guard API] Auth state changed:', firebaseUser?.email || 'No user');
+        if (isMounted) {
+          if (firebaseUser) {
+            const sandboxEnabled = isSandboxLoginEnabled();
+            if (firebaseUser.email === 'sandbox@example.com' && !sandboxEnabled) {
+              console.warn('[Smart Guard API] Blocking sandbox user in production!');
+              setUser(null);
+              setAuthLoading(false);
+              setInitError('บัญชีจำลอง (Sandbox) ไม่ได้รับอนุญาตในระบบจริง กรุณาลงชื่อเข้าใช้ด้วยบัญชี Google ส่วนบุคคลหรือองค์กรที่ได้รับอนุญาต');
+              await logout();
+              return;
+            }
+            
+            // Clear just_logged_out flag since we have a valid logged in user now
+            sessionStorage.removeItem('just_logged_out');
+            
+            setUser(firebaseUser);
+            setAuthLoadingMessage('กำลังตรวจสอบสิทธิ์จาก Users Collection...');
+            // Initialize Firestore Database and Storage media store
+            await initFirestoreDatabase();
+          } else {
+            setUser(null);
+            setApiReady(false);
+            setSelectedOperator(null);
+            sessionStorage.removeItem('selected_operator_name');
+            sessionStorage.removeItem('selected_login_email');
+            sessionStorage.removeItem('selected_user_role');
+            setAuthLoading(false);
+          }
+        }
+      });
+    }
+
+    runAuthInit();
+
+    return () => {
+      isMounted = false;
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
   }, []);
 
-  // Fetch all transactions with site isolation check
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
-    setErrorText(null);
-
-    try {
-      const constraints = [orderBy('created_at', 'desc'), limit(50)];
-      
-      // Load based on active tab or reload everything
-      if (activeTab === 'vehicleLogs') {
-        const q = buildSiteScopedQuery('vehicleLogs', session, [orderBy('entry_time', 'desc'), limit(50)]);
-        const snap = await getDocs(q);
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as VehicleLog));
-        setVehicleLogs(data);
-      } else if (activeTab === 'contractorLogs') {
-        const q = buildSiteScopedQuery('contractorLogs', session, [orderBy('entry_time', 'desc'), limit(50)]);
-        const snap = await getDocs(q);
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as ContractorLog));
-        setContractorLogs(data);
-      } else if (activeTab === 'keyLogs') {
-        const q = buildSiteScopedQuery('keyLogs', session, constraints);
-        const snap = await getDocs(q);
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as KeyLog));
-        setKeyLogs(data);
-      } else if (activeTab === 'patrolLogs') {
-        const q = buildSiteScopedQuery('patrolLogs', session, constraints);
-        const snap = await getDocs(q);
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as PatrolLog));
-        setPatrolLogs(data);
-      } else if (activeTab === 'incidentReports') {
-        const q = buildSiteScopedQuery('incidentReports', session, constraints);
-        const snap = await getDocs(q);
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as IncidentReport));
-        setIncidentReports(data);
-      } else if (activeTab === 'dailyReports') {
-        const q = buildSiteScopedQuery('dailyReports', session, constraints);
-        const snap = await getDocs(q);
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as DailyReport));
-        setDailyReports(data);
-      } else if (activeTab === 'auditLogs' && session.role === 'admin') {
-        const q = buildSiteScopedQuery('auditLogs', session, constraints);
-        const snap = await getDocs(q);
-        const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuditLog));
-        setAuditLogs(data);
-      }
-    } catch (err: unknown) {
-      // 11. Adjust Error screen - do not show Firebase authInfo, UID, email or raw JSON
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      
-      // Technical details only logged in development
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Technical Error during Firestore load:", err);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [activeTab, session]);
-
-  // Load data when activeTab or session changes
+  // Load and check roster against current user email once DB is ready
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    async function checkUserRoster() {
+      if (!user || !apiReady) {
+        setOperatorsForEmail([]);
+        return;
+      }
 
-  // Submit functions
-  const handleAddVehicleLog = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!vehiclePlate || !driverName) return;
+      setUsersLoading(true);
+      setAuthLoadingMessage('กำลังตรวจสอบสิทธิ์ด้วย Firestore...');
+      try {
+        const userEmail = user.email || '';
+        console.log('[Smart Guard Auth] Fetching active operator profiles for email:', userEmail);
 
-    try {
-      const now = new Date().toISOString();
-      await createTransactionDoc('vehicleLogs', session, {
-        vehicle_plate: vehiclePlate,
-        vehicle_type: vehicleType,
-        driver_name: driverName,
-        purpose: vehiclePurpose,
-        entry_time: now,
-        exit_time: null,
-        status: 'Entered'
-      });
-      
-      setVehiclePlate('');
-      setDriverName('');
-      setVehiclePurpose('');
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Create vehicle log failed:", err);
+        // One Google account may map to several operators. Query by normalized login_email
+        // instead of assuming the Firestore document id always equals the Firebase Auth UID.
+        const normalizedEmail = userEmail.trim().toLowerCase();
+        const rosterQuery = query(
+          collection(db, 'users'),
+          where('login_email', '==', normalizedEmail),
+          where('status', '==', 'Active')
+        );
+        const rosterSnapshot = await getDocs(rosterQuery);
+        let matches: any[] = rosterSnapshot.docs.map((snapshot) => ({
+          ...snapshot.data(),
+          user_id: snapshot.data().user_id || snapshot.id,
+          __document_id: snapshot.id
+        }));
+
+        if (matches.length === 0) {
+          // Auto-bootstrap only the explicitly configured administrator.
+          const bootstrapAdminEmail = ((import.meta as any).env?.VITE_BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
+          const isBootstrapEmail = (bootstrapAdminEmail && normalizedEmail === bootstrapAdminEmail) ||
+                                   (isSandboxLoginEnabled() && normalizedEmail === 'sandbox@example.com');
+
+          if (isBootstrapEmail) {
+            console.log('[Smart Guard Auth] No profile found. Auto-bootstrapping Master Admin profile...');
+            const userDocRef = doc(db, 'users', user.uid);
+            const adminOp = {
+              user_id: user.uid,
+              login_email: normalizedEmail,
+              operator_name: normalizedEmail === 'sandbox@example.com' ? 'สมชาย แสนดี (Sandbox)' : 'แอดมิน สูงสุด (MJC)',
+              role: 'Admin' as const,
+              shift: 'ทั่วไป',
+              phone: '0899999999',
+              status: 'Active',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            };
+            await setDoc(userDocRef, adminOp);
+            matches = [{ ...adminOp, __document_id: user.uid }];
+
+            await writeAuditLog(
+              adminOp.operator_name,
+              'บูตสแตรปแอดมินระบบเริ่มต้น (System Admin Bootstrap)',
+              'Users',
+              user.uid,
+              '',
+              `สร้างสิทธิ์ผู้ดูแลระบบหลักโดยอัตโนมัติสำหรับอีเมล: ${normalizedEmail}`,
+              normalizedEmail,
+              adminOp.operator_name
+            );
+          }
+        }
+
+        console.log('[Smart Guard Auth] Operator profiles loaded:', matches);
+        setOperatorsForEmail(matches);
+        sessionStorage.setItem('selected_login_email', userEmail);
+
+        if (matches.length > 0) {
+          // Determine the effective role from the highest role assigned to the current login_email
+          const ROLE_PRIORITY: Record<string, number> = {
+            'Admin': 4,
+            'Manager': 3,
+            'Shift Leader': 2,
+            'Guard': 1
+          };
+          let highestRole: 'Guard' | 'Shift Leader' | 'Manager' | 'Admin' = 'Guard';
+          let maxPriority = 0;
+          matches.forEach((m: any) => {
+            const role = m.role || 'Guard';
+            const priority = ROLE_PRIORITY[role] || 1;
+            if (priority > maxPriority) {
+              maxPriority = priority;
+              highestRole = role;
+            }
+          });
+
+          setUserRole(highestRole);
+          sessionStorage.setItem('selected_user_role', highestRole);
+
+          const savedOperatorName = sessionStorage.getItem('selected_operator_name');
+          const matchedSaved = matches.find(m => m.operator_name === savedOperatorName);
+
+          if (matchedSaved) {
+            setSelectedOperator(matchedSaved);
+            setGuardName(matchedSaved.operator_name);
+          } else if (matches.length === 1) {
+            const singleOp = matches[0];
+            setSelectedOperator(singleOp);
+            setGuardName(singleOp.operator_name);
+            sessionStorage.setItem('selected_operator_name', singleOp.operator_name);
+          } else {
+            setSelectedOperator(null);
+          }
+        } else {
+          setSelectedOperator(null);
+        }
+      } catch (err: any) {
+        console.error('[Smart Guard Auth] Verification error:', err);
+        setInitError(`สิทธิ์ของบัญชีของคุณล้มเหลว: ${err.message || err}`);
+      } finally {
+        setUsersLoading(false);
+        setAuthLoading(false);
       }
     }
-  };
 
-  const handleCheckoutVehicle = async (id: string) => {
+    checkUserRoster();
+  }, [user, apiReady]);
+
+  const initFirestoreDatabase = async () => {
+    setApiInitializing(true);
+    setInitError(null);
     try {
-      const now = new Date().toISOString();
-      const docRef = doc(db, 'vehicleLogs', id);
-      await updateDoc(docRef, {
-        status: 'Exited',
-        exit_time: now
-      });
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Checkout vehicle failed:", err);
-      }
-    }
-  };
-
-  const handleAddContractorLog = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!contractorName || !contractorCompany) return;
-
-    try {
-      const now = new Date().toISOString();
-      await createTransactionDoc('contractorLogs', session, {
-        contractor_name: contractorName,
-        company: contractorCompany,
-        purpose: contractorPurpose,
-        entry_time: now,
-        exit_time: null,
-        status: 'Active'
-      });
-      
-      setContractorName('');
-      setContractorCompany('');
-      setContractorPurpose('');
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Create contractor log failed:", err);
-      }
-    }
-  };
-
-  const handleCheckoutContractor = async (id: string) => {
-    try {
-      const now = new Date().toISOString();
-      const docRef = doc(db, 'contractorLogs', id);
-      await updateDoc(docRef, {
-        status: 'Exited',
-        exit_time: now
-      });
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Checkout contractor failed:", err);
-      }
-    }
-  };
-
-  const handleAddKeyLog = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!keyName || !keyBorrower) return;
-
-    try {
-      const now = new Date().toISOString();
-      await createTransactionDoc('keyLogs', session, {
-        key_name: keyName,
-        borrower: keyBorrower,
-        purpose: keyPurpose,
-        status: 'Borrowed',
-        borrow_time: now,
-        return_time: null
-      });
-
-      setKeyName('');
-      setKeyBorrower('');
-      setKeyPurpose('');
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Create key log failed:", err);
-      }
-    }
-  };
-
-  const handleReturnKey = async (id: string) => {
-    try {
-      const now = new Date().toISOString();
-      const docRef = doc(db, 'keyLogs', id);
-      await updateDoc(docRef, {
-        status: 'Returned',
-        return_time: now
-      });
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Return key failed:", err);
-      }
-    }
-  };
-
-  const handleAddPatrolLog = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!patrolCheckpoint) return;
-
-    try {
-      await createTransactionDoc('patrolLogs', session, {
-        checkpoint: patrolCheckpoint,
-        status: patrolStatus,
-        notes: patrolNotes
-      });
-
-      setPatrolCheckpoint('');
-      setPatrolNotes('');
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Create patrol log failed:", err);
-      }
-    }
-  };
-
-  const handleAddIncidentReport = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!incidentTitle || !incidentDesc) return;
-
-    try {
-      await createTransactionDoc('incidentReports', session, {
-        title: incidentTitle,
-        description: incidentDesc,
-        severity: incidentSeverity,
-        status: 'Reported',
-        imageUrl: incidentImgUrl || null
-      });
-
-      setIncidentTitle('');
-      setIncidentDesc('');
-      setIncidentImgUrl('');
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Create incident report failed:", err);
-      }
-    }
-  };
-
-  const handleAddDailyReport = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!reportSummary) return;
-
-    try {
-      // Calculate active metrics from loaded logs to prefill
-      const patrolCount = patrolLogs.length;
-      const incidentCount = incidentReports.length;
-
-      await createTransactionDoc('dailyReports', session, {
-        report_date: reportDate,
-        summary: reportSummary,
-        patrol_count: patrolCount,
-        incident_count: incidentCount,
-        status: 'Submitted'
-      });
-
-      setReportSummary('');
-      loadData();
-    } catch (err) {
-      setErrorText("ไม่สามารถโหลดข้อมูลได้ กรุณาลองใหม่หรือติดต่อผู้ดูแลระบบ");
-      if (process.env.NODE_ENV !== 'production') {
-        console.error("Create daily report failed:", err);
-      }
-    }
-  };
-
-  // Run the batch migration on the frontend
-  const handleRunMigration = async () => {
-    if (session.role !== 'admin') return;
-    setMigrationRunning(true);
-    setMigrationConsole(['Initiating migration interface...']);
-    setMigrationStats(null);
-
-    try {
-      const res = await runLegacyMigration(session, migrationDryRun);
-      setMigrationConsole(res.logs);
-      setMigrationStats(res.stats);
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      setMigrationConsole(prev => [...prev, `CRITICAL ERROR: ${errorMsg}`]);
+      setApiReady(true);
+    } catch (err: any) {
+      console.error('Firestore initialization failed:', err);
+      setInitError(err.message || 'เกิดความผิดพลาดในการเข้าถึงฐานข้อมูล Cloud Firestore');
     } finally {
-      setMigrationRunning(false);
+      setApiInitializing(false);
     }
   };
 
-  // Role Swapper helper
-  const handleAssumeSession = (type: 'guard_site01' | 'admin' | 'guard_site02') => {
-    if (type === 'guard_site01') {
-      setSession({
-        uid: 'qctgasVxGbWboRJfS9J8DVgR6B32', // The exact Guard UID qctgasVxGbWboRJfS9J8DVgR6B32
-        email: 'guard-site01@smartguard.com',
-        role: 'guard',
-        siteId: 'site-01',
-        operatorId: 'OP-SITE01-01',
-        operatorName: 'Sgt. Somchai (Guard)',
-        recorded_by: 'Sgt. Somchai (Guard)'
-      });
-      setSiteFilter('site-01');
-    } else if (type === 'guard_site02') {
-      setSession({
-        uid: 'guard-site02-uid-789',
-        email: 'guard-site02@smartguard.com',
-        role: 'guard',
-        siteId: 'site-02',
-        operatorId: 'OP-SITE02-02',
-        operatorName: 'Cpl. Somrak (Guard)',
-        recorded_by: 'Cpl. Somrak (Guard)'
-      });
-      setSiteFilter('site-02');
-    } else {
-      setSession({
-        uid: 'admin-uid-123',
-        email: 'admin@smartguard.com',
-        role: 'admin',
-        siteId: 'all',
-        operatorId: 'OP-ADMIN-99',
-        operatorName: 'Somchai (Admin)',
-        recorded_by: 'Somchai (Admin)'
-      });
-      setSiteFilter('all');
+  const handleGoogleSignIn = async () => {
+    setAuthLoading(true);
+    setAuthLoadingMessage('กำลังนำคุณไปลงชื่อเข้าใช้ด้วย Google...');
+    setInitError(null);
+
+    try {
+      console.log('[Smart Guard API] login mode: Google OAuth Redirect');
+      await signInWithGoogle();
+    } catch (err: any) {
+      console.error('[Smart Guard API] Google OAuth failed:', err);
+      setInitError(`การยืนยันตัวตน Google OAuth ล้มเหลว: ${err.message || err}`);
+      setAuthLoading(false);
     }
   };
 
-  // Helper to filter documents visually by Site ID (for Admins)
-  const filterBySite = <T extends { site_id?: string }>(items: T[]) => {
-    if (session.role !== 'admin' || siteFilter === 'all') return items;
-    return items.filter(item => item.site_id === siteFilter);
+  const handleBypassSignIn = async () => {
+    setInitError(null);
+    console.log('[Smart Guard API] login mode: Sandbox Login Selected');
+    try {
+      await bypassLoginForSandbox();
+      console.log('[Smart Guard API] Sandbox Login: SUCCESS');
+    } catch (err: any) {
+      console.error('[Smart Guard API] Sandbox Login FAILED:', err);
+      setInitError(`ไม่สามารถลงชื่อเข้าใช้ด้วย Sandbox Login ได้: ${err.message || err}`);
+    }
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 selection:bg-blue-600 selection:text-white">
-      {/* 1. Header */}
-      <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl h-16 items-center justify-between px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-md shadow-blue-500/25">
-              <Shield className="h-5.5 w-5.5" />
+  const handleSignOut = async () => {
+    setIsLogoutModalOpen(true);
+  };
+
+  const handleConfirmSignOut = async () => {
+    setIsLogoutModalOpen(false);
+    setSelectedOperator(null);
+    sessionStorage.removeItem('selected_operator_name');
+    sessionStorage.removeItem('selected_login_email');
+    sessionStorage.removeItem('selected_user_role');
+    sessionStorage.setItem('just_logged_out', 'true');
+    await logout();
+  };
+
+  // Loading Screen
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-white font-sans">
+        <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+        <span className="text-sm font-bold tracking-wider text-slate-300">{authLoadingMessage}</span>
+      </div>
+    );
+  }
+
+  // Login Screen with Emblem
+  if (!user) {
+    const isPreview = isDevelopmentPreview();
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 font-sans">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 flex flex-col gap-6 shadow-2xl relative overflow-hidden">
+          
+          {/* Subtle grid light decor */}
+          <div className="absolute inset-0 bg-[radial-gradient(#2563eb_1px,transparent_1px)] [background-size:16px_16px] opacity-10 pointer-events-none"></div>
+
+          {/* Shield Emblem & Environment Badge */}
+          <div className="flex flex-col items-center text-center gap-2 relative z-10">
+            {isPreview ? (
+              <div className="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-full text-[10px] font-black tracking-wider uppercase mb-1">
+                ⚡ AI Studio Sandbox Active
+              </div>
+            ) : (
+              <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-[10px] font-black tracking-wider uppercase mb-1">
+                🌐 Production Mode
+              </div>
+            )}
+            
+            <div className="p-4 bg-blue-600/10 text-blue-500 rounded-2xl border border-blue-500/20">
+              <Shield className="w-12 h-12" />
+            </div>
+            <h1 className="text-xl font-black text-white tracking-tight mt-3">ระบบ รปภ. อัจฉริยะ Smart Guard</h1>
+            <p className="text-xs text-slate-400 font-medium max-w-xs mt-1">
+              แอปพลิเคชันบริหารความปลอดภัยและบันทึกผู้ติดต่อ เชื่อมต่อฐานข้อมูล Cloud Firestore & Storage ตรวจสอบย้อนหลังได้ 100%
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 relative z-10 mt-2">
+            
+            {initError && (
+              <div className="p-4 bg-red-500/15 border border-red-500/35 text-red-300 rounded-2xl text-xs font-bold leading-relaxed flex flex-col gap-1.5 whitespace-pre-wrap">
+                <span className="flex items-center gap-1.5 text-red-400">⚠️ ข้อผิดพลาดสิทธิ์การเข้าถึง / ข้อแนะนำ:</span>
+                <span className="font-medium text-slate-200">{initError}</span>
+              </div>
+            )}
+
+            {isPreview ? (
+              <>
+                {/* Primary Sandbox Login for Preview Frame */}
+                <button
+                  onClick={handleBypassSignIn}
+                  className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20 active:scale-98 flex justify-center items-center gap-3 cursor-pointer text-sm font-sans"
+                >
+                  🚀 เข้าใช้งานผ่านระบบจำลอง (Sandbox Login)
+                </button>
+              </>
+            ) : (
+              <>
+                {/* Primary Google Auth for Production */}
+                <button
+                  onClick={handleGoogleSignIn}
+                  className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/10 active:scale-98 flex justify-center items-center gap-3 cursor-pointer text-sm font-sans"
+                >
+                  <Smartphone className="w-5 h-5 shrink-0" />
+                  เชื่อมต่อและลงชื่อเข้าใช้งานด้วย Google
+                </button>
+              </>
+            )}
+
+            {/* Test API connection panel */}
+            <div className="mt-2 p-4 bg-slate-800/30 border border-slate-800/80 rounded-2xl flex flex-col gap-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400 font-bold">สัญญาณเชื่อมต่อ Cloud Database:</span>
+                {apiTestingStatus === 'testing' && <span className="text-amber-400 animate-pulse font-black">กำลังตรวจสอบ...</span>}
+                {apiTestingStatus === 'success' && <span className="text-emerald-400 font-black flex items-center gap-1">✓ เชื่อมต่อแล้ว</span>}
+                {apiTestingStatus === 'failed' && <span className="text-red-400 font-black flex items-center gap-1">✗ ไม่พบการเชื่อมต่อ</span>}
+                {apiTestingStatus === 'idle' && <span className="text-slate-500">ไม่ได้ตรวจสอบ</span>}
+              </div>
+              
+              {apiTestDetails && (
+                <p className="text-[10px] text-slate-300 font-mono bg-slate-950/70 border border-slate-800/40 p-2.5 rounded-xl break-all leading-relaxed max-h-24 overflow-y-auto">
+                  {apiTestDetails}
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={handleTestApi}
+                disabled={apiTestingStatus === 'testing'}
+                className="w-full py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700/50 text-slate-200 font-bold rounded-xl text-[10px] transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 font-sans"
+              >
+                <RefreshCw className={`w-3 h-3 ${apiTestingStatus === 'testing' ? 'animate-spin' : ''}`} />
+                กดเพื่อทดสอบ API (Test API Connection)
+              </button>
+            </div>
+
+          </div>
+
+          <div className="text-center mt-2">
+            <span className="text-[10px] text-slate-500 font-mono">
+              เวอร์ชันการทำงาน v3.1.1 • ระบบคลาวด์มัลติแพลตฟอร์ม Cloud Firestore
+            </span>
+          </div>
+
+        </div>
+      </div>
+    );
+  }
+
+  // Operator Selection / Self-Registration Overlay Screen
+  if (user && !selectedOperator) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 font-sans text-white relative">
+        <div className="absolute inset-0 bg-[radial-gradient(#3b82f6_1px,transparent_1px)] [background-size:16px_16px] opacity-10 pointer-events-none"></div>
+        
+        <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl p-8 flex flex-col gap-6 shadow-2xl relative z-10">
+          <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+            <div className="p-2 bg-blue-500/10 text-blue-400 rounded-xl">
+              <ShieldCheck className="w-8 h-8" />
             </div>
             <div>
-              <h1 className="text-base font-bold tracking-tight text-slate-900 sm:text-lg">Smart Guard System</h1>
-              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest hidden sm:block">Operations Command Center</p>
+              <h2 className="text-lg font-black text-white">ยืนยันตัวตนผู้ปฏิบัติการ (Operator Selection)</h2>
+              <p className="text-xs text-slate-400 mt-0.5">บัญชีอีเมล: <span className="text-blue-400 font-bold font-mono">{user.email}</span></p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-1 font-mono text-xs text-slate-500">
-              <Clock className="h-4 w-4 text-blue-500 animate-pulse" />
-              <span>{time}</span>
+          {initError ? (
+            <div className="flex flex-col gap-4 text-left">
+              <div className="p-5 bg-red-500/15 border border-red-500/35 rounded-2xl text-xs flex flex-col gap-3 leading-relaxed text-red-200">
+                <span className="font-bold flex items-center gap-1.5 text-sm text-red-400">
+                  ⚠️ การเชื่อมต่อ Cloud Database ล้มเหลว (Database Connection Failed)
+                </span>
+                <p className="text-slate-300 font-medium">
+                  ไม่สามารถเรียกข้อมูลหรือเริ่มต้นฐานข้อมูล Firestore ได้เนื่องจากข้อผิดพลาดด้านล่าง:
+                </p>
+                <p className="p-3 bg-slate-950/70 border border-slate-800 text-red-400 font-mono rounded-xl break-all whitespace-pre-wrap">
+                  {initError}
+                </p>
+                <div className="text-slate-400 text-[11px] leading-relaxed mt-2 bg-slate-950/30 p-3.5 border border-slate-800 rounded-xl flex flex-col gap-2">
+                  <span className="font-black text-slate-300">💡 คำแนะนำสำหรับการแก้ปัญหา:</span>
+                  <span>1. ตรวจสอบการเชื่อมต่อเครือข่ายอินเทอร์เน็ตของอุปกรณ์คุณ</span>
+                  <span>2. ตรวจสอบสิทธิ์การเข้าถึงข้อมูลของบัญชีของคุณใน Firestore Security Rules</span>
+                  <span>3. ตรวจสอบความถูกต้องของคีย์และการตั้งค่า Cloud Project ใน firebase-applet-config.json</span>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setInitError(null);
+                  handleSignOut();
+                }}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20 text-sm font-sans cursor-pointer text-center"
+              >
+                👈 ย้อนกลับและใช้ระบบจำลอง (Back to Sandbox Login)
+              </button>
             </div>
+          ) : usersLoading || apiInitializing ? (
+            <div className="py-12 flex flex-col items-center justify-center gap-3">
+              <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
+              <span className="text-xs text-slate-400">กำลังตรวจสอบรายชื่อผู้ใช้งานและโหลดตาราง...</span>
+            </div>
+          ) : operatorsForEmail.length > 0 ? (
+            <div className="flex flex-col gap-4 text-left">
+              <p className="text-xs text-slate-300 font-bold">
+                พบบัญชีผู้ใช้งาน {operatorsForEmail.length} ท่านที่แชร์บัญชีอีเมลนี้ กรุณาเลือกชื่อของคุณเพื่อเข้ากะเริ่มปฏิบัติงาน:
+              </p>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-72 overflow-y-auto pr-1">
+                {operatorsForEmail.map((op) => (
+                  <button
+                    key={op.user_id}
+                    onClick={() => {
+                      setSelectedOperator(op);
+                      setGuardName(op.operator_name);
+                      setUserRole(op.role);
+                      sessionStorage.setItem('selected_operator_name', op.operator_name);
+                      sessionStorage.setItem('selected_user_role', op.role);
+                      
+                      writeAuditLog(
+                        op.operator_name,
+                        'ลงชื่อปฏิบัติการกะ (Operator Shift Check-in)',
+                        'Authentication',
+                        op.user_id,
+                        '',
+                        `Selected Operator: ${op.operator_name} with role ${op.role}`
+                      );
+                    }}
+                    className="flex flex-col text-left p-4 bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 hover:border-blue-500 rounded-2xl transition-all cursor-pointer group"
+                  >
+                    <span className="text-sm font-black text-white group-hover:text-blue-400 transition-colors">{op.operator_name}</span>
+                    <span className="text-[10px] text-slate-400 mt-1">เบอร์โทร: {op.phone || '-'}</span>
+                    
+                    <div className="flex items-center justify-between gap-2 mt-3">
+                      <span className={`px-2 py-0.5 rounded-md text-[9px] font-black ${
+                        op.role === 'Admin' ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' :
+                        op.role === 'Manager' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                        op.role === 'Shift Leader' ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20' :
+                        'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                      }`}>
+                        {op.role}
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-bold">{op.shift}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            // Access Denied / Unauthorized Screen for unregistered or inactive emails
+            <div className="flex flex-col gap-4 text-left">
+              <div className="p-5 bg-red-500/15 border border-red-500/35 rounded-2xl text-xs flex flex-col gap-3 leading-relaxed text-red-200 font-sans">
+                <span className="font-bold flex items-center gap-1.5 text-sm text-red-400">
+                  ⚠️ เข้าสู่ระบบ Google สำเร็จ แต่ไม่พบสิทธิ์ในระบบ (Firestore Users Collection)
+                </span>
+                <p className="text-slate-300 font-medium leading-relaxed">
+                  บัญชีอีเมลของคุณ: <strong className="underline font-mono text-white bg-slate-950 px-2 py-0.5 rounded break-all">{user.email}</strong><br/>
+                  UID บัญชีของคุณ: <strong className="underline font-mono text-white bg-slate-950 px-2 py-0.5 rounded break-all">{user.uid}</strong>
+                </p>
+                <div className="text-slate-400 text-xs mt-2 flex flex-col gap-2">
+                  <span className="font-black text-slate-200">📢 คำแนะนำสำหรับแอดมินระบบ (Admin Guide):</span>
+                  <p className="bg-slate-950/60 p-3 border border-slate-800 rounded-xl text-slate-300 font-mono text-[11px] leading-relaxed">
+                    กรุณาเพิ่ม UID <span className="text-blue-400 font-bold">{user.uid}</span> หรืออีเมลนี้ในคอลเลกชัน <span className="text-emerald-400 font-bold">users</span> และกำหนดสถานะ (status) เป็น <span className="text-emerald-400 font-bold">Active</span> ในฐานข้อมูล เพื่อให้สามารถลงชื่อปฏิบัติงานได้
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
-            {/* Simulated Session Pill */}
-            <div className={`flex items-center gap-2 rounded-lg border px-3 py-1 text-xs font-medium ${
-              session.role === 'admin' 
-                ? 'border-red-100 bg-red-50 text-red-700' 
-                : 'border-blue-100 bg-blue-50 text-blue-700'
-            }`}>
-              <span className={`h-2 w-2 rounded-full ${session.role === 'admin' ? 'bg-red-500' : 'bg-blue-500'}`} />
-              <span className="max-w-[120px] truncate sm:max-w-none">{session.operatorName}</span>
-              <span className="text-[10px] font-semibold uppercase opacity-60">({session.siteId})</span>
+          <div className="flex items-center justify-between border-t border-slate-800 pt-4 text-xs">
+            <span className="text-slate-500">ไม่ใช่บัญชีอีเมลของคุณ?</span>
+            <button
+              onClick={handleSignOut}
+              className="text-red-400 hover:text-red-300 font-bold flex items-center gap-1 cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" /> ออกจากระบบ Google
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800 pb-20 sm:pb-0">
+      
+      {/* Top Application Header */}
+      <header className="sticky top-0 bg-slate-900 text-white z-40 border-b border-slate-800 shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          
+          {/* Logo Brand */}
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-blue-600 rounded-xl">
+              <Shield className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <span className="text-sm font-black tracking-tight block">SMART GUARD SYSTEM</span>
+              <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                ● ระบบคลาวด์เชื่อมต่อสมบูรณ์
+              </span>
             </div>
           </div>
+
+          {/* Quick Roster Profile */}
+          <div className="flex items-center gap-4">
+            
+            {/* Display Active Operator Name & Role */}
+            <div className="flex flex-col text-right">
+              <span className="text-[10px] text-slate-400 font-bold">ผู้ปฏิบัติหน้าที่ในกะ</span>
+              <span className="text-xs font-black text-blue-400">{guardName}</span>
+            </div>
+
+            <div className="flex flex-col text-left">
+              <span className="text-[10px] text-slate-400 font-bold">บทบาทของคุณ</span>
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
+                  userRole === 'Admin' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' :
+                  userRole === 'Manager' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' :
+                  userRole === 'Shift Leader' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
+                  'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                }`}>
+                  {userRole}
+                </span>
+                <button
+                  onClick={() => {
+                    setSelectedOperator(null);
+                    sessionStorage.removeItem('selected_operator_name');
+                  }}
+                  className="text-[10px] font-black text-amber-400 hover:text-amber-300 underline bg-transparent border-0 cursor-pointer"
+                  title="คลิกเพื่อสลับผู้ปฏิบัติงานหรือสิทธิ์ในการเข้าเวร"
+                >
+                  สลับผู้ใช้
+                </button>
+              </div>
+            </div>
+
+            {user.photoURL && (
+              <img 
+                src={user.photoURL} 
+                alt="Profile" 
+                className="w-8 h-8 rounded-full border-2 border-blue-500" 
+                referrerPolicy="no-referrer"
+              />
+            )}
+
+            <button
+              onClick={handleSignOut}
+              className="p-2 bg-slate-800 hover:bg-red-600/20 text-slate-400 hover:text-red-400 rounded-xl transition-colors cursor-pointer"
+              title="ออกจากระบบ"
+            >
+              <LogOut className="w-4.5 h-4.5" />
+            </button>
+          </div>
+
         </div>
       </header>
 
-      {/* 2. Error Display Panel (Constraint 11: Thai message, clear, no authInfo / raw JSON details) */}
-      <AnimatePresence>
-        {errorText && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="bg-red-50 border-b border-red-200 text-red-800 py-3.5 px-4 shadow-sm"
+      {/* Database Status Alert bar */}
+      {!apiReady && !apiInitializing && initError && (
+        <div className="bg-amber-50 border-b border-amber-200 p-3 text-xs text-amber-800 font-bold flex justify-between items-center px-6">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+            <span>⚠️ ไม่สามารถติดต่อ Cloud Firestore ได้เนื่องจากข้อผิดพลาด: {initError}</span>
+          </div>
+          <button 
+            onClick={initFirestoreDatabase}
+            className="flex items-center gap-1 px-3 py-1 bg-amber-600 text-white rounded-lg hover:bg-amber-700 cursor-pointer"
           >
-            <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <AlertTriangle className="h-5 w-5 text-red-600 shrink-0" />
-                <p className="text-sm font-semibold">{errorText}</p>
-              </div>
-              <button
-                onClick={() => setErrorText(null)}
-                className="text-xs font-semibold bg-red-100 hover:bg-red-200 text-red-900 px-3 py-1 rounded-md transition"
-              >
-                รับทราบ
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        
-        {/* 3. Auth Sandbox Simulator Bar */}
-        <section className="mb-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                <Database className="h-4 w-4 text-blue-500" />
-                จำลองสถานะสิทธิ์ผู้ใช้สำหรับการทดสอบ (Testing Auth Sandbox Mode)
-              </h3>
-              <p className="text-xs text-slate-400 mt-0.5">
-                คลิกสลับบัญชีเพื่อทดสอบ Site Isolation และ Firestore Security Rules บนรถยนต์ / ผู้รับเหมา / กุญแจ / ลาดตระเวน
-              </p>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => handleAssumeSession('guard_site01')}
-                className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold border transition ${
-                  session.uid === 'qctgasVxGbWboRJfS9J8DVgR6B32'
-                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                <User className="h-3.5 w-3.5" />
-                Guard UID: qctgas... (site-01)
-              </button>
-
-              <button
-                onClick={() => handleAssumeSession('guard_site02')}
-                className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold border transition ${
-                  session.uid === 'guard-site02-uid-789'
-                    ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                <User className="h-3.5 w-3.5" />
-                Guard Site-02
-              </button>
-
-              <button
-                onClick={() => handleAssumeSession('admin')}
-                className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold border transition ${
-                  session.role === 'admin'
-                    ? 'bg-red-600 text-white border-red-600 shadow-sm'
-                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                }`}
-              >
-                <User className="h-3.5 w-3.5" />
-                Admin (All Sites)
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-3.5 pt-3.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 font-mono bg-slate-50 p-3 rounded-lg border border-slate-200/50">
-            <div>
-              <span className="font-semibold text-slate-700">Authenticated UID:</span> {session.uid}
-            </div>
-            <div>
-              <span className="font-semibold text-slate-700">Email:</span> {session.email}
-            </div>
-            <div>
-              <span className="font-semibold text-slate-700">Site ID constraint:</span> {session.siteId}
-            </div>
-            <div>
-              <span className="font-semibold text-slate-700">Role:</span> <span className={session.role === 'admin' ? 'text-red-600 font-bold' : 'text-blue-600 font-bold'}>{session.role.toUpperCase()}</span>
-            </div>
-          </div>
-        </section>
-
-        {/* 4. Filter Control for Admins */}
-        {session.role === 'admin' && (
-          <div className="mb-6 flex items-center justify-between gap-3 bg-white border border-slate-200 p-4 rounded-xl shadow-sm">
-            <div className="flex items-center gap-2">
-              <Filter className="h-4.5 w-4.5 text-slate-400" />
-              <span className="text-sm font-semibold text-slate-700">ตัวกรองสิทธิ์แอดมิน (Admin Site Filter)</span>
-            </div>
-            <div className="flex gap-2">
-              {['all', 'site-01', 'site-02'].map((site) => (
-                <button
-                  key={site}
-                  onClick={() => setSiteFilter(site)}
-                  className={`px-3 py-1 rounded-lg text-xs font-semibold border transition ${
-                    siteFilter === site
-                      ? 'bg-slate-800 text-white border-slate-800'
-                      : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                  }`}
-                >
-                  {site === 'all' ? 'ทุกไซต์ (ALL)' : site.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* 5. Main Content Layout (Grid + Tabs) */}
-        <div className="flex flex-col lg:flex-row gap-8">
-          
-          {/* Navigation Sidebar */}
-          <aside className="w-full lg:w-64 shrink-0">
-            <div className="sticky top-24 bg-white border border-slate-200 p-4 rounded-2xl shadow-sm space-y-1">
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-3 mb-2">เมนูการทำธุรกรรม</p>
-              
-              <button
-                onClick={() => setActiveTab('vehicleLogs')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                  activeTab === 'vehicleLogs'
-                    ? 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100'
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <Car className={`h-4.5 w-4.5 ${activeTab === 'vehicleLogs' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span>ทะเบียนพาหนะ</span>
-                </div>
-                <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-              </button>
-
-              <button
-                onClick={() => setActiveTab('contractorLogs')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                  activeTab === 'contractorLogs'
-                    ? 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100'
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <Briefcase className={`h-4.5 w-4.5 ${activeTab === 'contractorLogs' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span>บันทึกผู้รับเหมา</span>
-                </div>
-                <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-              </button>
-
-              <button
-                onClick={() => setActiveTab('keyLogs')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                  activeTab === 'keyLogs'
-                    ? 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100'
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <Key className={`h-4.5 w-4.5 ${activeTab === 'keyLogs' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span>เบิก-คืนกุญแจ</span>
-                </div>
-                <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-              </button>
-
-              <button
-                onClick={() => setActiveTab('patrolLogs')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                  activeTab === 'patrolLogs'
-                    ? 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100'
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <ClipboardList className={`h-4.5 w-4.5 ${activeTab === 'patrolLogs' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span>ตรวจลาดตระเวน</span>
-                </div>
-                <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-              </button>
-
-              <button
-                onClick={() => setActiveTab('incidentReports')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                  activeTab === 'incidentReports'
-                    ? 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100'
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <AlertTriangle className={`h-4.5 w-4.5 ${activeTab === 'incidentReports' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span>รายงานเหตุการณ์</span>
-                </div>
-                <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-              </button>
-
-              <button
-                onClick={() => setActiveTab('dailyReports')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                  activeTab === 'dailyReports'
-                    ? 'bg-blue-50 text-blue-700 shadow-sm shadow-blue-100'
-                    : 'text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <Calendar className={`h-4.5 w-4.5 ${activeTab === 'dailyReports' ? 'text-blue-600' : 'text-slate-400'}`} />
-                  <span>สรุปรายงานประจำวัน</span>
-                </div>
-                <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-              </button>
-
-              {session.role === 'admin' && (
-                <>
-                  <div className="my-2 border-t border-slate-100" />
-                  <p className="text-[10px] font-bold text-red-400 uppercase tracking-wider px-3 mb-2">เฉพาะแอดมิน (Admin Only)</p>
-
-                  <button
-                    onClick={() => setActiveTab('auditLogs')}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                      activeTab === 'auditLogs'
-                        ? 'bg-red-50 text-red-700 shadow-sm shadow-red-100'
-                        : 'text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <History className={`h-4.5 w-4.5 ${activeTab === 'auditLogs' ? 'text-red-600' : 'text-slate-400'}`} />
-                      <span>บันทึก Audit Logs</span>
-                    </div>
-                    <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-                  </button>
-
-                  <button
-                    onClick={() => setActiveTab('migrationTool')}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition ${
-                      activeTab === 'migrationTool'
-                        ? 'bg-red-50 text-red-700 shadow-sm shadow-red-100'
-                        : 'text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <Database className={`h-4.5 w-4.5 ${activeTab === 'migrationTool' ? 'text-red-600' : 'text-slate-400'}`} />
-                      <span>เครื่องมือกู้คืนข้อมูล</span>
-                    </div>
-                    <ChevronRight className="h-3.5 w-3.5 opacity-50" />
-                  </button>
-                </>
-              )}
-
-              <div className="mt-4 pt-3 border-t border-slate-100">
-                <button
-                  onClick={() => loadData()}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 border border-slate-200 rounded-xl transition"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
-                  <span>รีเฟรชข้อมูล</span>
-                </button>
-              </div>
-            </div>
-          </aside>
-
-          {/* Tab Workspaces */}
-          <div className="flex-1 min-w-0">
-            {isLoading && (
-              <div className="flex items-center gap-2 text-xs text-slate-500 font-semibold mb-4 bg-slate-100/50 border border-slate-200 p-3 rounded-xl animate-pulse">
-                <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
-                <span>กำลังโหลดข้อมูลในไซต์งาน...</span>
-              </div>
-            )}
-
-            {/* TAB 1: VEHICLE LOGS */}
-            {activeTab === 'vehicleLogs' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-                    <Car className="h-5 w-5 text-blue-500" />
-                    เพิ่มข้อมูลบันทึกพาหนะเข้าออก (Submit Vehicle Log Entry)
-                  </h3>
-                  <form onSubmit={handleAddVehicleLog} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ทะเบียนรถ</label>
-                      <input
-                        type="text"
-                        required
-                        value={vehiclePlate}
-                        onChange={(e) => setVehiclePlate(e.target.value)}
-                        placeholder="กข 1234 กรุงเทพฯ"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ประเภทรถ</label>
-                      <select
-                        value={vehicleType}
-                        onChange={(e) => setVehicleType(e.target.value)}
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white transition"
-                      >
-                        <option value="รถยนต์สี่ล้อ">รถยนต์ 4 ล้อ</option>
-                        <option value="รถจักรยานยนต์">รถจักรยานยนต์</option>
-                        <option value="รถบรรทุกสิบล้อขึ้นไป">รถบรรทุกขนาดใหญ่</option>
-                        <option value="รถตู้">รถตู้</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ชื่อผู้ขับขี่</label>
-                      <input
-                        type="text"
-                        required
-                        value={driverName}
-                        onChange={(e) => setDriverName(e.target.value)}
-                        placeholder="นายสมยศ ใจเย็น"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">วัตถุประสงค์ในการเข้า</label>
-                      <input
-                        type="text"
-                        value={vehiclePurpose}
-                        onChange={(e) => setVehiclePurpose(e.target.value)}
-                        placeholder="ติดต่อฝ่ายจัดซื้อ"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2 pt-2">
-                      <button
-                        type="submit"
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-sm"
-                      >
-                        <Plus className="h-4 w-4" />
-                        บันทึกรถเข้างาน
-                      </button>
-                    </div>
-                  </form>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-base font-bold text-slate-900">ประวัติรถยนต์เข้า-ออกไซต์งาน ({session.siteId})</h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full uppercase">Realtime Database</span>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full border-collapse text-left text-xs text-slate-500">
-                      <thead>
-                        <tr className="border-b border-slate-100 bg-slate-50/55 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                          <th className="p-3">ทะเบียนรถ</th>
-                          <th className="p-3">ผู้ขับขี่ / ประเภท</th>
-                          <th className="p-3">ไซต์งาน</th>
-                          <th className="p-3">เวลาเข้า</th>
-                          <th className="p-3">เวลาออก</th>
-                          <th className="p-3">สถานะ</th>
-                          <th className="p-3">จัดการ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {filterBySite(vehicleLogs).length === 0 ? (
-                          <tr>
-                            <td colSpan={7} className="p-6 text-center text-slate-400 font-medium">ไม่พบประวัติข้อมูลรถยนต์สำหรับไซต์งานนี้</td>
-                          </tr>
-                        ) : (
-                          filterBySite(vehicleLogs).map((log) => (
-                            <tr key={log.id} className="hover:bg-slate-50/40 transition">
-                              <td className="p-3 font-bold text-slate-900">{log.vehicle_plate}</td>
-                              <td className="p-3">
-                                <div className="font-semibold">{log.driver_name}</div>
-                                <div className="text-[10px] text-slate-400">{log.vehicle_type}</div>
-                              </td>
-                              <td className="p-3 font-mono font-semibold">{log.site_id || 'ไม่มี (Legacy)'}</td>
-                              <td className="p-3 font-mono">{new Date(log.entry_time).toLocaleString('th-TH')}</td>
-                              <td className="p-3 font-mono">{log.exit_time ? new Date(log.exit_time).toLocaleString('th-TH') : '-'}</td>
-                              <td className="p-3">
-                                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                  log.status === 'Entered'
-                                    ? 'bg-blue-50 text-blue-700'
-                                    : 'bg-emerald-50 text-emerald-700'
-                                }`}>
-                                  <span className={`h-1.5 w-1.5 rounded-full ${log.status === 'Entered' ? 'bg-blue-500' : 'bg-emerald-500'}`} />
-                                  {log.status === 'Entered' ? 'อยู่ในพื้นที่' : 'ออกแล้ว'}
-                                </span>
-                              </td>
-                              <td className="p-3">
-                                {log.status === 'Entered' && (
-                                  <button
-                                    onClick={() => handleCheckoutVehicle(log.id)}
-                                    className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[10px] px-2.5 py-1 rounded-lg transition"
-                                  >
-                                    ออกรถ
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 2: CONTRACTOR LOGS */}
-            {activeTab === 'contractorLogs' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-                    <Briefcase className="h-5 w-5 text-blue-500" />
-                    เพิ่มข้อมูลบันทึกผู้รับเหมาปฏิบัติงาน (Submit Contractor Log Entry)
-                  </h3>
-                  <form onSubmit={handleAddContractorLog} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ชื่อผู้รับเหมา</label>
-                      <input
-                        type="text"
-                        required
-                        value={contractorName}
-                        onChange={(e) => setContractorName(e.target.value)}
-                        placeholder="นายกานต์ โพธิ์ทอง"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">บริษัท / สังกัด</label>
-                      <input
-                        type="text"
-                        required
-                        value={contractorCompany}
-                        onChange={(e) => setContractorCompany(e.target.value)}
-                        placeholder="บริษัท ปลอดภัยวิศวกรรม จำกัด"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ประเภทงาน / รายละเอียดภารกิจ</label>
-                      <input
-                        type="text"
-                        value={contractorPurpose}
-                        onChange={(e) => setContractorPurpose(e.target.value)}
-                        placeholder="ติดตั้งอุปกรณ์ไฟฟ้าชั้น 4 โซน B"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2 pt-2">
-                      <button
-                        type="submit"
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-sm"
-                      >
-                        <Plus className="h-4 w-4" />
-                        ลงทะเบียนเข้าทำงาน
-                      </button>
-                    </div>
-                  </form>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-base font-bold text-slate-900">รายชื่อผู้รับเหมาลงเวลาปฏิบัติงาน ({session.siteId})</h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full uppercase">Realtime Database</span>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full border-collapse text-left text-xs text-slate-500">
-                      <thead>
-                        <tr className="border-b border-slate-100 bg-slate-50/55 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                          <th className="p-3">ผู้รับเหมา</th>
-                          <th className="p-3">สังกัดบริษัท / หน้าที่</th>
-                          <th className="p-3">ไซต์งาน</th>
-                          <th className="p-3">เวลาเริ่มปฏิบัติงาน</th>
-                          <th className="p-3">เวลาออก</th>
-                          <th className="p-3">สถานะ</th>
-                          <th className="p-3">จัดการ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {filterBySite(contractorLogs).length === 0 ? (
-                          <tr>
-                            <td colSpan={7} className="p-6 text-center text-slate-400 font-medium">ไม่พบข้อมูลรายชื่อผู้รับเหมาสำหรับไซต์งานนี้</td>
-                          </tr>
-                        ) : (
-                          filterBySite(contractorLogs).map((log) => (
-                            <tr key={log.id} className="hover:bg-slate-50/40 transition">
-                              <td className="p-3 font-bold text-slate-900">{log.contractor_name}</td>
-                              <td className="p-3">
-                                <div className="font-semibold">{log.company}</div>
-                                <div className="text-[10px] text-slate-400">{log.purpose}</div>
-                              </td>
-                              <td className="p-3 font-mono font-semibold">{log.site_id || 'ไม่มี (Legacy)'}</td>
-                              <td className="p-3 font-mono">{new Date(log.entry_time).toLocaleString('th-TH')}</td>
-                              <td className="p-3 font-mono">{log.exit_time ? new Date(log.exit_time).toLocaleString('th-TH') : '-'}</td>
-                              <td className="p-3">
-                                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                  log.status === 'Active'
-                                    ? 'bg-blue-50 text-blue-700'
-                                    : 'bg-emerald-50 text-emerald-700'
-                                }`}>
-                                  <span className={`h-1.5 w-1.5 rounded-full ${log.status === 'Active' ? 'bg-blue-500' : 'bg-emerald-500'}`} />
-                                  {log.status === 'Active' ? 'กำลังปฏิบัติงาน' : 'ออกงานแล้ว'}
-                                </span>
-                              </td>
-                              <td className="p-3">
-                                {log.status === 'Active' && (
-                                  <button
-                                    onClick={() => handleCheckoutContractor(log.id)}
-                                    className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[10px] px-2.5 py-1 rounded-lg transition"
-                                  >
-                                    ลงเวลากลับ
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 3: KEY LOGS */}
-            {activeTab === 'keyLogs' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-                    <Key className="h-5 w-5 text-blue-500" />
-                    บันทึกการเบิก-คืนกุญแจควบคุม (Submit Key Log Entry)
-                  </h3>
-                  <form onSubmit={handleAddKeyLog} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">หมายเลข / รหัสกุญแจ</label>
-                      <input
-                        type="text"
-                        required
-                        value={keyName}
-                        onChange={(e) => setKeyName(e.target.value)}
-                        placeholder="KEY-ROOM-A04 (กุญแจห้องควบคุมอาคาร A)"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ผู้รับเบิกกุญแจ</label>
-                      <input
-                        type="text"
-                        required
-                        value={keyBorrower}
-                        onChange={(e) => setKeyBorrower(e.target.value)}
-                        placeholder="นส. ณัฐกานต์ พลอยงาม"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">วัตถุประสงค์ในการเบิก</label>
-                      <input
-                        type="text"
-                        value={keyPurpose}
-                        onChange={(e) => setKeyPurpose(e.target.value)}
-                        placeholder="ตรวจเช็คระบบหม้อแปลงไฟฟ้าอาคาร"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2 pt-2">
-                      <button
-                        type="submit"
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-sm"
-                      >
-                        <Plus className="h-4 w-4" />
-                        ลงบันทึกการเบิกกุญแจ
-                      </button>
-                    </div>
-                  </form>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-base font-bold text-slate-900">ประวัติเบิก-คืนกุญแจรักษาความปลอดภัย ({session.siteId})</h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full uppercase">Realtime Database</span>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full border-collapse text-left text-xs text-slate-500">
-                      <thead>
-                        <tr className="border-b border-slate-100 bg-slate-50/55 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                          <th className="p-3">รหัสกุญแจ</th>
-                          <th className="p-3">ผู้เบิกกุญแจ / วัตถุประสงค์</th>
-                          <th className="p-3">ไซต์งาน</th>
-                          <th className="p-3">เวลาเบิก</th>
-                          <th className="p-3">เวลาคืน</th>
-                          <th className="p-3">สถานะ</th>
-                          <th className="p-3">จัดการ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {filterBySite(keyLogs).length === 0 ? (
-                          <tr>
-                            <td colSpan={7} className="p-6 text-center text-slate-400 font-medium">ไม่พบประวัติข้อมูลการเบิกกุญแจสำหรับไซต์งานนี้</td>
-                          </tr>
-                        ) : (
-                          filterBySite(keyLogs).map((log) => (
-                            <tr key={log.id} className="hover:bg-slate-50/40 transition">
-                              <td className="p-3 font-bold text-slate-900">{log.key_name}</td>
-                              <td className="p-3">
-                                <div className="font-semibold">{log.borrower}</div>
-                                <div className="text-[10px] text-slate-400">{log.purpose}</div>
-                              </td>
-                              <td className="p-3 font-mono font-semibold">{log.site_id || 'ไม่มี (Legacy)'}</td>
-                              <td className="p-3 font-mono">{new Date(log.borrow_time).toLocaleString('th-TH')}</td>
-                              <td className="p-3 font-mono">{log.return_time ? new Date(log.return_time).toLocaleString('th-TH') : '-'}</td>
-                              <td className="p-3">
-                                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                                  log.status === 'Borrowed'
-                                    ? 'bg-amber-50 text-amber-700'
-                                    : 'bg-emerald-50 text-emerald-700'
-                                }`}>
-                                  <span className={`h-1.5 w-1.5 rounded-full ${log.status === 'Borrowed' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-                                  {log.status === 'Borrowed' ? 'ถูกเบิกไป' : 'คืนแล้ว'}
-                                </span>
-                              </td>
-                              <td className="p-3">
-                                {log.status === 'Borrowed' && (
-                                  <button
-                                    onClick={() => handleReturnKey(log.id)}
-                                    className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[10px] px-2.5 py-1 rounded-lg transition"
-                                  >
-                                    ลงบันทึกการคืน
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 4: PATROL LOGS */}
-            {activeTab === 'patrolLogs' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-                    <ClipboardList className="h-5 w-5 text-blue-500" />
-                    ลงบันทึกการตรวจความเรียบร้อยลาดตระเวน (Submit Patrol Log Entry)
-                  </h3>
-                  <form onSubmit={handleAddPatrolLog} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">จุดตรวจสอบ</label>
-                      <input
-                        type="text"
-                        required
-                        value={patrolCheckpoint}
-                        onChange={(e) => setPatrolCheckpoint(e.target.value)}
-                        placeholder="จุดตรวจ 03 อาคารคลังสินค้าหลังที่ 2"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ผลการตรวจ</label>
-                      <select
-                        value={patrolStatus}
-                        onChange={(e) => setPatrolStatus(e.target.value as 'Pass' | 'Fail' | 'Issue Found')}
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white transition"
-                      >
-                        <option value="Pass">ปกติ (Pass)</option>
-                        <option value="Issue Found">พบความไม่เรียบร้อย (Issue Found)</option>
-                        <option value="Fail">ล้มเหลว / มีร่องรอยงัดแงะ (Fail)</option>
-                      </select>
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">หมายเหตุ / ข้อมูลเพิ่มเติม</label>
-                      <textarea
-                        rows={3}
-                        value={patrolNotes}
-                        onChange={(e) => setPatrolNotes(e.target.value)}
-                        placeholder="ตรวจเช็คประตูล็อคเรียบร้อยดี ระบบไฟฟ้าแสงสว่างรอบนอกทำงานปกติ..."
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2 pt-2">
-                      <button
-                        type="submit"
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-sm"
-                      >
-                        <Plus className="h-4 w-4" />
-                        บันทึกการตรวจ
-                      </button>
-                    </div>
-                  </form>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-base font-bold text-slate-900">ประวัติการเดินตรวจรอบเขตพื้นที่รับผิดชอบ ({session.siteId})</h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full uppercase">Realtime Database</span>
-                  </div>
-
-                  <div className="space-y-4">
-                    {filterBySite(patrolLogs).length === 0 ? (
-                      <div className="text-center py-8 text-slate-400 font-medium">ไม่พบประวัติความปลอดภัยรอบลาดตระเวนสำหรับไซต์งานนี้</div>
-                    ) : (
-                      filterBySite(patrolLogs).map((log) => (
-                        <div key={log.id} className="p-4 border border-slate-100 bg-slate-50/30 rounded-xl hover:border-slate-200 hover:bg-slate-50/80 transition flex items-start gap-3.5">
-                          <div className={`flex h-8 w-8 items-center justify-center rounded-lg text-white ${
-                            log.status === 'Pass' ? 'bg-emerald-500' : log.status === 'Issue Found' ? 'bg-amber-500' : 'bg-red-500'
-                          }`}>
-                            <Shield className="h-4.5 w-4.5" />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-4">
-                              <h4 className="text-xs font-bold text-slate-900">{log.checkpoint}</h4>
-                              <time className="text-[10px] text-slate-400 font-mono">{new Date(log.created_at).toLocaleString('th-TH')}</time>
-                            </div>
-                            <div className="flex items-center gap-2 mt-1">
-                              <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[9px] font-bold ring-1 ring-inset ${
-                                log.status === 'Pass' ? 'bg-emerald-50 text-emerald-700 ring-emerald-600/10' :
-                                log.status === 'Issue Found' ? 'bg-amber-50 text-amber-700 ring-amber-600/10' : 'bg-red-50 text-red-700 ring-red-600/10'
-                              }`}>
-                                {log.status}
-                              </span>
-                              <span className="text-[9px] text-slate-400 font-mono">ไซต์: {log.site_id} | ผู้ตรวจ: {log.recorded_by}</span>
-                            </div>
-                            {log.notes && (
-                              <p className="mt-2 text-xs text-slate-500 leading-relaxed font-normal whitespace-pre-line bg-white/70 p-2 rounded-lg border border-slate-100">{log.notes}</p>
-                            )}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 5: INCIDENT REPORTS */}
-            {activeTab === 'incidentReports' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-                    <AlertTriangle className="h-5 w-5 text-blue-500" />
-                    ส่งรายงานเหตุด่วน / เหตุการณ์ไม่ปกติ (Submit Incident Report)
-                  </h3>
-                  <form onSubmit={handleAddIncidentReport} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">หัวข้อเหตุการณ์</label>
-                      <input
-                        type="text"
-                        required
-                        value={incidentTitle}
-                        onChange={(e) => setIncidentTitle(e.target.value)}
-                        placeholder="ระบบกระแสไฟฟ้าลัดวงจร"
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ระดับความรุนแรง</label>
-                      <select
-                        value={incidentSeverity}
-                        onChange={(e) => setIncidentSeverity(e.target.value as 'Low' | 'Medium' | 'High')}
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white transition"
-                      >
-                        <option value="Low">ต่ำ (Low)</option>
-                        <option value="Medium">ปานกลาง (Medium)</option>
-                        <option value="High">สูงมาก (High)</option>
-                      </select>
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">ลิงก์ภาพถ่ายหลักฐาน (URL)</label>
-                      <input
-                        type="url"
-                        value={incidentImgUrl}
-                        onChange={(e) => setIncidentImgUrl(e.target.value)}
-                        placeholder="https://images.unsplash.com/photo-..."
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">รายละเอียดและเหตุการณ์โดยสังเขป</label>
-                      <textarea
-                        rows={3}
-                        required
-                        value={incidentDesc}
-                        onChange={(e) => setIncidentDesc(e.target.value)}
-                        placeholder="เวลาประมาณ 01:20 น. เกิดเหตุประกายไฟจากแผงควบคุมหลัก อาคารสำนักงานชั้น 1 พนักงานกะดึกได้นำถังดับเพลิงควบคุมเรียบร้อย..."
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="md:col-span-2 pt-2">
-                      <button
-                        type="submit"
-                        className="w-full bg-red-600 hover:bg-red-700 text-white font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-sm"
-                      >
-                        <AlertTriangle className="h-4 w-4" />
-                        รายงานเหตุด่วนทันที
-                      </button>
-                    </div>
-                  </form>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-base font-bold text-slate-900">กระดานติดตามรายงานสถานการณ์ความมั่นคง ({session.siteId})</h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full uppercase">Realtime Database</span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    {filterBySite(incidentReports).length === 0 ? (
-                      <div className="col-span-2 text-center py-8 text-slate-400 font-medium">ไม่พบประวัติการรายงานอุบัติภัยหรือเหตุการณ์ไม่ปกติสำหรับไซต์งานนี้</div>
-                    ) : (
-                      filterBySite(incidentReports).map((log) => (
-                        <div key={log.id} className="border border-slate-150 bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition">
-                          {log.imageUrl && (
-                            <div className="h-40 w-full bg-slate-100 overflow-hidden">
-                              <img src={log.imageUrl} alt="Incident attachment proof" className="w-full h-full object-cover" />
-                            </div>
-                          )}
-                          <div className="p-4">
-                            <div className="flex items-start justify-between gap-2">
-                              <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[9px] font-bold ${
-                                log.severity === 'High' ? 'bg-red-50 text-red-700 ring-1 ring-red-600/20' :
-                                log.severity === 'Medium' ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-600/20' :
-                                'bg-blue-50 text-blue-700 ring-1 ring-blue-600/20'
-                              }`}>
-                                {log.severity.toUpperCase()} SEVERITY
-                              </span>
-                              <time className="text-[10px] text-slate-400 font-mono">{new Date(log.created_at).toLocaleString('th-TH')}</time>
-                            </div>
-                            <h4 className="text-sm font-bold text-slate-900 mt-2">{log.title}</h4>
-                            <p className="text-xs text-slate-500 mt-1 line-clamp-3">{log.description}</p>
-                            
-                            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400 font-semibold uppercase">
-                              <span>ไซต์: {log.site_id}</span>
-                              <span>บันทึกโดย: {log.recorded_by}</span>
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 6: DAILY REPORTS */}
-            {activeTab === 'dailyReports' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-slate-900 mb-4 flex items-center gap-2">
-                    <Calendar className="h-5 w-5 text-blue-500" />
-                    ส่งรายงานประจำวัน (Submit Daily Executive Summary Report)
-                  </h3>
-                  <form onSubmit={handleAddDailyReport} className="grid grid-cols-1 gap-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">วันที่จัดทำรายงาน</label>
-                        <input
-                          type="date"
-                          required
-                          value={reportDate}
-                          onChange={(e) => setReportDate(e.target.value)}
-                          className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                        />
-                      </div>
-                      <div className="flex items-end">
-                        <div className="text-xs text-slate-400 font-semibold mb-2">
-                          * ระบบจะคำนวณสถิติและแนบข้อมูลตรวจลาดตระเวนและรายงานเหตุการณ์จากระบบโดยอัตโนมัติ
-                        </div>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">บทสรุปผู้บริหารและการปฏิบัติงานประจำวัน</label>
-                      <textarea
-                        rows={4}
-                        required
-                        value={reportSummary}
-                        onChange={(e) => setReportSummary(e.target.value)}
-                        placeholder="สรุปสถานการณ์โดยรวมรอบ 24 ชั่วโมง: ผลการปฏิบัติงานรักษาความมั่นคงเป็นไปด้วยความเรียบร้อย ไม่มีเหตุอาชญากรรม..."
-                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs outline-none focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-100 transition"
-                      />
-                    </div>
-                    <div className="pt-2">
-                      <button
-                        type="submit"
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2.5 rounded-xl transition flex items-center justify-center gap-2 shadow-sm"
-                      >
-                        <Plus className="h-4 w-4" />
-                        อนุมัติและนำส่งรายงานสรุปประจำวัน
-                      </button>
-                    </div>
-                  </form>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-base font-bold text-slate-900">คลังสารสนเทศรายงานสรุปประจำวัน ({session.siteId})</h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-1 rounded-full uppercase">Realtime Database</span>
-                  </div>
-
-                  <div className="space-y-4">
-                    {filterBySite(dailyReports).length === 0 ? (
-                      <div className="text-center py-8 text-slate-400 font-medium">ไม่พบเอกสารรายงานสรุปประจำวันในไซต์งานนี้</div>
-                    ) : (
-                      filterBySite(dailyReports).map((log) => (
-                        <div key={log.id} className="p-5 border border-slate-150 bg-white rounded-2xl hover:border-slate-300 shadow-sm hover:shadow-md transition">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                            <div className="flex items-center gap-2.5">
-                              <div className="h-8 w-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
-                                <Calendar className="h-4.5 w-4.5" />
-                              </div>
-                              <div>
-                                <h4 className="text-xs font-bold text-slate-900">สรุปการปฏิบัติการประจำวันที่: {log.report_date}</h4>
-                                <p className="text-[10px] text-slate-400 font-semibold uppercase mt-0.5">ไซต์งาน: {log.site_id} | ผู้รับรายงาน: สำนักงานใหญ่</p>
-                              </div>
-                            </div>
-                            <span className="self-start sm:self-auto text-[10px] font-bold bg-green-50 text-green-700 border border-green-200/50 px-2 py-0.5 rounded-full">
-                              {log.status.toUpperCase()}
-                            </span>
-                          </div>
-
-                          <p className="mt-4 text-xs text-slate-600 leading-relaxed font-normal whitespace-pre-line bg-slate-50/50 border border-slate-100 p-3.5 rounded-xl">
-                            {log.summary}
-                          </p>
-
-                          <div className="grid grid-cols-2 gap-4 mt-4 bg-slate-50/30 p-3 rounded-xl border border-slate-100 text-xs font-semibold text-slate-500">
-                            <div>
-                              การเดินตรวจลาดตระเวนทั้งหมด: <span className="font-bold text-slate-900">{log.patrol_count || 0} รอบ</span>
-                            </div>
-                            <div>
-                              อุบัติภัยที่ได้รับรายงานในวัน: <span className="font-bold text-slate-900">{log.incident_count || 0} รายการ</span>
-                            </div>
-                          </div>
-
-                          <div className="mt-4 pt-3.5 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400 font-semibold font-mono">
-                            <span>UID: {log.account_uid}</span>
-                            <span>Recorded by: {log.recorded_by}</span>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 7: AUDIT LOGS (Admin Only) */}
-            {activeTab === 'auditLogs' && session.role === 'admin' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-base font-bold text-slate-900">ระบบประวัติการตรวจสอบกิจกรรม (Administrative Audit Logs)</h3>
-                    <span className="text-[10px] font-bold text-slate-400 bg-red-50 text-red-600 px-2.5 py-1 rounded-full uppercase font-mono">Secured Logs</span>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full border-collapse text-left text-xs text-slate-500">
-                      <thead>
-                        <tr className="border-b border-slate-100 bg-slate-50/55 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                          <th className="p-3">หัวข้อการทำงาน / กิจกรรม</th>
-                          <th className="p-3">รายละเอียดเชิงเทคนิค</th>
-                          <th className="p-3">ไซต์งาน</th>
-                          <th className="p-3">เวลาที่เกิดเหตุการณ์</th>
-                          <th className="p-3">ผู้บันทึกระบบ</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {filterBySite(auditLogs).length === 0 ? (
-                          <tr>
-                            <td colSpan={5} className="p-6 text-center text-slate-400 font-medium">ไม่พบประวัติการทำงานของระบบแอดมินสำหรับไซต์งานนี้</td>
-                          </tr>
-                        ) : (
-                          filterBySite(auditLogs).map((log) => (
-                            <tr key={log.id} className="hover:bg-slate-50/40 transition">
-                              <td className="p-3 font-bold text-red-600">{log.action}</td>
-                              <td className="p-3 font-mono text-[10px] break-all max-w-xs">{log.details}</td>
-                              <td className="p-3 font-mono font-semibold">{log.site_id || 'ไม่มี (Legacy)'}</td>
-                              <td className="p-3 font-mono">{new Date(log.created_at).toLocaleString('th-TH')}</td>
-                              <td className="p-3">
-                                <div className="font-semibold text-slate-800">{log.operator_name}</div>
-                                <div className="text-[10px] text-slate-400 uppercase">บทบาท: {log.role}</div>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 8: MIGRATION PANEL (Admin Only) */}
-            {activeTab === 'migrationTool' && session.role === 'admin' && (
-              <div className="space-y-6">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-base font-bold text-slate-900 mb-2 flex items-center gap-2">
-                    <Database className="h-5 w-5 text-red-600" />
-                    เครื่องมือจัดการเติมข้อมูลเก่าย้อนหลังสำหรับแอดมิน (Admin-Only Legacy Migration Utility)
-                  </h3>
-                  <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-                    ค้นหาและอัปเดตเอกสารประวัติการทำงานในอดีต (Legacy Documents) ที่ยังไม่มีฟิลด์ <code className="bg-slate-100 font-mono text-slate-800 px-1 py-0.5 rounded text-[10px]">site_id</code> 
-                    โดยระบบจะดำเนินการอัปเดตค่าเริ่มต้นเป็น <code className="bg-slate-100 font-mono text-slate-800 px-1 py-0.5 rounded text-[10px]">"site-01"</code> ให้กับเอกสารใน 7 คอลเลกชันหลัก 
-                    อย่างปลอดภัยสูงสุดด้วย Batch-write (ไม่เกิน 400 รายการต่อการบันทึก)
-                  </p>
-
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
-                    <h4 className="text-xs font-bold text-amber-800 uppercase flex items-center gap-1.5">
-                      <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
-                      นโยบายและมาตรการความปลอดภัยในการโยกย้าย (Safety Rules)
-                    </h4>
-                    <ul className="list-disc list-inside text-[11px] text-amber-700 mt-2 space-y-1 font-semibold">
-                      <li>ดำเนินการเฉพาะฟิลด์ที่ว่างเปล่า (ไม่มี site_id) เท่านั้น</li>
-                      <li>ห้ามเขียนทับหรือแก้ไขเอกสารที่มี site_id อยู่แล้วเด็ดขาด</li>
-                      <li>ไม่ลบเอกสารออกจากฐานข้อมูล, ไม่แก้ไข Document ID และไม่ยุ่งเกี่ยวฟิลด์ created_at</li>
-                      <li>รองรับการสแกนทดลองจำลองผลการทำงาน (Dry-run) ก่อนที่จะตัดสินใจเขียนลงฐานข้อมูลจริง</li>
-                      <li>จัดเก็บ Audit log ลงในฐานข้อมูลกลางทุกครั้งที่มีการประมวลผลการย้ายข้อมูลจริง</li>
-                    </ul>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-4 p-4 border border-slate-200 bg-slate-50/50 rounded-xl mb-6">
-                    <div className="flex items-center gap-5">
-                      <label className="flex items-center gap-2.5 cursor-pointer text-xs font-bold text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={migrationDryRun}
-                          onChange={(e) => setMigrationDryRun(e.target.checked)}
-                          className="h-4.5 w-4.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500"
-                        />
-                        <span>โหมดจำลองประเมินผลเท่านั้น (Dry-run Mode)</span>
-                      </label>
-                    </div>
-
-                    <button
-                      onClick={handleRunMigration}
-                      disabled={migrationRunning}
-                      className={`flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold text-white shadow-md transition ${
-                        migrationDryRun
-                          ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/20'
-                          : 'bg-red-600 hover:bg-red-700 shadow-red-500/20'
-                      } disabled:opacity-50`}
-                    >
-                      {migrationRunning ? (
-                        <>
-                          <RefreshCw className="h-4 w-4 animate-spin" />
-                          <span>กำลังรันการกู้คืนระบบ...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Database className="h-4 w-4" />
-                          <span>{migrationDryRun ? 'ตรวจสอบจำลองผล (Dry-Run)' : 'ดำเนินการอัปเดตจริงย้อนหลัง (Commit Real)'}</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Migration Stats Dashboard */}
-                  {migrationStats && (
-                    <div className="mb-6">
-                      <h4 className="text-xs font-bold text-slate-700 mb-3 uppercase tracking-wider">สรุปปริมาณข้อมูลที่วิเคราะห์ได้ (Migration Stats Summary)</h4>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        {Object.entries(migrationStats).map(([colName, data]: [string, { scanned: number; updated: number; skipped: number; failed: number }]) => (
-                          <div key={colName} className="border border-slate-200 rounded-xl p-3 bg-white shadow-sm">
-                            <div className="text-[10px] font-bold text-slate-400 uppercase truncate">{colName}</div>
-                            <div className="mt-1 text-base font-bold text-slate-800">Scanned: {data.scanned}</div>
-                            <div className="text-[10px] font-bold mt-1 text-slate-500 flex flex-col gap-0.5">
-                              <span className="text-emerald-600">Updated: {data.updated}</span>
-                              <span className="text-slate-400">Skipped: {data.skipped}</span>
-                              <span className="text-red-500">Failed: {data.failed}</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Migration Terminal Logs console */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">เทอร์มินัลรายงานผลตามเวลาจริง (Real-time Audit logs console)</h4>
-                      <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                    </div>
-                    <div className="font-mono text-xs bg-slate-900 text-slate-200 p-4 rounded-xl min-h-[180px] max-h-[300px] overflow-y-auto space-y-1 shadow-inner border border-slate-950">
-                      {migrationConsole.length === 0 ? (
-                        <p className="text-slate-500 italic">พร้อมรอรับคำสั่งรันระบบประมวลผลกู้คืนย้อนหลัง...</p>
-                      ) : (
-                        migrationConsole.map((logLine, idx) => (
-                          <div key={idx} className="flex gap-2">
-                            <span className="text-blue-400 shrink-0 select-none">&gt;&gt;</span>
-                            <span>{logLine}</span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-          </div>
+            <RefreshCw className="w-3.5 h-3.5" /> ลองติดต่อฐานข้อมูลใหม่
+          </button>
         </div>
-      </main>
+      )}
+
+      {apiInitializing && (
+        <div className="bg-blue-50 border-b border-blue-100 p-2 text-xs text-blue-800 font-bold text-center animate-pulse">
+          ⏳ ระบบกำลังดึงตารางข้อมูลและเตรียมโครงสร้าง Cloud Firestore อาคารวิจิตรบรรจง โปรดรอสักครู่...
+        </div>
+      )}
+
+      {/* Main Container Grid */}
+      <div className="flex-1 max-w-7xl w-full mx-auto flex">
+        
+        {/* Desktop Sidebar Navigation */}
+        <aside className="hidden lg:flex flex-col w-64 bg-slate-900 border-r border-slate-800 p-5 gap-1 shrink-0">
+          <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2 block px-2">เมนูปฏิบัติงาน</span>
+          
+          <button
+            onClick={() => setActiveTab('dashboard')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'dashboard' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <Home className="w-4.5 h-4.5" />
+            แดชบอร์ดหลักอาคาร (Dashboard)
+          </button>
+
+          <button
+            onClick={() => setActiveTab('vehicles')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'vehicles' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <Car className="w-4.5 h-4.5" />
+            ลงทะเบียนรถเข้า-ออก (Vehicles)
+          </button>
+
+          <button
+            onClick={() => setActiveTab('contractors')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'contractors' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <Users className="w-4.5 h-4.5" />
+            ลงทะเบียนช่างผู้รับเหมา (Contractor)
+          </button>
+
+          <button
+            onClick={() => setActiveTab('keys')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'keys' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <Key className="w-4.5 h-4.5" />
+            ระบบเบิกคืนกุญแจห้อง (Key Control)
+          </button>
+
+          <button
+            onClick={() => setActiveTab('patrol')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'patrol' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <MapPin className="w-4.5 h-4.5" />
+            บันทึกตรวจตราพิกัดจุด (Patrol Check)
+          </button>
+
+          <button
+            onClick={() => setActiveTab('incidents')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'incidents' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <AlertTriangle className="w-4.5 h-4.5" />
+            แจ้งเหตุการณ์ผิดปกติ (Incident Report)
+          </button>
+
+          <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-5 mb-2 block px-2">ตรวจสอบย้อนหลัง & ตั้งค่า</span>
+
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'history' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <Search className="w-4.5 h-4.5" />
+            สืบค้นบันทึกย้อนหลัง (History)
+          </button>
+
+          {['Admin', 'Manager'].includes(userRole) && (
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+                activeTab === 'settings' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+              }`}
+            >
+              <Settings className="w-4.5 h-4.5" />
+              จัดการตั้งค่าข้อมูลระบบ (Master Config)
+            </button>
+          )}
+
+          {['Admin', 'Manager'].includes(userRole) && (
+            <button
+              onClick={() => setActiveTab('admin')}
+              className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+                activeTab === 'admin' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+              }`}
+            >
+              <Shield className="w-4.5 h-4.5 text-blue-400" />
+              แผงควบคุมแอดมิน (Admin Panel)
+            </button>
+          )}
+
+          {/* Quick Roster name sidebar display */}
+          <div className="mt-auto border border-slate-800 bg-slate-950 p-4 rounded-xl flex flex-col gap-1">
+            <span className="text-[10px] text-slate-500 font-bold">ชื่อเวร รปภ. ในกะปฏิบัติการ:</span>
+            <span className="text-xs font-black text-blue-400">{guardName}</span>
+          </div>
+        </aside>
+
+        {/* Content View Area */}
+        <main className="flex-1 p-4 sm:p-6 overflow-x-hidden">
+          {activeTab === 'dashboard' && <Dashboard onNavigate={(tab) => setActiveTab(tab as any)} activeRole={userRole} />}
+          {activeTab === 'vehicles' && <VehicleEntryExit guardName={guardName} />}
+          {activeTab === 'contractors' && <ContractorLogs guardName={guardName} />}
+          {activeTab === 'keys' && <KeyLogs guardName={guardName} />}
+          {activeTab === 'patrol' && <PatrolLogs guardName={guardName} />}
+          {activeTab === 'incidents' && <IncidentReports guardName={guardName} />}
+          {activeTab === 'history' && <SearchHistory />}
+          {activeTab === 'settings' && ['Admin', 'Manager'].includes(userRole) && <MasterData />}
+          {activeTab === 'admin' && ['Admin', 'Manager'].includes(userRole) && (
+            <AdminPanel 
+              currentUser={{ name: guardName, role: userRole }} 
+              loginEmail={user?.email || ''}
+              authorizationResult={selectedOperator ? 'Authorized - Active' : 'Unauthorized'}
+            />
+          )}
+        </main>
+
+      </div>
+
+      {/* Mobile Bottom Navigation Bar (Thumb ergonomic) */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex justify-around text-white z-40 lg:hidden py-2 px-1">
+        
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+            activeTab === 'dashboard' ? 'text-blue-400' : 'text-slate-400'
+          }`}
+        >
+          <Home className="w-5 h-5" />
+          <span>แดชบอร์ด</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('vehicles')}
+          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+            activeTab === 'vehicles' ? 'text-blue-400' : 'text-slate-400'
+          }`}
+        >
+          <Car className="w-5 h-5" />
+          <span>รถยนต์</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('contractors')}
+          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+            activeTab === 'contractors' ? 'text-blue-400' : 'text-slate-400'
+          }`}
+        >
+          <Users className="w-5 h-5" />
+          <span>ช่างรับเหมา</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('keys')}
+          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+            activeTab === 'keys' ? 'text-blue-400' : 'text-slate-400'
+          }`}
+        >
+          <Key className="w-5 h-5" />
+          <span>กุญแจ</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('patrol')}
+          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+            activeTab === 'patrol' ? 'text-blue-400' : 'text-slate-400'
+          }`}
+        >
+          <MapPin className="w-5 h-5" />
+          <span>เดินตรวจ</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('incidents')}
+          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+            activeTab === 'incidents' ? 'text-blue-400' : 'text-slate-400'
+          }`}
+        >
+          <AlertTriangle className="w-5 h-5" />
+          <span>แจ้งเหตุ</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('history')}
+          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+            activeTab === 'history' ? 'text-blue-400' : 'text-slate-400'
+          }`}
+        >
+          <Search className="w-5 h-5" />
+          <span>สืบค้น</span>
+        </button>
+
+        {['Admin', 'Manager'].includes(userRole) && (
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+              activeTab === 'settings' ? 'text-blue-400 font-extrabold' : 'text-slate-400'
+            }`}
+          >
+            <Settings className="w-5 h-5" />
+            <span>ตั้งค่า</span>
+          </button>
+        )}
+
+        {['Admin', 'Manager'].includes(userRole) && (
+          <button
+            onClick={() => setActiveTab('admin')}
+            className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
+              activeTab === 'admin' ? 'text-blue-400 font-extrabold' : 'text-slate-400'
+            }`}
+          >
+            <Shield className="w-5 h-5 text-blue-500" />
+            <span>แผงแอดมิน</span>
+          </button>
+        )}
+
+      </nav>
+
+      <ConfirmModal
+        isOpen={isLogoutModalOpen}
+        title="ยืนยันการออกจากระบบ"
+        message="คุณต้องการออกจากระบบบริหารและระวังภัยอัจฉริยะ (Smart Guard System) หรือไม่?"
+        confirmText="ออกจากระบบ"
+        cancelText="ยกเลิก"
+        onConfirm={handleConfirmSignOut}
+        onCancel={() => setIsLogoutModalOpen(false)}
+      />
     </div>
   );
 }

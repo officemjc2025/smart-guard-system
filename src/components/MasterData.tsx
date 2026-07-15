@@ -348,7 +348,7 @@ export default function MasterData() {
                   className="p-3 border border-slate-300 bg-white rounded-xl text-xs font-bold"
                 >
                   <option value="Guard">รปภ. ประจำจุด (Guard)</option>
-                  <option value="ShiftHead">หัวหน้าชุดสายตรวจ (ShiftHead)</option>
+                  <option value="Shift Leader">หัวหน้าชุดสายตรวจ (Shift Leader)</option>
                   <option value="Manager">ผู้จัดการ / นิติบุคคล (Manager)</option>
                   <option value="Admin">แอดมินระบบหลัก (Admin)</option>
                 </select>

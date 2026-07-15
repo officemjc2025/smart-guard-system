@@ -9,8 +9,6 @@ import {
   Car, Users, Key, ShieldCheck, AlertTriangle, RefreshCw
 } from 'lucide-react';
 import { readSheet, fetchDriveImageAsUrl } from '../googleApi';
-import { UnitSearchSelect } from './UnitSearchSelect';
-import { UnitRecord } from '../types';
 
 export default function SearchHistory() {
   const [activeModule, setActiveModule] = useState<'vehicles' | 'contractors' | 'keys' | 'patrols' | 'incidents'>('vehicles');
@@ -28,8 +26,6 @@ export default function SearchHistory() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [selectedFilterUnit, setSelectedFilterUnit] = useState<UnitRecord | null>(null);
-  const [unitFilterQuery, setUnitFilterQuery] = useState('');
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -37,7 +33,7 @@ export default function SearchHistory() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [activeModule, query, startDate, endDate, statusFilter, selectedFilterUnit]);
+  }, [activeModule, query, startDate, endDate, statusFilter]);
 
   // Detailed Modal Viewer State
   const [selectedRecord, setSelectedRecord] = useState<any | null>(null);
@@ -130,29 +126,7 @@ export default function SearchHistory() {
       const matchStart = !startDate || dateStr >= startDate;
       const matchEnd = !endDate || dateStr <= endDate;
 
-      // 4. Room/Unit filter
-      let matchUnit = true;
-      if (selectedFilterUnit) {
-        const uId = selectedFilterUnit.unit_id;
-        const uRoom = selectedFilterUnit.room_number;
-        if (uId) {
-          matchUnit = (
-            item.target_unit_id === uId ||
-            item.target_room === uRoom ||
-            item.room_number === uRoom ||
-            item.location === uRoom
-          );
-        } else if (uRoom) {
-          const cleanRoom = uRoom.toLowerCase().trim();
-          matchUnit = (
-            (item.target_room && item.target_room.toLowerCase().trim() === cleanRoom) ||
-            (item.room_number && item.room_number.toLowerCase().trim() === cleanRoom) ||
-            (item.location && item.location.toLowerCase().trim() === cleanRoom)
-          );
-        }
-      }
-
-      return matchQuery && matchStatus && matchStart && matchEnd && matchUnit;
+      return matchQuery && matchStatus && matchStart && matchEnd;
     });
   };
 
@@ -228,43 +202,22 @@ export default function SearchHistory() {
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
           
           {/* Keyword Query */}
-          <div className="sm:col-span-3 flex flex-col gap-1.5">
+          <div className="sm:col-span-4 flex flex-col gap-1.5">
             <span className="text-xs font-bold text-slate-500">คีย์เวิร์ดที่ต้องการค้นหา</span>
             <div className="relative">
-              <Search className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
+              <Search className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="ชื่อบุคคล ทะเบียนรถ..."
-                className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-xl text-xs font-semibold outline-none focus:border-indigo-600"
+                placeholder="ป้อนข้อมูล ทะเบียนรถ, ชื่อบุคคล, ห้อง..."
+                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold outline-none focus:border-indigo-600"
               />
             </div>
           </div>
 
-          {/* Room / Unit Filter */}
-          <div className="sm:col-span-3 flex flex-col gap-1.5 relative">
-            <UnitSearchSelect
-              value={unitFilterQuery}
-              selectedUnitId={selectedFilterUnit?.unit_id}
-              allowManualEntry={true}
-              label="ยูนิตห้องที่ต้องการกรอง"
-              placeholder="ค้นหายูนิต..."
-              required={false}
-              onSelect={(unit) => {
-                if (unit) {
-                  setSelectedFilterUnit(unit);
-                  setUnitFilterQuery(unit.unit_id ? `ห้อง ${unit.room_number}` : unit.room_number);
-                } else {
-                  setSelectedFilterUnit(null);
-                  setUnitFilterQuery('');
-                }
-              }}
-            />
-          </div>
-
           {/* Date Picker Start */}
-          <div className="sm:col-span-2 flex flex-col gap-1.5">
+          <div className="sm:col-span-3 flex flex-col gap-1.5">
             <span className="text-xs font-bold text-slate-500">เริ่มต้นวันที่</span>
             <div className="relative">
               <Calendar className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
@@ -278,7 +231,7 @@ export default function SearchHistory() {
           </div>
 
           {/* Date Picker End */}
-          <div className="sm:col-span-2 flex flex-col gap-1.5">
+          <div className="sm:col-span-3 flex flex-col gap-1.5">
             <span className="text-xs font-bold text-slate-500">สิ้นสุดวันที่</span>
             <div className="relative">
               <Calendar className="absolute left-3 top-3 w-4 h-4 text-slate-400" />

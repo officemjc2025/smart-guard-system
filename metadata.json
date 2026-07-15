@@ -1,10 +1,6 @@
 {
   "name": "Smart Guard System",
-  "description": "An active operations center for real-time security guard patrols, incident reporting, and operations metrics with Firebase cloud integration.",
-  "requestFramePermissions": [
-    "camera"
-  ],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "description": "ระบบบันทึกข้อมูลและบริหารจัดการงาน รปภ. อาคาร/คอนโด ที่ทำงานผ่านระบบฐานข้อมูล Cloud Firestore และ Firebase Storage",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

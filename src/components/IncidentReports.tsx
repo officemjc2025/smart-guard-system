@@ -9,8 +9,7 @@ import {
   Clock, ShieldAlert, Edit, User
 } from 'lucide-react';
 import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '../googleApi';
-import { IncidentReportRecord, UnitRecord } from '../types';
-import { UnitSearchSelect } from './UnitSearchSelect';
+import { IncidentReportRecord } from '../types';
 import ConfirmModal from './ConfirmModal';
 
 interface IncidentReportsProps {
@@ -26,20 +25,11 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
   const [showUpdateModal, setShowUpdateModal] = useState(false);
 
   // Form State
-  const [incidentForm, setIncidentForm] = useState<{
-    location: string;
-    incident_type: 'อัคคีภัย' | 'น้ำท่วม/ท่อแตก' | 'โจรกรรม/ลักทรัพย์' | 'ทะเลาะวิวาท' | 'อุปกรณ์ชำรุด' | 'อื่นๆ';
-    description: string;
-    shift_leader: string;
-    target_unit_id?: string;
-    unit_lookup_status?: 'matched' | 'manual';
-  }>({
+  const [incidentForm, setIncidentForm] = useState({
     location: '',
     incident_type: 'อุปกรณ์ชำรุด' as any,
     description: '',
-    shift_leader: '',
-    target_unit_id: '',
-    unit_lookup_status: undefined
+    shift_leader: ''
   });
   const [incidentPhoto, setIncidentPhoto] = useState<string>('');
 
@@ -106,8 +96,6 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
         reported_by: guardName,
         shift_leader: incidentForm.shift_leader || guardName,
         status: 'แจ้งแล้ว',
-        target_unit_id: incidentForm.target_unit_id,
-        unit_lookup_status: incidentForm.unit_lookup_status,
         created_at: nowStr,
         updated_at: nowStr
       };
@@ -131,9 +119,7 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
         location: '',
         incident_type: 'อุปกรณ์ชำรุด',
         description: '',
-        shift_leader: '',
-        target_unit_id: '',
-        unit_lookup_status: undefined
+        shift_leader: ''
       });
       setIncidentPhoto('');
     } catch (err: any) {
@@ -264,30 +250,14 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
 
               {/* Location */}
               <div className="flex flex-col gap-1.5">
-                <UnitSearchSelect
+                <label className="text-xs font-bold text-slate-600">สถานที่เกิดเหตุอย่างละเอียด *</label>
+                <input
+                  type="text"
                   value={incidentForm.location}
-                  selectedUnitId={incidentForm.target_unit_id}
-                  allowManualEntry={true}
-                  label="สถานที่เกิดเหตุ / ยูนิตห้องชุด"
-                  placeholder="พิมพ์เพื่อค้นหาเลขห้องชุด หรือระบุพื้นที่ส่วนกลางเอง..."
-                  required={true}
-                  onSelect={(unit) => {
-                    if (unit) {
-                      setIncidentForm(prev => ({
-                        ...prev,
-                        location: unit.room_number,
-                        target_unit_id: unit.unit_id || '',
-                        unit_lookup_status: unit.unit_id ? 'matched' : 'manual'
-                      }));
-                    } else {
-                      setIncidentForm(prev => ({
-                        ...prev,
-                        location: '',
-                        target_unit_id: '',
-                        unit_lookup_status: undefined
-                      }));
-                    }
-                  }}
+                  onChange={(e) => setIncidentForm(prev => ({ ...prev, location: e.target.value }))}
+                  placeholder="เช่น หลังตึก A ฝั่งทิศใต้ ใต้บันไดหนีไฟหลัก"
+                  className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold"
+                  required
                 />
               </div>
 
