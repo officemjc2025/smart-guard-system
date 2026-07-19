@@ -1,6 +1,14 @@
+import * as admin from 'firebase-admin';
+
 export type MediaModule = 'Vehicle' | 'Contractor' | 'Key' | 'Patrol' | 'Incident';
 
 export type UserRole = 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
+
+export type ArchiveStatus = 'PendingArchive' | 'Archived';
+
+export type ArchiveBatchStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+export type ArchiveBatchVerificationStatus = 'pending' | 'verified' | 'failed';
 
 export interface UploadMediaRequest {
   operatorId: string;
@@ -26,7 +34,8 @@ export interface ArchiveMediaRequest {
 export interface MediaFileRecord {
   media_id: string;
   provider: 'google_drive';
-  drive_file_id: string;
+  drive_file_id?: string;
+  drive_file_url?: string;
   drive_folder_id: string;
   module: MediaModule;
   record_id: string;
@@ -43,8 +52,39 @@ export interface MediaFileRecord {
   site_id: string;
   upload_request_id: string;
   status: 'Active' | 'Archived' | 'Deleted';
-  created_at: any; // FirebaseFirestore.Timestamp
-  updated_at: any; // FirebaseFirestore.Timestamp
+  archive_batch_id?: string;
+  archive_status?: ArchiveStatus;
+  archived_at?: admin.firestore.Timestamp;
+  created_at: admin.firestore.Timestamp;
+  updated_at: admin.firestore.Timestamp;
+}
+
+/** Media fields used by the archive worker before the file is moved to Drive. */
+export interface ArchiveMediaRecord {
+  media_id: string;
+  archive_batch_id: string;
+  archive_status: ArchiveStatus;
+  drive_file_id?: string;
+  drive_file_url?: string;
+  archived_at?: admin.firestore.Timestamp;
+  created_at: admin.firestore.Timestamp;
+  updated_at: admin.firestore.Timestamp;
+}
+
+/** Persistent batch state and cursor fields used to resume archive processing. */
+export interface ArchiveBatchWorkerRecord {
+  batch_id: string;
+  status: ArchiveBatchStatus;
+  verification_status: ArchiveBatchVerificationStatus;
+  processed_count: number;
+  success_count: number;
+  failed_count: number;
+  skipped_count: number;
+  last_processed_created_at: admin.firestore.Timestamp | null;
+  last_processed_media_id: string | null;
+  created_at: admin.firestore.Timestamp;
+  updated_at: admin.firestore.Timestamp;
+  completed_at: admin.firestore.Timestamp | null;
 }
 
 export interface UploadRequestRecord {
@@ -55,6 +95,6 @@ export interface UploadRequestRecord {
   client_request_id: string;
   media_id?: string;
   error?: string;
-  created_at: any;
-  updated_at: any;
+  created_at: admin.firestore.Timestamp;
+  updated_at: admin.firestore.Timestamp;
 }
