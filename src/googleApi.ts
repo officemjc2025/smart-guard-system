@@ -14,6 +14,14 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { db, auth, storage } from './firebase';
+import { createMediaRecord, getMediaRecord } from './services/mediaQueueService';
+
+export interface MediaUploadContext {
+  moduleName: string;
+  recordId: string;
+  siteId: string;
+  uploadedBy: string;
+}
 
 export const SCHEMA = {
   Users: ['user_id', 'login_email', 'operator_name', 'role', 'shift', 'phone', 'status', 'created_at', 'updated_at'],
@@ -28,6 +36,7 @@ export const SCHEMA = {
   DailyReports: ['report_id', 'report_date', 'shift_type', 'total_vehicle_in', 'total_vehicle_out', 'total_contractors', 'total_keys_not_returned', 'total_patrol_missing', 'total_incidents', 'blacklist_alerts', 'shift_leader', 'note', 'created_at', 'login_email', 'operator_name'],
   AuditLogs: ['audit_id', 'user_name', 'action', 'module_name', 'record_id', 'old_value', 'new_value', 'created_at', 'login_email', 'operator_name', 'action_result', 'ip_or_session_id'],
   Keys: ['key_id', 'room_number', 'key_type', 'key_label', 'status', 'current_borrower_name', 'current_checkout_log_id', 'note', 'created_at', 'updated_at'],
+  Units: ['unit_id', 'site_id', 'room_code', 'room_number', 'floor', 'area', 'ratio', 'owner_name', 'phone', 'email', 'occupancy_status', 'searchable_text', 'search_key', 'is_active', 'created_at', 'updated_at', 'source_file_name', 'import_batch_id'],
   SystemSettings: ['setting_key', 'setting_value', 'setting_type', 'description', 'updated_by', 'updated_at']
 };
 
@@ -44,6 +53,7 @@ export const COLLECTION_MAPPING: Record<string, string> = {
   DailyReports: 'dailyReports',
   AuditLogs: 'auditLogs',
   Keys: 'keys',
+  Units: 'units',
   SystemSettings: 'systemSettings',
 };
 
@@ -60,6 +70,7 @@ export const ID_COLUMNS: Record<string, string> = {
   DailyReports: 'report_id',
   AuditLogs: 'audit_id',
   Keys: 'key_id',
+  Units: 'unit_id',
   SystemSettings: 'setting_key',
 };
 
@@ -144,7 +155,21 @@ export async function compressImageBase64(base64Str: string, maxWidth = 800, max
 /**
  * Upload image to Firebase Storage
  */
-export async function uploadImageToStorage(base64Data: string, folderName: string, fileName: string): Promise<string> {
+function mediaIdForStoragePath(storagePath: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < storagePath.length; index += 1) {
+    hash ^= storagePath.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `media_${(hash >>> 0).toString(36)}`;
+}
+
+export async function uploadImageToStorage(
+  base64Data: string,
+  folderName: string,
+  fileName: string,
+  mediaContext: MediaUploadContext,
+): Promise<string> {
   try {
     console.log(`[Firebase Storage] Preparing to upload to folder: ${folderName}`);
     // Compress first
@@ -163,9 +188,29 @@ export async function uploadImageToStorage(base64Data: string, folderName: strin
     const path = `${folderName}/${todayStr}/${cleanFileName}`;
     
     const storageRef = ref(storage, path);
-    await uploadString(storageRef, compressed, 'data_url');
+    const uploadResult = await uploadString(storageRef, compressed, 'data_url');
     
     const downloadUrl = await getDownloadURL(storageRef);
+    const mediaId = mediaIdForStoragePath(path);
+    try {
+      const existingMedia = await getMediaRecord(mediaId);
+      if (!existingMedia) {
+        await createMediaRecord({
+          media_id: mediaId,
+          storage_path: path,
+          storage_bucket: storage.app.options.storageBucket ?? '',
+          file_name: cleanFileName,
+          mime_type: uploadResult.metadata.contentType ?? 'application/octet-stream',
+          file_size: uploadResult.metadata.size,
+          module_name: mediaContext.moduleName,
+          record_id: mediaContext.recordId,
+          site_id: mediaContext.siteId,
+          uploaded_by: mediaContext.uploadedBy,
+        });
+      }
+    } catch (queueError: unknown) {
+      console.error('[Media Queue] Failed to create media record:', queueError);
+    }
     console.log('[Firebase Storage] Upload completed successfully:', downloadUrl);
     return downloadUrl;
   } catch (error) {
@@ -174,7 +219,11 @@ export async function uploadImageToStorage(base64Data: string, folderName: strin
   }
 }
 
-export async function uploadImageToDrive(base64Data: string, filename: string): Promise<string> {
+export async function uploadImageToDrive(
+  base64Data: string,
+  filename: string,
+  mediaContext: MediaUploadContext,
+): Promise<string> {
   let folder = 'general-uploads';
   if (filename.startsWith('vehicle_')) {
     folder = 'vehicle-logs';
@@ -188,7 +237,7 @@ export async function uploadImageToDrive(base64Data: string, filename: string): 
     folder = 'incident-reports';
   }
   
-  return uploadImageToStorage(base64Data, folder, filename);
+  return uploadImageToStorage(base64Data, folder, filename, mediaContext);
 }
 
 export async function fetchDriveImageAsUrl(fileId: string): Promise<string> {
@@ -455,4 +504,3 @@ export async function initializeSystemData(operatorName: string, loginEmail: str
     operatorName
   );
 }
-

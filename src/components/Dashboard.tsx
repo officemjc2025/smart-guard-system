@@ -10,9 +10,10 @@ import {
 } from 'lucide-react';
 import { readSheet } from '../googleApi';
 import { VehicleLogRecord, ContractorLogRecord, KeyLogRecord, PatrolLogRecord, IncidentReportRecord } from '../types';
+import type { TabType } from '../App';
 
 interface DashboardProps {
-  onNavigate: (page: string) => void;
+  onNavigate: (tab: TabType) => void;
   activeRole: string;
 }
 
@@ -100,7 +101,8 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
     try {
       const d = new Date(isoString);
       return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.';
-    } catch {
+    } catch (error) {
+      console.error('Failed to format dashboard time:', error);
       return '';
     }
   };
@@ -132,7 +134,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Vehicles */}
         <div 
-          onClick={() => onNavigate('vehicle_entry')}
+          onClick={() => onNavigate('vehicles')}
           className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-blue-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
         >
           <div className="flex justify-between items-start">
@@ -158,7 +160,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
 
         {/* Contractors */}
         <div 
-          onClick={() => onNavigate('contractor_entry')}
+          onClick={() => onNavigate('contractors')}
           className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-amber-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
         >
           <div className="flex justify-between items-start">
@@ -179,7 +181,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
 
         {/* Unreturned Keys */}
         <div 
-          onClick={() => onNavigate('key_checkout')}
+          onClick={() => onNavigate('keys')}
           className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-red-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
         >
           <div className="flex justify-between items-start">
@@ -200,7 +202,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
 
         {/* Patrol coverage */}
         <div 
-          onClick={() => onNavigate('patrol_dashboard')}
+          onClick={() => onNavigate('patrol')}
           className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:border-emerald-300 transition-all cursor-pointer group flex flex-col justify-between min-h-36"
         >
           <div className="flex justify-between items-start">
@@ -273,7 +275,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
                 รายงานเหตุด่วนผิดปกติล่าสุด (Incident Log)
               </h2>
               <button 
-                onClick={() => onNavigate('incident_report')} 
+                onClick={() => onNavigate('incidents')} 
                 className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
               >
                 + แจ้งเหตุการณ์ใหม่
@@ -330,7 +332,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
               เวลาเซิร์ฟเวอร์เรียลไทม์: {new Date().toLocaleTimeString('th-TH')} น.
             </span>
             <button 
-              onClick={() => onNavigate('search_history')} 
+              onClick={() => onNavigate('history')} 
               className="text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1 hover:underline cursor-pointer"
             >
               ดูประวัติเดินตรวจย้อนหลังทั้งหมด
@@ -345,7 +347,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <button 
             id="qa-vehicle-in"
-            onClick={() => onNavigate('vehicle_entry')}
+            onClick={() => onNavigate('vehicles')}
             className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-blue-50/40 hover:bg-blue-50 hover:border-blue-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
           >
             <Car className="w-6 h-6 text-blue-600" />
@@ -353,7 +355,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
           </button>
           <button 
             id="qa-contractor-in"
-            onClick={() => onNavigate('contractor_entry')}
+            onClick={() => onNavigate('contractors')}
             className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-amber-50/40 hover:bg-amber-50 hover:border-amber-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
           >
             <Users className="w-6 h-6 text-amber-600" />
@@ -361,7 +363,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
           </button>
           <button 
             id="qa-key-out"
-            onClick={() => onNavigate('key_checkout')}
+            onClick={() => onNavigate('keys')}
             className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-red-50/40 hover:bg-red-50 hover:border-red-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
           >
             <Key className="w-6 h-6 text-red-600" />
@@ -369,7 +371,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
           </button>
           <button 
             id="qa-patrol-check"
-            onClick={() => onNavigate('patrol_checkin')}
+            onClick={() => onNavigate('patrol')}
             className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-200 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
           >
             <ShieldCheck className="w-6 h-6 text-emerald-600" />
@@ -377,7 +379,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
           </button>
           <button 
             id="qa-report-incident"
-            onClick={() => onNavigate('incident_report')}
+            onClick={() => onNavigate('incidents')}
             className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
           >
             <AlertTriangle className="w-6 h-6 text-slate-600" />
@@ -385,7 +387,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
           </button>
           <button 
             id="qa-search-history"
-            onClick={() => onNavigate('search_history')}
+            onClick={() => onNavigate('history')}
             className="flex flex-col items-center gap-2 p-4 border border-slate-100 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 rounded-xl transition-all active:scale-95 text-center cursor-pointer"
           >
             <RefreshCw className="w-6 h-6 text-slate-600" />

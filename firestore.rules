@@ -1,153 +1,154 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // 1. Reusable Hardened Global Helpers (Phase 3 Primitives)
-    function isSignedIn() {
+    function signedIn() {
       return request.auth != null;
     }
 
-    function isSandboxUser() {
-      return request.auth.token.email == 'sandbox@example.com';
+    function ownProfileExists() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function ownProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return ownProfileExists() && ownProfile().status == 'Active';
     }
 
     function isAdmin() {
-      return isSignedIn() && (
-        request.auth.token.email == 'office.mjc2025@gmail.com' ||
-        isSandboxUser()
-      );
+      return isActiveUser() && ownProfile().role == 'Admin';
     }
 
-    function isManager() {
-      return isSignedIn() && (
-        request.auth.token.email == 'manager@example.com' ||
-        request.auth.token.email == 'office.mjc2025@gmail.com' ||
-        isSandboxUser()
-      );
+    function bootstrapOpen() {
+      return !exists(/databases/$(database)/documents/systemSettings/authBootstrap);
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
+    match /loginDirectory/{username} {
+      // Required so the login page can convert username -> internal Firebase email.
+      allow get: if true;
+      allow list: if false;
 
-    function incoming() {
-      return request.resource.data;
-    }
+      // One-time first Admin bootstrap.
+      allow create: if signedIn()
+                    && bootstrapOpen()
+                    && username == 'admin'
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.status == 'Active'
+                    && existsAfter(/databases/$(database)/documents/systemSettings/authBootstrap);
 
-    function existing() {
-      return resource.data;
-    }
-
-    // Default catch-all deny rule
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // 2. Collection Rules
-    
-    // Users collection
-    match /users/{userId} {
-      allow read: if isSignedIn();
       allow create, update, delete: if isAdmin();
     }
 
-    // ParkingCards collection
-    match /parkingCards/{cardId} {
-      allow read: if isSignedIn();
-      allow create, delete: if isAdmin();
-      allow update: if isSignedIn() && (
-        isAdmin() || 
-        (incoming().status in ['ว่าง', 'ใช้งานอยู่'])
-      );
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+
+      // One-time first Admin profile.
+      allow create: if signedIn()
+                    && bootstrapOpen()
+                    && request.auth.uid == uid
+                    && request.resource.data.username == 'admin'
+                    && request.resource.data.role == 'Admin'
+                    && request.resource.data.status == 'Active'
+                    && existsAfter(/databases/$(database)/documents/loginDirectory/admin)
+                    && existsAfter(/databases/$(database)/documents/systemSettings/authBootstrap);
+
+      allow create, update, delete: if isAdmin();
     }
 
-    // VehicleLogs collection (Guards can create, but cannot edit or delete)
-    match /vehicleLogs/{logId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && 
-                    isValidId(logId) &&
-                    incoming().login_email == request.auth.token.email;
+    match /systemSettings/authBootstrap {
+      allow get: if true;
+      allow create: if signedIn()
+                    && bootstrapOpen()
+                    && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+                    && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Admin';
       allow update, delete: if isAdmin();
     }
 
-    // ContractorLogs collection (Guards can create, but cannot edit or delete)
-    match /contractorLogs/{contractorLogId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && 
-                    isValidId(contractorLogId) &&
-                    incoming().login_email == request.auth.token.email;
-      allow update, delete: if isAdmin();
+    match /systemSettings/{id} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
     }
 
-    // KeyLogs collection (Guards can create, but cannot edit or delete)
-    match /keyLogs/{keyLogId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && 
-                    isValidId(keyLogId) &&
-                    incoming().login_email == request.auth.token.email;
-      allow update, delete: if isAdmin();
-    }
-
-    // PatrolPoints collection
-    match /patrolPoints/{patrolPointId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin();
-    }
-
-    // PatrolLogs collection (Guards can create, but cannot edit or delete)
-    match /patrolLogs/{patrolLogId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && 
-                    isValidId(patrolLogId) &&
-                    incoming().login_email == request.auth.token.email;
-      allow update, delete: if isAdmin();
-    }
-
-    // IncidentReports collection
-    match /incidentReports/{incidentId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && 
-                    isValidId(incidentId) &&
-                    incoming().login_email == request.auth.token.email;
-      allow update: if isAdmin() || isManager(); // Only Admin & Manager can update status / report workflows
+    match /parkingCards/{id} {
+      allow read, create, update: if isActiveUser();
       allow delete: if isAdmin();
     }
 
-    // Blacklist collection
-    match /blacklist/{blacklistId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin();
+    match /vehicleLogs/{id} {
+      allow read, create, update: if isActiveUser();
+      allow delete: if isAdmin();
     }
 
-    // DailyReports collection
-    match /dailyReports/{reportId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && 
-                    isValidId(reportId) &&
-                    incoming().login_email == request.auth.token.email;
-      allow update, delete: if isAdmin();
+    match /contractorLogs/{id} {
+      allow read, create, update: if isActiveUser();
+      allow delete: if isAdmin();
     }
 
-    // AuditLogs collection (Only Admin can read, guards can only append, absolutely immutable once written)
-    match /auditLogs/{auditId} {
+    match /keyLogs/{id} {
+      allow read, create, update: if isActiveUser();
+      allow delete: if isAdmin();
+    }
+
+    match /patrolPoints/{id} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /patrolLogs/{id} {
+      allow read, create, update: if isActiveUser();
+      allow delete: if isAdmin();
+    }
+
+    match /incidentReports/{id} {
+      allow read, create, update: if isActiveUser();
+      allow delete: if isAdmin();
+    }
+
+    match /blacklist/{id} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /dailyReports/{id} {
+      allow read, create, update: if isActiveUser();
+      allow delete: if isAdmin();
+    }
+
+    match /auditLogs/{id} {
       allow read: if isAdmin();
-      allow create: if isSignedIn() && 
-                    isValidId(auditId) &&
-                    incoming().login_email == request.auth.token.email;
+      allow create: if isActiveUser();
       allow update, delete: if false;
     }
 
-    // Keys collection (Inventory list: Admin manages list, guards can update checkout status)
-    match /keys/{keyId} {
-      allow read: if isSignedIn();
-      allow create, delete: if isAdmin();
-      allow update: if isSignedIn();
+    match /keys/{id} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
     }
 
-    // SystemSettings collection
-    match /systemSettings/{settingKey} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin();
+    match /units/{id} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /units_archive/{id} {
+      allow read: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /accounts/{id} {
+      allow read, create, update, delete: if isAdmin();
+    }
+
+    match /operators/{id} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

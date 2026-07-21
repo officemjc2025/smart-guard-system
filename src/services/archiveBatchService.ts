@@ -1,4 +1,5 @@
 import {
+  collection,
   doc,
   getDoc,
   increment,
@@ -6,9 +7,10 @@ import {
   setDoc,
   Timestamp,
   updateDoc,
-  type DocumentData,
   type DocumentSnapshot,
   type FieldValue,
+  type FirestoreDataConverter,
+  type UpdateData,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 
@@ -59,12 +61,56 @@ type ArchiveBatchCreateData = Omit<ArchiveBatchFirestoreRecord, 'createdAt' | 'u
   updatedAt: FieldValue;
 };
 
-type ArchiveBatchUpdateData = ArchiveBatchMutableFields & {
+type ArchiveBatchUpdateData = UpdateData<ArchiveBatchFirestoreRecord> & {
   updatedAt: FieldValue;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isArchiveBatchFirestoreRecord(
+  value: unknown,
+): value is ArchiveBatchFirestoreRecord {
+  if (!isRecord(value)) return false;
+  const metadataIsValid =
+    value.metadata === undefined || isRecord(value.metadata);
+  return (
+    typeof value.sourceCollection === 'string' &&
+    typeof value.requestedBy === 'string' &&
+    typeof value.totalRecords === 'number' &&
+    metadataIsValid &&
+    ['pending', 'processing', 'completed', 'failed'].includes(String(value.status)) &&
+    ['pending', 'verified', 'failed'].includes(String(value.verificationStatus)) &&
+    typeof value.processedCount === 'number' &&
+    typeof value.successCount === 'number' &&
+    typeof value.failedCount === 'number' &&
+    typeof value.retryCount === 'number' &&
+    (typeof value.errorMessage === 'string' || value.errorMessage === null) &&
+    value.createdAt instanceof Timestamp &&
+    value.updatedAt instanceof Timestamp &&
+    (value.completedAt instanceof Timestamp || value.completedAt === null)
+  );
+}
+
+const archiveBatchConverter: FirestoreDataConverter<ArchiveBatchFirestoreRecord> = {
+  toFirestore(model) {
+    return model;
+  },
+  fromFirestore(snapshot) {
+    const data: unknown = snapshot.data();
+    if (!isArchiveBatchFirestoreRecord(data)) {
+      throw new Error(`Archive batch "${snapshot.id}" contains invalid data.`);
+    }
+    return data;
+  },
+};
+
 function archiveBatchReference(batchId: string) {
-  return doc(db, ARCHIVE_BATCHES_COLLECTION, batchId);
+  const batches = collection(db, ARCHIVE_BATCHES_COLLECTION).withConverter(
+    archiveBatchConverter,
+  );
+  return doc(batches, batchId);
 }
 
 function requireBatchId(batchId: string): void {
@@ -74,15 +120,16 @@ function requireBatchId(batchId: string): void {
 }
 
 function toArchiveBatchRecord(
-  snapshot: DocumentSnapshot<DocumentData>,
+  snapshot: DocumentSnapshot<ArchiveBatchFirestoreRecord>,
 ): ArchiveBatchRecord {
+  const snapshotId = snapshot.id;
   if (!snapshot.exists()) {
-    throw new Error(`Archive batch "${snapshot.id}" was not found.`);
+    throw new Error(`Archive batch "${snapshotId}" was not found.`);
   }
 
   return {
-    id: snapshot.id,
-    ...(snapshot.data() as ArchiveBatchFirestoreRecord),
+    id: snapshotId,
+    ...snapshot.data(),
   };
 }
 

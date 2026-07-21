@@ -12,6 +12,7 @@ import {
 import { 
   readSheet, appendSheetRow, updateSheetRow, writeAuditLog, SCHEMA, initializeSystemData
 } from '../googleApi';
+import { createStaffAccount, rotateStaffPin, setStaffStatus } from '../firebase';
 import { 
   UserRecord, ParkingCardRecord, PatrolPointRecord, KeyLogRecord, 
   IncidentReportRecord, BlacklistRecord, AuditLogRecord 
@@ -25,6 +26,8 @@ interface AdminPanelProps {
   loginEmail?: string;
   authorizationResult?: string;
 }
+
+
 
 type AdminTab = 'dashboard' | 'users' | 'cards' | 'points' | 'keys' | 'blacklist' | 'incidents' | 'settings' | 'audit';
 
@@ -57,7 +60,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   const [incidentFilterSeverity, setIncidentFilterSeverity] = useState('');
 
   // Form States
-  const [userForm, setUserForm] = useState({ name: '', login_email: '', role: 'Guard', shift: 'ทั่วไป', phone: '', pin: '1234' });
+  const [userForm, setUserForm] = useState({ name: '', username: '', role: 'Guard', shift: 'ทั่วไป', phone: '', pin: '' });
   const [cardForm, setCardForm] = useState({ card_number: '', qr_code_value: '', note: '' });
   const [pointForm, setPointForm] = useState({ point_name: '', location_detail: '', required_interval_minutes: 60 });
   const [keyForm, setKeyForm] = useState({ room_number: '', key_type: 'ห้องพัก', key_label: '', note: '' });
@@ -134,30 +137,31 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   // Handle Create Operations
   const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!hasEditAccess) return showToast('error', 'สิทธิ์ระดับผู้จัดการไม่ได้รับอนุญาตให้ทำการแก้ไขค่าระบบหลัก');
+    if (!hasEditAccess) return showToast('error', 'เฉพาะ Admin เท่านั้นที่สร้างผู้ใช้งานได้');
     try {
       setLoading(true);
-      const userId = 'U' + Math.floor(Math.random() * 9000 + 1000);
-      const now = new Date().toISOString();
-      const record: UserRecord = {
-        user_id: userId,
-        login_email: userForm.login_email || 'shared@example.com',
+      const normalizedUsername = userForm.username.trim().toLowerCase().replace(/\s+/g, '');
+      if (!/^[a-z0-9._-]{3,24}$/.test(normalizedUsername)) {
+        throw new Error('Username ต้องมี 3–24 ตัว ใช้ a-z, 0-9, จุด, ขีดกลาง หรือขีดล่าง');
+      }
+      if (!/^\d{6}$/.test(userForm.pin)) {
+        throw new Error('PIN ต้องเป็นตัวเลข 6 หลัก');
+      }
+      const record = await createStaffAccount({
+        username: normalizedUsername,
         operator_name: userForm.name,
         role: userForm.role as any,
-        shift: userForm.shift as any,
+        shift: userForm.shift,
         phone: userForm.phone,
-        status: 'Active',
-        created_at: now,
-        updated_at: now
-      };
-      await appendSheetRow('Users', record);
-      await writeAuditLog(currentUser.name, 'สร้างผู้ใช้งาน', 'Users', userId, '', JSON.stringify(record));
-      setUserForm({ name: '', login_email: '', role: 'Guard', shift: 'ทั่วไป', phone: '', pin: '1234' });
+        status: 'Active'
+      }, userForm.pin);
+      await writeAuditLog(currentUser.name, 'สร้างผู้ใช้งาน Firebase Auth', 'Users', record.user_id, '', JSON.stringify({ username: normalizedUsername, role: userForm.role }));
+      setUserForm({ name: '', username: '', role: 'Guard', shift: 'ทั่วไป', phone: '', pin: '' });
       setShowAddForm(false);
-      showToast('success', 'สร้างผู้ใช้งานสำเร็จ!');
+      showToast('success', 'สร้าง Username และ PIN สำเร็จ');
       fetchData();
     } catch (err: any) {
-      showToast('error', err.message);
+      showToast('error', err.message || 'สร้างผู้ใช้งานไม่สำเร็จ');
     } finally {
       setLoading(false);
     }
@@ -288,18 +292,44 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
     }
   };
 
-  // Update Status / Fields Actions
+
+  const handleSetUsername = async (_user: UserRecord) => {
+    showToast('error', 'Username ไม่สามารถเปลี่ยนภายหลังได้ หากต้องการเปลี่ยนให้สร้างบัญชีใหม่');
+  };
+
+  const handleResetUserPin = async (user: UserRecord) => {
+    if (!isAdmin) return showToast('error', 'เฉพาะ Admin เท่านั้นที่รีเซ็ต PIN ได้');
+    const newPin = window.prompt(`กำหนด PIN ใหม่สำหรับ ${user.operator_name}\nกรอกตัวเลข 6 หลัก`);
+    if (newPin === null) return;
+    if (!/^\d{6}$/.test(newPin)) return showToast('error', 'PIN ต้องเป็นตัวเลข 6 หลัก');
+    try {
+      setLoading(true);
+      const replacement = await rotateStaffPin(user as any, newPin);
+      await writeAuditLog(currentUser.name, 'รีเซ็ต PIN และหมุน Firebase Auth UID', 'Users', replacement.user_id, '', user.operator_name, loginEmail, currentUser.name);
+      showToast('success', `รีเซ็ต PIN ให้ ${user.operator_name} เรียบร้อยแล้ว`);
+      fetchData();
+    } catch (err: any) {
+      showToast('error', err.message || 'ไม่สามารถรีเซ็ต PIN ได้');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUnlockUserPin = async (_user: UserRecord) => {
+    showToast('success', 'Firebase Auth จัดการการจำกัดความพยายามเข้าสู่ระบบให้อัตโนมัติ');
+  };
+
   const handleToggleUserStatus = async (user: UserRecord) => {
-    if (!hasEditAccess) return showToast('error', 'สิทธิ์ระดับผู้จัดการไม่ได้รับอนุญาตให้แก้ไขสถานะผู้ใช้งาน');
+    if (!hasEditAccess) return showToast('error', 'เฉพาะ Admin เท่านั้นที่แก้ไขสถานะผู้ใช้งานได้');
     try {
       setLoading(true);
       const nextStatus = user.status === 'Active' ? 'Inactive' : 'Active';
-      await updateSheetRow('Users', 'user_id', user.user_id, { status: nextStatus, updated_at: new Date().toISOString() });
-      await writeAuditLog(currentUser.name, `เปลี่ยนสถานะผู้ใช้งาน`, 'Users', user.user_id, user.status, nextStatus);
-      showToast('success', 'อัปเดตสถานะผู้ใช้งานสำเร็จ!');
+      await setStaffStatus(user as any, nextStatus as 'Active' | 'Inactive');
+      await writeAuditLog(currentUser.name, 'เปลี่ยนสถานะผู้ใช้งาน', 'Users', user.user_id, user.status, nextStatus);
+      showToast('success', 'อัปเดตสถานะผู้ใช้งานสำเร็จ');
       fetchData();
     } catch (err: any) {
-      showToast('error', err.message);
+      showToast('error', err.message || 'อัปเดตสถานะไม่สำเร็จ');
     } finally {
       setLoading(false);
     }
@@ -762,15 +792,19 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-slate-400 font-bold block mb-1">อีเมล Google ที่ใช้ล็อกอิน (สิทธิ์แบบแชร์ได้)</label>
+                    <label htmlFor="new-user-username" className="text-[10px] text-slate-400 font-bold block mb-1">Username สำหรับเข้าสู่ระบบ</label>
                     <input
-                      type="email"
+                      id="new-user-username"
+                      name="username"
+                      type="text"
                       required
-                      value={userForm.login_email}
-                      onChange={e => setUserForm({ ...userForm, login_email: e.target.value })}
+                      autoCapitalize="none"
+                      value={userForm.username}
+                      onChange={e => setUserForm({ ...userForm, username: e.target.value.toLowerCase().replace(/\s/g, '') })}
                       className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none"
-                      placeholder="เช่น guard@example.com"
+                      placeholder="เช่น guard01, leader01"
                     />
+                    <div className="text-[9px] text-slate-500 mt-1">ผู้ใช้กรอก Username + PIN เท่านั้น ไม่ต้องใช้ Google</div>
                   </div>
                   <div>
                     <label className="text-[10px] text-slate-400 font-bold block mb-1">บทบาท / สิทธิ์ปฏิบัติงาน</label>
@@ -809,14 +843,19 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                     />
                   </div>
                   <div>
-                    <label className="text-[10px] text-slate-400 font-bold block mb-1">รหัส PIN (สำหรับระบบล็อกอินเสริม)</label>
+                    <label htmlFor="new-user-pin" className="text-[10px] text-slate-400 font-bold block mb-1">PIN สำหรับเข้าสู่ระบบ</label>
                     <input
-                      type="text"
-                      maxLength={4}
+                      id="new-user-pin"
+                      name="pin"
+                      type="password"
+                      inputMode="numeric"
+                      required
+                      minLength={4}
+                      maxLength={6}
                       value={userForm.pin}
-                      onChange={e => setUserForm({ ...userForm, pin: e.target.value })}
+                      onChange={e => setUserForm({ ...userForm, pin: e.target.value.replace(/\D/g, '').slice(0, 6) })}
                       className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none"
-                      placeholder="4 หลัก"
+                      placeholder="4–6 หลัก (Admin กำหนด)"
                     />
                   </div>
                 </div>
@@ -858,7 +897,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                         <td className="p-4 font-mono font-bold text-slate-400">{user.user_id}</td>
                         <td className="p-4">
                           <div className="font-bold text-white">{user.operator_name}</div>
-                          <div className="text-[10px] text-slate-500 font-mono mt-0.5">{user.login_email}</div>
+                          <div className="text-[10px] text-blue-400 font-mono mt-0.5">Username: {(user as any).username || (user.role === 'Admin' ? 'admin' : String(user.user_id || '').toLowerCase())}</div>
                         </td>
                         <td className="p-4">
                           <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
@@ -881,16 +920,38 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                           </span>
                         </td>
                         <td className="p-4 text-center">
-                          <button
-                            onClick={() => handleToggleUserStatus(user)}
-                            className={`px-3 py-1 text-[10px] font-bold rounded-lg cursor-pointer ${
-                              user.status === 'Active' 
-                                ? 'bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-500/20' 
-                                : 'bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20'
-                            }`}
-                          >
-                            {user.status === 'Active' ? 'ปิดสิทธิ์เข้าใช้' : 'เปิดใช้งานสิทธิ์'}
-                          </button>
+                          <div className="flex flex-wrap items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => handleSetUsername(user)}
+                              className="px-3 py-1 text-[10px] font-bold rounded-lg cursor-pointer bg-cyan-600/10 hover:bg-cyan-600/20 text-cyan-400 border border-cyan-500/20"
+                            >
+                              กำหนด Username
+                            </button>
+                            <button
+                              onClick={() => handleResetUserPin(user)}
+                              className="px-3 py-1 text-[10px] font-bold rounded-lg cursor-pointer bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20"
+                            >
+                              กำหนด/รีเซ็ต PIN
+                            </button>
+                            {(user as any).pinLockedUntil && (
+                              <button
+                                onClick={() => handleUnlockUserPin(user)}
+                                className="px-3 py-1 text-[10px] font-bold rounded-lg cursor-pointer bg-amber-600/10 hover:bg-amber-600/20 text-amber-400 border border-amber-500/20"
+                              >
+                                ปลดล็อก PIN
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleToggleUserStatus(user)}
+                              className={`px-3 py-1 text-[10px] font-bold rounded-lg cursor-pointer ${
+                                user.status === 'Active' 
+                                  ? 'bg-red-600/10 hover:bg-red-600/20 text-red-400 border border-red-500/20' 
+                                  : 'bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20'
+                              }`}
+                            >
+                              {user.status === 'Active' ? 'ปิดสิทธิ์เข้าใช้' : 'เปิดใช้งานสิทธิ์'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

@@ -93,16 +93,16 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
     try {
       let mainPhotoUrl = '';
       let incidentPhotoUrl = '';
+      const patrolLogId = 'PL' + Math.floor(Math.random() * 1000000);
 
       if (patrolPhoto) {
-        mainPhotoUrl = await uploadImageToDrive(patrolPhoto, `patrol_${scannedPoint.patrol_point_id}_${Date.now()}.jpg`);
+        mainPhotoUrl = await uploadImageToDrive(patrolPhoto, `patrol_${scannedPoint.patrol_point_id}_${Date.now()}.jpg`, { moduleName: 'PatrolLogs', recordId: patrolLogId, siteId: 'smart-guard', uploadedBy: guardName });
       }
       if (abnormalPhoto) {
-        incidentPhotoUrl = await uploadImageToDrive(abnormalPhoto, `patrol_abn_${scannedPoint.patrol_point_id}_${Date.now()}.jpg`);
+        incidentPhotoUrl = await uploadImageToDrive(abnormalPhoto, `patrol_abn_${scannedPoint.patrol_point_id}_${Date.now()}.jpg`, { moduleName: 'PatrolLogs', recordId: patrolLogId, siteId: 'smart-guard', uploadedBy: guardName });
       }
 
       const nowStr = new Date().toISOString();
-      const patrolLogId = 'PL' + Math.floor(Math.random() * 1000000);
 
       const newLog: PatrolLogRecord = {
         patrol_log_id: patrolLogId,

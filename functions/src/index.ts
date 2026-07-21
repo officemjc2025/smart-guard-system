@@ -1,5 +1,6 @@
 import * as admin from 'firebase-admin';
 import * as functions from 'firebase-functions';
+import { defineString } from 'firebase-functions/params';
 import { onCall, HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
 import { Readable } from 'stream';
 import { getDriveClient, uploadToDrive } from './drive';
@@ -12,6 +13,9 @@ const firestore = admin.firestore();
 const ARCHIVE_BATCHES_COLLECTION = 'archiveBatches';
 const MEDIA_COLLECTION = 'media';
 const ARCHIVE_PAGE_SIZE = 100;
+const googleDriveRootFolderId = defineString('GOOGLE_DRIVE_ROOT_FOLDER_ID', {
+  description: 'Google Drive folder ID used as the root for archived media.',
+});
 
 interface UploadMediaToDriveRequest {
   fileName: string;
@@ -190,7 +194,7 @@ export const archiveBatchToDrive = onCall(
 
     const batchId = sanitizeAndValidateId(request.data.batchId, 'batchId');
     const cursor = archiveCursor(request.data);
-    const rootFolderId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID?.trim();
+    const rootFolderId = googleDriveRootFolderId.value().trim();
     if (!rootFolderId) {
       throw new HttpsError('failed-precondition', 'GOOGLE_DRIVE_ROOT_FOLDER_ID is not configured.');
     }

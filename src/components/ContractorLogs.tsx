@@ -11,6 +11,7 @@ import {
 import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '../googleApi';
 import { ContractorLogRecord, BlacklistRecord } from '../types';
 import ConfirmModal from './ConfirmModal';
+import UnitSearchSelect from './UnitSearchSelect';
 
 interface ContractorLogsProps {
   guardName: string;
@@ -36,6 +37,8 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
     phone: '',
     company: '',
     target_room: '',
+    target_unit_id: '',
+    unit_lookup_status: undefined as 'matched' | 'manual' | undefined,
     owner_name: '',
     work_type: 'ซ่อมระบบแสงสว่าง',
     note: ''
@@ -112,16 +115,16 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
     try {
       let idPhotoUrl = '';
       let facePhotoUrl = '';
+      const contractorLogId = 'CON' + Math.floor(Math.random() * 1000000);
 
       if (idCardPhoto) {
-        idPhotoUrl = await uploadImageToDrive(idCardPhoto, `contractor_id_${entryForm.id_card_number}_${Date.now()}.jpg`);
+        idPhotoUrl = await uploadImageToDrive(idCardPhoto, `contractor_id_${entryForm.id_card_number}_${Date.now()}.jpg`, { moduleName: 'ContractorLogs', recordId: contractorLogId, siteId: 'smart-guard', uploadedBy: guardName });
       }
       if (facePhoto) {
-        facePhotoUrl = await uploadImageToDrive(facePhoto, `contractor_face_${entryForm.id_card_number}_${Date.now()}.jpg`);
+        facePhotoUrl = await uploadImageToDrive(facePhoto, `contractor_face_${entryForm.id_card_number}_${Date.now()}.jpg`, { moduleName: 'ContractorLogs', recordId: contractorLogId, siteId: 'smart-guard', uploadedBy: guardName });
       }
 
       const nowStr = new Date().toISOString();
-      const contractorLogId = 'CON' + Math.floor(Math.random() * 1000000);
 
       // Append Contractor Log
       const newLog: ContractorLogRecord = {
@@ -131,6 +134,8 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         phone: entryForm.phone,
         company: entryForm.company,
         target_room: entryForm.target_room,
+        target_unit_id: entryForm.target_unit_id || undefined,
+        unit_lookup_status: entryForm.unit_lookup_status,
         owner_name: entryForm.owner_name,
         work_type: entryForm.work_type,
         entry_time: nowStr,
@@ -166,6 +171,8 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         phone: '',
         company: '',
         target_room: '',
+        target_unit_id: '',
+        unit_lookup_status: undefined,
         owner_name: '',
         work_type: 'ซ่อมระบบแสงสว่าง',
         note: ''
@@ -337,18 +344,9 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
                 />
               </div>
 
-              {/* Target Room */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-bold text-slate-600">ห้องที่จะเข้าปฏิบัติงาน *</label>
-                <input
-                  type="text"
-                  value={entryForm.target_room}
-                  onChange={(e) => setEntryForm(prev => ({ ...prev, target_room: e.target.value }))}
-                  placeholder="เช่น 205/12 ชั้น 10"
-                  className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold"
-                  required
-                />
-              </div>
+              <UnitSearchSelect value={entryForm.target_room} selectedUnitId={entryForm.target_unit_id}
+                label="ห้องที่จะเข้าปฏิบัติงาน" required allowManualEntry
+                onSelect={unit => setEntryForm(prev => ({ ...prev, target_room: unit?.room_number || '', owner_name: unit?.owner_name || '', target_unit_id: unit?.unit_id || '', unit_lookup_status: unit ? (unit.unit_id ? 'matched' : 'manual') : undefined }))} />
 
               {/* Room Owner Name */}
               <div className="flex flex-col gap-1.5">

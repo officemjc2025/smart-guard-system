@@ -11,6 +11,7 @@ import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '.
 import { KeyLogRecord } from '../types';
 import SignaturePad from './SignaturePad';
 import ConfirmModal from './ConfirmModal';
+import UnitSearchSelect from './UnitSearchSelect';
 
 interface KeyLogsProps {
   guardName: string;
@@ -28,6 +29,8 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
   // Checkout Form State
   const [checkoutForm, setCheckoutForm] = useState({
     room_number: '',
+    target_unit_id: '',
+    unit_lookup_status: undefined as 'matched' | 'manual' | undefined,
     key_type: 'ห้องพัก' as any,
     borrower_name: '',
     borrower_phone: '',
@@ -87,24 +90,26 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
     try {
       let bPhotoUrl = '';
       let sigUrl = '';
+      const keyLogId = 'KEY' + Math.floor(Math.random() * 1000000);
 
       // 1. Upload Borrower Photo if taken
       if (borrowerPhoto) {
-        bPhotoUrl = await uploadImageToDrive(borrowerPhoto, `key_borrower_${checkoutForm.room_number}_${Date.now()}.jpg`);
+        bPhotoUrl = await uploadImageToDrive(borrowerPhoto, `key_borrower_${checkoutForm.room_number}_${Date.now()}.jpg`, { moduleName: 'KeyLogs', recordId: keyLogId, siteId: 'smart-guard', uploadedBy: guardName });
       }
 
       // 2. Upload Canvas Signature image
       if (signatureImage) {
-        sigUrl = await uploadImageToDrive(signatureImage, `sig_key_${checkoutForm.room_number}_${Date.now()}.png`);
+        sigUrl = await uploadImageToDrive(signatureImage, `sig_key_${checkoutForm.room_number}_${Date.now()}.png`, { moduleName: 'KeyLogs', recordId: keyLogId, siteId: 'smart-guard', uploadedBy: guardName });
       }
 
       const nowStr = new Date().toISOString();
-      const keyLogId = 'KEY' + Math.floor(Math.random() * 1000000);
 
       // 3. Write row to KeyLogs
       const newKeyLog: KeyLogRecord = {
         key_log_id: keyLogId,
         room_number: checkoutForm.room_number,
+        target_unit_id: checkoutForm.target_unit_id || undefined,
+        unit_lookup_status: checkoutForm.unit_lookup_status,
         key_type: checkoutForm.key_type,
         borrower_name: checkoutForm.borrower_name,
         borrower_phone: checkoutForm.borrower_phone,
@@ -139,6 +144,8 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
       // Reset
       setCheckoutForm({
         room_number: '',
+        target_unit_id: '',
+        unit_lookup_status: undefined,
         key_type: 'ห้องพัก',
         borrower_name: '',
         borrower_phone: '',
@@ -254,18 +261,9 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
           <form onSubmit={handleCheckoutSubmit} className="flex flex-col gap-5">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               
-              {/* Room number */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-bold text-slate-600">เลขห้องพัก / พื้นที่กุญแจ *</label>
-                <input
-                  type="text"
-                  value={checkoutForm.room_number}
-                  onChange={(e) => setCheckoutForm(prev => ({ ...prev, room_number: e.target.value }))}
-                  placeholder="เช่น ห้องไฟฟ้า M, 501/22"
-                  className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold"
-                  required
-                />
-              </div>
+              <UnitSearchSelect value={checkoutForm.room_number} selectedUnitId={checkoutForm.target_unit_id}
+                label="เลขห้องพัก / พื้นที่กุญแจ" required allowManualEntry
+                onSelect={unit => setCheckoutForm(prev => ({ ...prev, room_number: unit?.room_number || '', target_unit_id: unit?.unit_id || '', unit_lookup_status: unit ? (unit.unit_id ? 'matched' : 'manual') : undefined }))} />
 
               {/* Key type */}
               <div className="flex flex-col gap-1.5">

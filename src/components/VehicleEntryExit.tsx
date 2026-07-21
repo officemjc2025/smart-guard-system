@@ -12,6 +12,7 @@ import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '.
 import { VehicleLogRecord, ParkingCardRecord, BlacklistRecord } from '../types';
 import QRScanner from './QRScanner';
 import ConfirmModal from './ConfirmModal';
+import UnitSearchSelect from './UnitSearchSelect';
 
 interface VehicleEntryExitProps {
   guardName: string;
@@ -37,6 +38,8 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
     visitor_name: '',
     visitor_phone: '',
     target_room: '',
+    target_unit_id: '',
+    unit_lookup_status: undefined as 'matched' | 'manual' | undefined,
     purpose: 'เยี่ยมญาติ',
     note: ''
   });
@@ -125,16 +128,16 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
       // 1. Upload photos if they exist
       let platePhotoUrl = '';
       let vehiclePhotoUrl = '';
+      const logId = 'V' + Math.floor(Math.random() * 1000000);
 
       if (entryPlatePhoto) {
-        platePhotoUrl = await uploadImageToDrive(entryPlatePhoto, `plate_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`);
+        platePhotoUrl = await uploadImageToDrive(entryPlatePhoto, `plate_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: logId, siteId: 'smart-guard', uploadedBy: guardName });
       }
       if (entryVehiclePhoto) {
-        vehiclePhotoUrl = await uploadImageToDrive(entryVehiclePhoto, `vehicle_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`);
+        vehiclePhotoUrl = await uploadImageToDrive(entryVehiclePhoto, `vehicle_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: logId, siteId: 'smart-guard', uploadedBy: guardName });
       }
 
       const nowStr = new Date().toISOString();
-      const logId = 'V' + Math.floor(Math.random() * 1000000);
 
       // 2. Write to VehicleLogs
       const newLog: VehicleLogRecord = {
@@ -145,6 +148,8 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
         visitor_name: entryForm.visitor_name,
         visitor_phone: entryForm.visitor_phone,
         target_room: entryForm.target_room,
+        target_unit_id: entryForm.target_unit_id || undefined,
+        unit_lookup_status: entryForm.unit_lookup_status,
         purpose: entryForm.purpose,
         entry_time: nowStr,
         entry_plate_photo_url: platePhotoUrl,
@@ -191,6 +196,8 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
         visitor_name: '',
         visitor_phone: '',
         target_room: '',
+        target_unit_id: '',
+        unit_lookup_status: undefined,
         purpose: 'เยี่ยมญาติ',
         note: ''
       });
@@ -223,10 +230,10 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
       let exitVehicleUrl = '';
 
       if (exitPlatePhoto) {
-        exitPlateUrl = await uploadImageToDrive(exitPlatePhoto, `plate_out_${selectedExitVehicle.vehicle_plate}_${Date.now()}.jpg`);
+        exitPlateUrl = await uploadImageToDrive(exitPlatePhoto, `plate_out_${selectedExitVehicle.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: selectedExitVehicle.log_id, siteId: 'smart-guard', uploadedBy: guardName });
       }
       if (exitVehiclePhoto) {
-        exitVehicleUrl = await uploadImageToDrive(exitVehiclePhoto, `vehicle_out_${selectedExitVehicle.vehicle_plate}_${Date.now()}.jpg`);
+        exitVehicleUrl = await uploadImageToDrive(exitVehiclePhoto, `vehicle_out_${selectedExitVehicle.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: selectedExitVehicle.log_id, siteId: 'smart-guard', uploadedBy: guardName });
       }
 
       const nowStr = new Date().toISOString();
@@ -419,18 +426,9 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
                 />
               </div>
 
-              {/* Target Room */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-bold text-slate-600">ห้อง/พื้นที่มาติดต่อ *</label>
-                <input
-                  type="text"
-                  value={entryForm.target_room}
-                  onChange={(e) => setEntryForm(prev => ({ ...prev, target_room: e.target.value }))}
-                  placeholder="เช่น 101/45 ชั้น 5"
-                  className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold"
-                  required
-                />
-              </div>
+              <UnitSearchSelect value={entryForm.target_room} selectedUnitId={entryForm.target_unit_id}
+                label="ห้อง/พื้นที่มาติดต่อ" required allowManualEntry
+                onSelect={unit => setEntryForm(prev => ({ ...prev, target_room: unit?.room_number || '', target_unit_id: unit?.unit_id || '', unit_lookup_status: unit ? (unit.unit_id ? 'matched' : 'manual') : undefined }))} />
 
               {/* Purpose */}
               <div className="flex flex-col gap-1.5">

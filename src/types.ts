@@ -26,6 +26,28 @@ export interface ParkingCardRecord {
   updated_at: string;
 }
 
+/** Canonical master-data record for an occupiable unit. */
+export interface UnitRecord {
+  unit_id: string;
+  site_id: string;
+  room_code?: string;
+  room_number: string;
+  floor: string;
+  area?: string;
+  ratio?: string;
+  owner_name: string;
+  phone?: string;
+  email?: string;
+  occupancy_status: string;
+  searchable_text: string;
+  search_key: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  source_file_name?: string;
+  import_batch_id?: string;
+}
+
 export interface VehicleLogRecord {
   log_id: string;
   card_number: string;
@@ -34,6 +56,9 @@ export interface VehicleLogRecord {
   visitor_name: string;
   visitor_phone: string;
   target_room: string;
+  /** Optional reference to Units; target_room remains the historical display field. */
+  target_unit_id?: string;
+  unit_lookup_status?: 'matched' | 'manual';
   purpose: string;
   entry_time: string;
   exit_time?: string;
@@ -57,6 +82,8 @@ export interface ContractorLogRecord {
   phone: string;
   company: string;
   target_room: string;
+  target_unit_id?: string;
+  unit_lookup_status?: 'matched' | 'manual';
   owner_name: string;
   work_type: string;
   entry_time: string;
@@ -75,6 +102,8 @@ export interface ContractorLogRecord {
 export interface KeyLogRecord {
   key_log_id: string;
   room_number: string;
+  target_unit_id?: string;
+  unit_lookup_status?: 'matched' | 'manual';
   key_type: 'ห้องพัก' | 'ห้องไฟฟ้า' | 'ห้องเครื่องจักร' | 'พื้นที่ส่วนกลาง' | 'อื่นๆ';
   borrower_name: string;
   borrower_phone: string;
@@ -127,6 +156,8 @@ export interface IncidentReportRecord {
   incident_id: string;
   incident_datetime: string;
   location: string;
+  target_unit_id?: string;
+  unit_lookup_status?: 'matched' | 'manual';
   incident_type: 'อัคคีภัย' | 'น้ำท่วม/ท่อแตก' | 'โจรกรรม/ลักทรัพย์' | 'ทะเลาะวิวาท' | 'อุปกรณ์ชำรุด' | 'อื่นๆ';
   description: string;
   photo_url?: string;

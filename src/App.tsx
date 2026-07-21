@@ -1,23 +1,26 @@
-import { useState, useEffect } from 'react';
-import { 
-  Shield, LogOut, Loader2, Home, Car, Users, Key, 
-  MapPin, AlertTriangle, Search, Settings, ShieldCheck,
-  Smartphone, User, RefreshCw
+import { useState, useEffect, useRef, type ReactNode } from 'react';
+import type { FormEvent } from 'react';
+import {
+  Shield, LogOut, Loader2, Home, Car, Users, Key,
+  MapPin, AlertTriangle, Search, Settings, RefreshCw
 } from 'lucide-react';
-import { 
-  signInWithGoogle,
-  handleRedirectResult,
-  logout, 
-  onAuthStateChange, 
-  db
+import {
+  auth,
+  bootstrapFirstAdmin,
+  db,
+  isFirstAdminSetupAvailable,
+  normalizeUsername,
+  onAuthStateChange,
+  prepareAuthPersistence,
+  signInWithUsernamePin,
+  signOutSmartGuard,
+  validatePin
 } from './firebase';
-import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
-import { readSheet, appendSheetRow, writeAuditLog } from './googleApi';
+import { readSheet, writeAuditLog } from './googleApi';
 import ConfirmModal from './components/ConfirmModal';
 
-console.log('[Smart Guard Build] v3.1.1 Firebase-only build loaded');
+console.log('[Smart Guard Build] v4.0.1 bootstrap-permission fix loaded');
 
-// Component Imports
 import Dashboard from './components/Dashboard';
 import VehicleEntryExit from './components/VehicleEntryExit';
 import ContractorLogs from './components/ContractorLogs';
@@ -28,257 +31,43 @@ import SearchHistory from './components/SearchHistory';
 import MasterData from './components/MasterData';
 import AdminPanel from './components/AdminPanel';
 
-type TabType = 'dashboard' | 'vehicles' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'history' | 'settings' | 'admin';
+export type TabType = 'dashboard' | 'vehicles' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'history' | 'settings' | 'admin';
+type Role = 'Guard' | 'Shift Leader' | 'Manager' | 'Admin';
+
+function DebugPage({ name, children }: { name: string; children: ReactNode }) {
+  useEffect(() => {
+    console.log(`[Smart Guard Debug] ${name} mounted`);
+    return () => console.log(`[Smart Guard Debug] ${name} unmounted`);
+  }, [name]);
+
+  return <>{children}</>;
+}
 
 export default function App() {
-  const [user, setUser] = useState<any>(null);
+  const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [authLoadingMessage, setAuthLoadingMessage] = useState<string>('กำลังตรวจสอบบัญชี Google...');
   const [apiInitializing, setApiInitializing] = useState(false);
   const [apiReady, setApiReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
-
-  // Active view state
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
 
-  // Identity States
-  const [guardName, setGuardName] = useState(() => sessionStorage.getItem('selected_operator_name') || 'แอดมิน สูงสุด');
-  const [userRole, setUserRole] = useState<'Guard' | 'Shift Leader' | 'Manager' | 'Admin'>(() => {
-    return (sessionStorage.getItem('selected_user_role') as any) || 'Admin';
-  });
-
-  // Operators List and selectedOperator state
-  const [usersList, setUsersList] = useState<any[]>([]);
-  const [operatorsForEmail, setOperatorsForEmail] = useState<any[]>([]);
-  const [selectedOperator, setSelectedOperator] = useState<any | null>(null);
-  const [usersLoading, setUsersLoading] = useState(false);
+  const [guardName, setGuardName] = useState('');
+  const [userRole, setUserRole] = useState<Role>('Guard');
+  const [currentProfile, setCurrentProfile] = useState<any | null>(null);
+  const [username, setUsername] = useState('');
+  const [operatorPin, setOperatorPin] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginBusy, setLoginBusy] = useState(false);
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
+  const [isSetupRoute, setIsSetupRoute] = useState(() => window.location.pathname === '/setup');
+  const [setupStatus, setSetupStatus] = useState<'checking' | 'available' | 'error'>('checking');
+  const [bootstrapPin, setBootstrapPin] = useState('');
+  const [bootstrapConfirmPin, setBootstrapConfirmPin] = useState('');
+  const bootstrapInProgressRef = useRef(false);
 
-  // Connection Testing States
-  const [apiTestingStatus, setApiTestingStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
-  const [apiTestDetails, setApiTestDetails] = useState<string | null>(null);
-
-  // Initial diagnostics log when API is ready and authenticated
   useEffect(() => {
-    if (!apiReady) return;
-    console.log('[Smart Guard Firestore] Initializing App. Checking Firestore database status...');
-    
-    // Automated ping test to check connection on load
-    const runInitialPing = async () => {
-      setApiTestingStatus('testing');
-      try {
-        console.log('[Smart Guard Firestore] Checking connection to cloud database...');
-        await readSheet('SystemSettings');
-        setApiTestingStatus('success');
-        setApiTestDetails('เชื่อมต่อฐานข้อมูล Firestore สำเร็จ! ระบบฐานข้อมูลและ Firebase Storage ของคุณพร้อมใช้งานแล้ว 100%');
-      } catch (err: any) {
-        console.warn('[Smart Guard Firestore] Health check failed:', err);
-        setApiTestingStatus('failed');
-        setApiTestDetails(err.message || 'ไม่สามารถติดต่อฐานข้อมูล Cloud Firestore ได้ในกะนี้');
-      }
-    };
-    runInitialPing();
-  }, [apiReady]);
-
-  const handleTestApi = async () => {
-    setApiTestingStatus('testing');
-    setApiTestDetails(null);
-    try {
-      console.log('[Smart Guard Firestore] Initiating manual Firestore database test...');
-      await readSheet('SystemSettings');
-      setApiTestingStatus('success');
-      setApiTestDetails('ฐานข้อมูล Firestore ตอบสนองปกติ! สามารถบันทึกประวัติ อัปโหลดรูปภาพ และใช้งานระบบได้ทันที');
-    } catch (err: any) {
-      console.error('[Smart Guard Firestore] Manual check failed:', err);
-      setApiTestingStatus('failed');
-      setApiTestDetails(err.message || 'ไม่สามารถตอบรับจาก Firebase Firestore ได้สำเร็จ');
-    }
-  };
-
-  // Track Firebase Authentication State and Redirect
-  useEffect(() => {
-    let isMounted = true;
-    let unsubscribe: (() => void) | null = null;
-
-    async function runAuthInit() {
-      setAuthLoading(true);
-      setAuthLoadingMessage('กำลังตรวจสอบบัญชี Google...');
-
-      if (!isMounted) return;
-
-      // Complete a pending redirect first so OAuth errors are surfaced.
-      try {
-        await handleRedirectResult();
-      } catch (error: any) {
-        console.error('[Smart Guard Auth] Redirect completion failed:', error);
-        if (isMounted) {
-          setInitError(`การลงชื่อเข้าใช้ด้วย Google ล้มเหลว: ${error?.message || error}`);
-          setAuthLoading(false);
-        }
-      }
-
-      // Subscribe to Auth State changes
-      unsubscribe = onAuthStateChange(async (firebaseUser) => {
-        console.log('[Smart Guard API] Auth state changed:', firebaseUser?.email || 'No user');
-        if (isMounted) {
-          if (firebaseUser) {
-            if (firebaseUser.email?.trim().toLowerCase() === 'sandbox@example.com') {
-              console.warn('[Smart Guard API] Blocking sandbox user in all environments.');
-              setUser(null);
-              setAuthLoading(false);
-              setInitError('บัญชีจำลอง (Sandbox) ไม่ได้รับอนุญาตในระบบ Smart Guard กรุณาลงชื่อเข้าใช้ด้วยบัญชี Google ที่ได้รับอนุญาต');
-              await logout();
-              return;
-            }
-            
-            // Clear just_logged_out flag since we have a valid logged in user now
-            sessionStorage.removeItem('just_logged_out');
-            
-            setUser(firebaseUser);
-            setAuthLoadingMessage('กำลังตรวจสอบสิทธิ์จาก Users Collection...');
-            // Initialize Firestore Database and Storage media store
-            await initFirestoreDatabase();
-          } else {
-            setUser(null);
-            setApiReady(false);
-            setSelectedOperator(null);
-            sessionStorage.removeItem('selected_operator_name');
-            sessionStorage.removeItem('selected_login_email');
-            sessionStorage.removeItem('selected_user_role');
-            setAuthLoading(false);
-          }
-        }
-      });
-    }
-
-    runAuthInit();
-
-    return () => {
-      isMounted = false;
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
-  }, []);
-
-  // Load and check roster against current user email once DB is ready
-  useEffect(() => {
-    async function checkUserRoster() {
-      if (!user || !apiReady) {
-        setOperatorsForEmail([]);
-        return;
-      }
-
-      setUsersLoading(true);
-      setAuthLoadingMessage('กำลังตรวจสอบสิทธิ์ด้วย Firestore...');
-      try {
-        const userEmail = user.email || '';
-        console.log('[Smart Guard Auth] Fetching active operator profiles for email:', userEmail);
-
-        // One Google account may map to several operators. Query by normalized login_email
-        // instead of assuming the Firestore document id always equals the Firebase Auth UID.
-        const normalizedEmail = userEmail.trim().toLowerCase();
-        const rosterQuery = query(
-          collection(db, 'users'),
-          where('login_email', '==', normalizedEmail),
-          where('status', '==', 'Active')
-        );
-        const rosterSnapshot = await getDocs(rosterQuery);
-        let matches: any[] = rosterSnapshot.docs.map((snapshot) => ({
-          ...snapshot.data(),
-          user_id: snapshot.data().user_id || snapshot.id,
-          __document_id: snapshot.id
-        }));
-
-        if (matches.length === 0) {
-          // Auto-bootstrap only the explicitly configured administrator.
-          const bootstrapAdminEmail = ((import.meta as any).env?.VITE_BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
-          const isBootstrapEmail = Boolean(bootstrapAdminEmail && normalizedEmail === bootstrapAdminEmail);
-
-          if (isBootstrapEmail) {
-            console.log('[Smart Guard Auth] No profile found. Auto-bootstrapping Master Admin profile...');
-            const userDocRef = doc(db, 'users', user.uid);
-            const adminOp = {
-              user_id: user.uid,
-              login_email: normalizedEmail,
-              operator_name: 'แอดมิน สูงสุด (MJC)',
-              role: 'Admin' as const,
-              shift: 'ทั่วไป',
-              phone: '0899999999',
-              status: 'Active',
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            };
-            await setDoc(userDocRef, adminOp);
-            matches = [{ ...adminOp, __document_id: user.uid }];
-
-            await writeAuditLog(
-              adminOp.operator_name,
-              'บูตสแตรปแอดมินระบบเริ่มต้น (System Admin Bootstrap)',
-              'Users',
-              user.uid,
-              '',
-              `สร้างสิทธิ์ผู้ดูแลระบบหลักโดยอัตโนมัติสำหรับอีเมล: ${normalizedEmail}`,
-              normalizedEmail,
-              adminOp.operator_name
-            );
-          }
-        }
-
-        console.log('[Smart Guard Auth] Operator profiles loaded:', matches);
-        setOperatorsForEmail(matches);
-        sessionStorage.setItem('selected_login_email', userEmail);
-
-        if (matches.length > 0) {
-          // Determine the effective role from the highest role assigned to the current login_email
-          const ROLE_PRIORITY: Record<string, number> = {
-            'Admin': 4,
-            'Manager': 3,
-            'Shift Leader': 2,
-            'Guard': 1
-          };
-          let highestRole: 'Guard' | 'Shift Leader' | 'Manager' | 'Admin' = 'Guard';
-          let maxPriority = 0;
-          matches.forEach((m: any) => {
-            const role = m.role || 'Guard';
-            const priority = ROLE_PRIORITY[role] || 1;
-            if (priority > maxPriority) {
-              maxPriority = priority;
-              highestRole = role;
-            }
-          });
-
-          setUserRole(highestRole);
-          sessionStorage.setItem('selected_user_role', highestRole);
-
-          const savedOperatorName = sessionStorage.getItem('selected_operator_name');
-          const matchedSaved = matches.find(m => m.operator_name === savedOperatorName);
-
-          if (matchedSaved) {
-            setSelectedOperator(matchedSaved);
-            setGuardName(matchedSaved.operator_name);
-          } else if (matches.length === 1) {
-            const singleOp = matches[0];
-            setSelectedOperator(singleOp);
-            setGuardName(singleOp.operator_name);
-            sessionStorage.setItem('selected_operator_name', singleOp.operator_name);
-          } else {
-            setSelectedOperator(null);
-          }
-        } else {
-          setSelectedOperator(null);
-        }
-      } catch (err: any) {
-        console.error('[Smart Guard Auth] Verification error:', err);
-        setInitError(`สิทธิ์ของบัญชีของคุณล้มเหลว: ${err.message || err}`);
-      } finally {
-        setUsersLoading(false);
-        setAuthLoading(false);
-      }
-    }
-
-    checkUserRoster();
-  }, [user, apiReady]);
+    console.log('[Smart Guard Debug] activeTab changed:', activeTab);
+  }, [activeTab]);
 
   const initFirestoreDatabase = async () => {
     setApiInitializing(true);
@@ -286,259 +75,263 @@ export default function App() {
     try {
       setApiReady(true);
     } catch (err: any) {
-      console.error('Firestore initialization failed:', err);
-      setInitError(err.message || 'เกิดความผิดพลาดในการเข้าถึงฐานข้อมูล Cloud Firestore');
+      setInitError(err.message || 'ไม่สามารถเข้าถึง Cloud Firestore');
     } finally {
       setApiInitializing(false);
     }
   };
 
-  const handleGoogleSignIn = async () => {
-    setAuthLoading(true);
-    setAuthLoadingMessage('กำลังนำคุณไปลงชื่อเข้าใช้ด้วย Google...');
-    setInitError(null);
+  const applyProfile = async (user: any, profile: any) => {
+    setFirebaseUser(user);
+    setCurrentProfile(profile);
+    setGuardName(profile.operator_name || profile.username || 'ผู้ใช้งาน');
+    setUserRole((profile.role || 'Guard') as Role);
+    setActiveTab('dashboard');
+    await initFirestoreDatabase();
+  };
 
+  useEffect(() => {
+    let mounted = true;
+    prepareAuthPersistence().catch(console.error);
+    const unsubscribe = onAuthStateChange(async user => {
+      if (!mounted) return;
+      try {
+        if (!user) {
+          setFirebaseUser(null);
+          setCurrentProfile(null);
+          setGuardName('');
+          setUserRole('Guard');
+          setAuthLoading(false);
+          return;
+        }
+        const { doc, getDoc } = await import('firebase/firestore');
+        const profileSnap = await getDoc(doc(db, 'users', user.uid));
+        if (!profileSnap.exists() || profileSnap.data().status !== 'Active') {
+          if (bootstrapInProgressRef.current) return;
+          await signOutSmartGuard();
+          setLoginError('บัญชีนี้ไม่มีสิทธิ์ใช้งานหรือถูกปิดใช้งาน');
+          setAuthLoading(false);
+          return;
+        }
+        await applyProfile(user, { ...profileSnap.data(), user_id: user.uid });
+        setAuthLoading(false);
+      } catch (err: any) {
+        setInitError(err.message || 'ตรวจสอบสถานะผู้ใช้ไม่สำเร็จ');
+        setAuthLoading(false);
+      }
+    });
+    return () => { mounted = false; unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    const updateRoute = () => setIsSetupRoute(window.location.pathname === '/setup');
+    window.addEventListener('popstate', updateRoute);
+    return () => window.removeEventListener('popstate', updateRoute);
+  }, []);
+
+  useEffect(() => {
+    if (currentProfile || !isSetupRoute) return;
+    let active = true;
+    setSetupStatus('checking');
+    isFirstAdminSetupAvailable()
+      .then(available => {
+        if (!active) return;
+        if (!available) {
+          window.history.replaceState({}, '', '/');
+          setIsSetupRoute(false);
+          return;
+        }
+        setSetupStatus('available');
+      })
+      .catch(() => {
+        if (active) setSetupStatus('error');
+      });
+    return () => { active = false; };
+  }, [currentProfile, isSetupRoute]);
+
+  const handleUsernamePinLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoginError(null);
+    const normalized = normalizeUsername(username);
+    if (!normalized) return setLoginError('กรุณากรอก Username');
+    if (!validatePin(operatorPin)) return setLoginError('PIN ต้องเป็นตัวเลข 6 หลัก');
+    setLoginBusy(true);
     try {
-      console.log('[Smart Guard API] login mode: Google OAuth Redirect');
-      await signInWithGoogle();
+      const result = await signInWithUsernamePin(normalized, operatorPin);
+      await applyProfile(result.firebaseUser, result.profile);
+      setOperatorPin('');
+      try {
+        await writeAuditLog(
+          result.profile.operator_name,
+          'เข้าสู่ระบบด้วย Username + PIN',
+          'Users', result.profile.user_id, '',
+          `Username login verified for ${result.profile.operator_name}`,
+          result.profile.auth_email || '',
+          result.profile.operator_name
+        );
+      } catch (auditError) {
+        console.warn('[Smart Guard Auth] Audit write skipped:', auditError);
+      }
     } catch (err: any) {
-      console.error('[Smart Guard API] Google OAuth failed:', err);
-      setInitError(`การยืนยันตัวตน Google OAuth ล้มเหลว: ${err.message || err}`);
-      setAuthLoading(false);
+      const code = String(err?.code || '');
+      if (code.includes('invalid-credential') || code.includes('wrong-password')) {
+        setLoginError('Username หรือ PIN ไม่ถูกต้อง');
+      } else if (code.includes('too-many-requests')) {
+        setLoginError('กรอกผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่');
+      } else {
+        setLoginError(err.message || 'เข้าสู่ระบบไม่สำเร็จ');
+      }
+    } finally {
+      setLoginBusy(false);
     }
   };
 
-  const handleSignOut = async () => {
-    setIsLogoutModalOpen(true);
+  const handleBootstrap = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoginError(null);
+    if (setupStatus !== 'available') return;
+    if (!validatePin(bootstrapPin)) return setLoginError('PIN Admin ต้องเป็นตัวเลข 6 หลัก');
+    if (bootstrapPin !== bootstrapConfirmPin) return setLoginError('ยืนยัน PIN ไม่ตรงกัน');
+    setLoginBusy(true);
+    bootstrapInProgressRef.current = true;
+    try {
+      const result = await bootstrapFirstAdmin(bootstrapPin);
+      await applyProfile(result.firebaseUser, result.profile);
+      setBootstrapPin('');
+      setBootstrapConfirmPin('');
+    } catch (err: any) {
+      if (String(err?.code || '').includes('email-already-in-use')) {
+        setLoginError('บัญชี Admin ถูกสร้างแล้ว กรุณาเข้าสู่ระบบด้วย Username admin');
+      } else {
+        setLoginError(err.message || 'ตั้งค่า Admin ครั้งแรกไม่สำเร็จ');
+      }
+    } finally {
+      bootstrapInProgressRef.current = false;
+      setLoginBusy(false);
+    }
   };
 
+  const handleSignOut = () => setIsLogoutModalOpen(true);
   const handleConfirmSignOut = async () => {
     setIsLogoutModalOpen(false);
-    setSelectedOperator(null);
-    sessionStorage.removeItem('selected_operator_name');
-    sessionStorage.removeItem('selected_login_email');
-    sessionStorage.removeItem('selected_user_role');
-    sessionStorage.setItem('just_logged_out', 'true');
-    await logout();
+    try { await signOutSmartGuard(); } catch (err) { console.error(err); }
+    setFirebaseUser(null);
+    setCurrentProfile(null);
+    setGuardName('');
+    setUserRole('Guard');
+    setUsername('');
+    setOperatorPin('');
+    setLoginError(null);
+    setActiveTab('dashboard');
   };
 
-  // Loading Screen
+  const [apiTestingStatus, setApiTestingStatus] = useState<'idle' | 'testing' | 'success' | 'failed'>('idle');
+  const [apiTestDetails, setApiTestDetails] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!apiReady) return;
+    readSheet('SystemSettings')
+      .then(() => {
+        setApiTestingStatus('success');
+        setApiTestDetails('เชื่อมต่อฐานข้อมูล Firestore สำเร็จ');
+      })
+      .catch((err: any) => {
+        setApiTestingStatus('failed');
+        setApiTestDetails(err.message || 'ไม่สามารถติดต่อ Firestore');
+      });
+  }, [apiReady]);
+
+  const handleTestApi = async () => {
+    setApiTestingStatus('testing');
+    try {
+      await readSheet('SystemSettings');
+      setApiTestingStatus('success');
+      setApiTestDetails('ฐานข้อมูล Firestore ตอบสนองปกติ');
+    } catch (err: any) {
+      setApiTestingStatus('failed');
+      setApiTestDetails(err.message || 'ไม่สามารถติดต่อ Firestore');
+    }
+  };
+
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-white font-sans">
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-white">
         <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
-        <span className="text-sm font-bold tracking-wider text-slate-300">{authLoadingMessage}</span>
+        <span className="text-sm font-bold text-slate-300">กำลังตรวจสอบระบบเข้าสู่ระบบ...</span>
       </div>
     );
   }
 
-  // Login Screen with Emblem
-  if (!user) {
+  if (!currentProfile) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 font-sans">
-        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 flex flex-col gap-6 shadow-2xl relative overflow-hidden">
-          
-          {/* Subtle grid light decor */}
-          <div className="absolute inset-0 bg-[radial-gradient(#2563eb_1px,transparent_1px)] [background-size:16px_16px] opacity-10 pointer-events-none"></div>
-
-          {/* Shield Emblem & Environment Badge */}
-          <div className="flex flex-col items-center text-center gap-2 relative z-10">
-            <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-[10px] font-black tracking-wider uppercase mb-1">
-              🌐 Google Authentication
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(#2563eb_1px,transparent_1px)] [background-size:16px_16px] opacity-10 pointer-events-none" />
+          <div className="relative z-10 flex flex-col gap-6">
+            <div className="flex flex-col items-center text-center gap-2">
+              <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full text-[10px] font-black tracking-wider uppercase">USERNAME + PIN / FREE TIER</div>
+              <div className="p-4 bg-blue-600/10 text-blue-500 rounded-2xl border border-blue-500/20 mt-2"><Shield className="w-12 h-12" /></div>
+              <h1 className="text-xl font-black text-white mt-2">Smart Guard System</h1>
+              <p className="text-xs text-slate-400">เข้าสู่ระบบด้วย Username และ PIN 6 หลักที่ Admin ออกให้</p>
             </div>
-            
-            <div className="p-4 bg-blue-600/10 text-blue-500 rounded-2xl border border-blue-500/20">
-              <Shield className="w-12 h-12" />
-            </div>
-            <h1 className="text-xl font-black text-white tracking-tight mt-3">ระบบ รปภ. อัจฉริยะ Smart Guard</h1>
-            <p className="text-xs text-slate-400 font-medium max-w-xs mt-1">
-              แอปพลิเคชันบริหารความปลอดภัยและบันทึกผู้ติดต่อ เชื่อมต่อฐานข้อมูล Cloud Firestore & Storage ตรวจสอบย้อนหลังได้ 100%
-            </p>
-          </div>
 
-          <div className="flex flex-col gap-3 relative z-10 mt-2">
-            
-            {initError && (
-              <div className="p-4 bg-red-500/15 border border-red-500/35 text-red-300 rounded-2xl text-xs font-bold leading-relaxed flex flex-col gap-1.5 whitespace-pre-wrap">
-                <span className="flex items-center gap-1.5 text-red-400">⚠️ ข้อผิดพลาดสิทธิ์การเข้าถึง / ข้อแนะนำ:</span>
-                <span className="font-medium text-slate-200">{initError}</span>
+            {initError && <div className="p-3 bg-red-500/15 border border-red-500/30 text-red-300 rounded-xl text-xs font-bold">{initError}</div>}
+            {loginError && <div className="p-3 bg-red-500/15 border border-red-500/30 text-red-300 rounded-xl text-xs font-bold">{loginError}</div>}
+
+            {!isSetupRoute ? (
+              <form onSubmit={handleUsernamePinLogin} className="flex flex-col gap-4">
+                <div>
+                  <label htmlFor="smartguard-username" className="text-xs text-slate-300 font-bold block mb-2">Username</label>
+                  <input id="smartguard-username" name="username" autoComplete="username" autoCapitalize="none" value={username}
+                    onChange={e => setUsername(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none focus:border-blue-500"
+                    placeholder="เช่น guard01 หรือ admin" />
+                </div>
+                <div>
+                  <label htmlFor="smartguard-pin" className="text-xs text-slate-300 font-bold block mb-2">PIN 6 หลัก</label>
+                  <input id="smartguard-pin" name="pin" type="password" inputMode="numeric" autoComplete="current-password"
+                    value={operatorPin} onChange={e => setOperatorPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-center tracking-[0.6em] text-xl text-white outline-none focus:border-blue-500"
+                    placeholder="••••••" />
+                </div>
+                <button type="submit" disabled={loginBusy}
+                  className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 text-white font-black rounded-xl cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {loginBusy && <Loader2 className="w-4 h-4 animate-spin" />} เข้าสู่ระบบ
+                </button>
+              </form>
+            ) : setupStatus === 'checking' ? (
+              <div className="flex flex-col items-center gap-3 py-6 text-slate-300" aria-live="polite">
+                <Loader2 className="w-7 h-7 text-blue-500 animate-spin" />
+                <span className="text-xs font-bold">กำลังตรวจสอบสถานะการตั้งค่าระบบ...</span>
               </div>
+            ) : setupStatus === 'error' ? (
+              <div className="p-3 bg-red-500/15 border border-red-500/30 text-red-300 rounded-xl text-xs font-bold">
+                ไม่สามารถตรวจสอบสถานะการตั้งค่าระบบได้ กรุณาลองใหม่อีกครั้ง
+              </div>
+            ) : (
+              <form onSubmit={handleBootstrap} className="flex flex-col gap-4">
+                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-xs text-amber-300 font-bold">
+                  ตั้งค่าผู้ดูแลระบบครั้งแรก
+                </div>
+                <div>
+                  <label htmlFor="bootstrap-pin" className="text-xs text-slate-300 font-bold block mb-2">กำหนด PIN Admin 6 หลัก</label>
+                  <input id="bootstrap-pin" type="password" inputMode="numeric" value={bootstrapPin}
+                    onChange={e => setBootstrapPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-center tracking-[0.6em] text-xl text-white outline-none focus:border-blue-500" />
+                </div>
+                <div>
+                  <label htmlFor="bootstrap-confirm-pin" className="text-xs text-slate-300 font-bold block mb-2">ยืนยัน PIN</label>
+                  <input id="bootstrap-confirm-pin" type="password" inputMode="numeric" value={bootstrapConfirmPin}
+                    onChange={e => setBootstrapConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-center tracking-[0.6em] text-xl text-white outline-none focus:border-blue-500" />
+                </div>
+                <button type="submit" disabled={loginBusy}
+                  className="w-full py-3.5 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-700 text-white font-black rounded-xl cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {loginBusy && <Loader2 className="w-4 h-4 animate-spin" />} สร้าง Admin และเริ่มใช้งาน
+                </button>
+              </form>
             )}
-
-            <button
-              onClick={handleGoogleSignIn}
-              className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/10 active:scale-98 flex justify-center items-center gap-3 cursor-pointer text-sm font-sans"
-            >
-              <Smartphone className="w-5 h-5 shrink-0" />
-              เชื่อมต่อและลงชื่อเข้าใช้งานด้วย Google
-            </button>
-
-            {/* Test API connection panel */}
-            <div className="mt-2 p-4 bg-slate-800/30 border border-slate-800/80 rounded-2xl flex flex-col gap-2.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400 font-bold">สัญญาณเชื่อมต่อ Cloud Database:</span>
-                {apiTestingStatus === 'testing' && <span className="text-amber-400 animate-pulse font-black">กำลังตรวจสอบ...</span>}
-                {apiTestingStatus === 'success' && <span className="text-emerald-400 font-black flex items-center gap-1">✓ เชื่อมต่อแล้ว</span>}
-                {apiTestingStatus === 'failed' && <span className="text-red-400 font-black flex items-center gap-1">✗ ไม่พบการเชื่อมต่อ</span>}
-                {apiTestingStatus === 'idle' && <span className="text-slate-500">ไม่ได้ตรวจสอบ</span>}
-              </div>
-              
-              {apiTestDetails && (
-                <p className="text-[10px] text-slate-300 font-mono bg-slate-950/70 border border-slate-800/40 p-2.5 rounded-xl break-all leading-relaxed max-h-24 overflow-y-auto">
-                  {apiTestDetails}
-                </p>
-              )}
-
-              <button
-                type="button"
-                onClick={handleTestApi}
-                disabled={apiTestingStatus === 'testing'}
-                className="w-full py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700/50 text-slate-200 font-bold rounded-xl text-[10px] transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 font-sans"
-              >
-                <RefreshCw className={`w-3 h-3 ${apiTestingStatus === 'testing' ? 'animate-spin' : ''}`} />
-                กดเพื่อทดสอบ API (Test API Connection)
-              </button>
-            </div>
-
-          </div>
-
-          <div className="text-center mt-2">
-            <span className="text-[10px] text-slate-500 font-mono">
-              เวอร์ชันการทำงาน v3.1.1 • ระบบคลาวด์มัลติแพลตฟอร์ม Cloud Firestore
-            </span>
-          </div>
-
-        </div>
-      </div>
-    );
-  }
-
-  // Operator Selection / Self-Registration Overlay Screen
-  if (user && !selectedOperator) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 font-sans text-white relative">
-        <div className="absolute inset-0 bg-[radial-gradient(#3b82f6_1px,transparent_1px)] [background-size:16px_16px] opacity-10 pointer-events-none"></div>
-        
-        <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl p-8 flex flex-col gap-6 shadow-2xl relative z-10">
-          <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
-            <div className="p-2 bg-blue-500/10 text-blue-400 rounded-xl">
-              <ShieldCheck className="w-8 h-8" />
-            </div>
-            <div>
-              <h2 className="text-lg font-black text-white">ยืนยันตัวตนผู้ปฏิบัติการ (Operator Selection)</h2>
-              <p className="text-xs text-slate-400 mt-0.5">บัญชีอีเมล: <span className="text-blue-400 font-bold font-mono">{user.email}</span></p>
-            </div>
-          </div>
-
-          {initError ? (
-            <div className="flex flex-col gap-4 text-left">
-              <div className="p-5 bg-red-500/15 border border-red-500/35 rounded-2xl text-xs flex flex-col gap-3 leading-relaxed text-red-200">
-                <span className="font-bold flex items-center gap-1.5 text-sm text-red-400">
-                  ⚠️ การเชื่อมต่อ Cloud Database ล้มเหลว (Database Connection Failed)
-                </span>
-                <p className="text-slate-300 font-medium">
-                  ไม่สามารถเรียกข้อมูลหรือเริ่มต้นฐานข้อมูล Firestore ได้เนื่องจากข้อผิดพลาดด้านล่าง:
-                </p>
-                <p className="p-3 bg-slate-950/70 border border-slate-800 text-red-400 font-mono rounded-xl break-all whitespace-pre-wrap">
-                  {initError}
-                </p>
-                <div className="text-slate-400 text-[11px] leading-relaxed mt-2 bg-slate-950/30 p-3.5 border border-slate-800 rounded-xl flex flex-col gap-2">
-                  <span className="font-black text-slate-300">💡 คำแนะนำสำหรับการแก้ปัญหา:</span>
-                  <span>1. ตรวจสอบการเชื่อมต่อเครือข่ายอินเทอร์เน็ตของอุปกรณ์คุณ</span>
-                  <span>2. ตรวจสอบสิทธิ์การเข้าถึงข้อมูลของบัญชีของคุณใน Firestore Security Rules</span>
-                  <span>3. ตรวจสอบความถูกต้องของคีย์และการตั้งค่า Cloud Project ใน firebase-applet-config.json</span>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  setInitError(null);
-                  handleSignOut();
-                }}
-                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg shadow-blue-500/20 text-sm font-sans cursor-pointer text-center"
-              >
-                👈 กลับไปยังหน้าเข้าสู่ระบบ Google
-              </button>
-            </div>
-          ) : usersLoading || apiInitializing ? (
-            <div className="py-12 flex flex-col items-center justify-center gap-3">
-              <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
-              <span className="text-xs text-slate-400">กำลังตรวจสอบรายชื่อผู้ใช้งานและโหลดตาราง...</span>
-            </div>
-          ) : operatorsForEmail.length > 0 ? (
-            <div className="flex flex-col gap-4 text-left">
-              <p className="text-xs text-slate-300 font-bold">
-                พบบัญชีผู้ใช้งาน {operatorsForEmail.length} ท่านที่แชร์บัญชีอีเมลนี้ กรุณาเลือกชื่อของคุณเพื่อเข้ากะเริ่มปฏิบัติงาน:
-              </p>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-72 overflow-y-auto pr-1">
-                {operatorsForEmail.map((op) => (
-                  <button
-                    key={op.user_id}
-                    onClick={() => {
-                      setSelectedOperator(op);
-                      setGuardName(op.operator_name);
-                      setUserRole(op.role);
-                      sessionStorage.setItem('selected_operator_name', op.operator_name);
-                      sessionStorage.setItem('selected_user_role', op.role);
-                      
-                      writeAuditLog(
-                        op.operator_name,
-                        'ลงชื่อปฏิบัติการกะ (Operator Shift Check-in)',
-                        'Authentication',
-                        op.user_id,
-                        '',
-                        `Selected Operator: ${op.operator_name} with role ${op.role}`
-                      );
-                    }}
-                    className="flex flex-col text-left p-4 bg-slate-800/40 hover:bg-slate-800 border border-slate-700/60 hover:border-blue-500 rounded-2xl transition-all cursor-pointer group"
-                  >
-                    <span className="text-sm font-black text-white group-hover:text-blue-400 transition-colors">{op.operator_name}</span>
-                    <span className="text-[10px] text-slate-400 mt-1">เบอร์โทร: {op.phone || '-'}</span>
-                    
-                    <div className="flex items-center justify-between gap-2 mt-3">
-                      <span className={`px-2 py-0.5 rounded-md text-[9px] font-black ${
-                        op.role === 'Admin' ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' :
-                        op.role === 'Manager' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
-                        op.role === 'Shift Leader' ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20' :
-                        'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                      }`}>
-                        {op.role}
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-bold">{op.shift}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            // Access Denied / Unauthorized Screen for unregistered or inactive emails
-            <div className="flex flex-col gap-4 text-left">
-              <div className="p-5 bg-red-500/15 border border-red-500/35 rounded-2xl text-xs flex flex-col gap-3 leading-relaxed text-red-200 font-sans">
-                <span className="font-bold flex items-center gap-1.5 text-sm text-red-400">
-                  ⚠️ เข้าสู่ระบบ Google สำเร็จ แต่ไม่พบสิทธิ์ในระบบ (Firestore Users Collection)
-                </span>
-                <p className="text-slate-300 font-medium leading-relaxed">
-                  บัญชีอีเมลของคุณ: <strong className="underline font-mono text-white bg-slate-950 px-2 py-0.5 rounded break-all">{user.email}</strong><br/>
-                  UID บัญชีของคุณ: <strong className="underline font-mono text-white bg-slate-950 px-2 py-0.5 rounded break-all">{user.uid}</strong>
-                </p>
-                <div className="text-slate-400 text-xs mt-2 flex flex-col gap-2">
-                  <span className="font-black text-slate-200">📢 คำแนะนำสำหรับแอดมินระบบ (Admin Guide):</span>
-                  <p className="bg-slate-950/60 p-3 border border-slate-800 rounded-xl text-slate-300 font-mono text-[11px] leading-relaxed">
-                    กรุณาเพิ่ม UID <span className="text-blue-400 font-bold">{user.uid}</span> หรืออีเมลนี้ในคอลเลกชัน <span className="text-emerald-400 font-bold">users</span> และกำหนดสถานะ (status) เป็น <span className="text-emerald-400 font-bold">Active</span> ในฐานข้อมูล เพื่อให้สามารถลงชื่อปฏิบัติงานได้
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="flex items-center justify-between border-t border-slate-800 pt-4 text-xs">
-            <span className="text-slate-500">ไม่ใช่บัญชีอีเมลของคุณ?</span>
-            <button
-              onClick={handleSignOut}
-              className="text-red-400 hover:text-red-300 font-bold flex items-center gap-1 cursor-pointer"
-            >
-              <LogOut className="w-3.5 h-3.5" /> ออกจากระบบ Google
-            </button>
+            {!isSetupRoute && <div className="text-[10px] text-slate-500 text-center">ไม่ใช้ Google Login และไม่ต้องแจกบัญชีอีเมลให้พนักงาน</div>}
           </div>
         </div>
       </div>
@@ -587,25 +380,15 @@ export default function App() {
                 </span>
                 <button
                   onClick={() => {
-                    setSelectedOperator(null);
-                    sessionStorage.removeItem('selected_operator_name');
+                    handleSignOut();
                   }}
                   className="text-[10px] font-black text-amber-400 hover:text-amber-300 underline bg-transparent border-0 cursor-pointer"
-                  title="คลิกเพื่อสลับผู้ปฏิบัติงานหรือสิทธิ์ในการเข้าเวร"
+                  title="ออกจากผู้ใช้งานปัจจุบัน"
                 >
-                  สลับผู้ใช้
+                  ออกจากระบบ
                 </button>
               </div>
             </div>
-
-            {user.photoURL && (
-              <img 
-                src={user.photoURL} 
-                alt="Profile" 
-                className="w-8 h-8 rounded-full border-2 border-blue-500" 
-                referrerPolicy="no-referrer"
-              />
-            )}
 
             <button
               onClick={handleSignOut}
@@ -753,20 +536,20 @@ export default function App() {
 
         {/* Content View Area */}
         <main className="flex-1 p-4 sm:p-6 overflow-x-hidden">
-          {activeTab === 'dashboard' && <Dashboard onNavigate={(tab) => setActiveTab(tab as any)} activeRole={userRole} />}
-          {activeTab === 'vehicles' && <VehicleEntryExit guardName={guardName} />}
-          {activeTab === 'contractors' && <ContractorLogs guardName={guardName} />}
-          {activeTab === 'keys' && <KeyLogs guardName={guardName} />}
-          {activeTab === 'patrol' && <PatrolLogs guardName={guardName} />}
-          {activeTab === 'incidents' && <IncidentReports guardName={guardName} />}
-          {activeTab === 'history' && <SearchHistory />}
-          {activeTab === 'settings' && ['Admin', 'Manager'].includes(userRole) && <MasterData />}
+          {activeTab === 'dashboard' && <DebugPage name="Dashboard"><Dashboard onNavigate={setActiveTab} activeRole={userRole} /></DebugPage>}
+          {activeTab === 'vehicles' && <DebugPage name="VehicleEntryExit"><VehicleEntryExit guardName={guardName} /></DebugPage>}
+          {activeTab === 'contractors' && <DebugPage name="ContractorLogs"><ContractorLogs guardName={guardName} /></DebugPage>}
+          {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} /></DebugPage>}
+          {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} /></DebugPage>}
+          {activeTab === 'incidents' && <DebugPage name="IncidentReports"><IncidentReports guardName={guardName} /></DebugPage>}
+          {activeTab === 'history' && <DebugPage name="SearchHistory"><SearchHistory /></DebugPage>}
+          {activeTab === 'settings' && ['Admin', 'Manager'].includes(userRole) && <DebugPage name="MasterData"><MasterData /></DebugPage>}
           {activeTab === 'admin' && ['Admin', 'Manager'].includes(userRole) && (
-            <AdminPanel 
+            <DebugPage name="AdminPanel"><AdminPanel 
               currentUser={{ name: guardName, role: userRole }} 
-              loginEmail={user?.email || ''}
-              authorizationResult={selectedOperator ? 'Authorized - Active' : 'Unauthorized'}
-            />
+              loginEmail={currentProfile?.auth_email || auth.currentUser?.email || ''}
+              authorizationResult={currentProfile ? 'Authorized - Active' : 'Unauthorized'}
+            /></DebugPage>
           )}
         </main>
 

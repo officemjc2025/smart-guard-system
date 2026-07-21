@@ -1,20 +1,32 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Smart Guard v3.3.0 — Username + PIN (Free Tier)
 
-# Run and deploy your AI Studio app
+## สิ่งที่เปลี่ยน
+- ยกเลิก Google Sign-In สำหรับการใช้งานปกติ
+- ยกเลิกการแชร์รหัสผ่าน Gmail
+- ผู้ใช้กรอก `Username` + `PIN` ที่ Admin กำหนด
+- ใช้ Firebase Anonymous Authentication เป็น session transport แบบไม่มีค่าใช้จ่าย
+- PIN เดิม 4–6 หลักยังใช้ต่อได้
 
-This contains everything you need to run your app locally.
+## Username เริ่มต้นสำหรับข้อมูลเดิม
+- บัญชี Role = Admin ใช้ `admin`
+- พนักงานเดิมใช้ `user_id` ตัวพิมพ์เล็ก เช่น `U1234` ใช้ `u1234`
+- หลังเข้า Admin Panel ให้กด `กำหนด Username` เพื่อเปลี่ยนเป็นชื่อจำง่าย เช่น `guard01`
 
-View your app in AI Studio: https://ai.studio/apps/e2a4586d-b4ef-4694-9036-1c64c9967e71
+## เปิด Anonymous Authentication ก่อน Deploy
+Firebase Console → Authentication → Sign-in method → Anonymous → Enable
 
-## Run Locally
+## วางไฟล์
+- `src/App.tsx`
+- `src/firebase.ts`
+- `src/components/AdminPanel.tsx`
+- `firestore.rules`
 
-**Prerequisites:**  Node.js
+## Deploy
+```bash
+npm run build
+npx firebase-tools deploy --only firestore:rules
+npx firebase-tools deploy --only hosting
+```
 
-
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## ข้อจำกัดที่ยอมรับในโหมดฟรี
+สิทธิ์ Admin/Manager ถูกควบคุมโดยตัวแอปเป็นหลัก ไม่ใช่ Custom Claims จาก backend ดังนั้นโหมดนี้เหมาะกับระบบภายในขนาดเล็กและผู้ใช้ที่ได้รับความไว้วางใจ ไม่เหมาะกับระบบสาธารณะหรือข้อมูลความลับสูง

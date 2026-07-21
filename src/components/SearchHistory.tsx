@@ -88,7 +88,8 @@ export default function SearchHistory() {
         try {
           const url = await fetchDriveImageAsUrl(fileId);
           resolved[field] = url;
-        } catch {
+        } catch (error) {
+          console.error('Failed to resolve history image URL:', error);
           resolved[field] = '';
         }
       }
