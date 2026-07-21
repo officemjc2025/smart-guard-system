@@ -7,12 +7,15 @@ import React, { useState, useEffect } from 'react';
 import { 
   Users, CreditCard, MapPin, Key, Ban, AlertTriangle, Settings, 
   ClipboardList, Download, LayoutDashboard, QrCode, Plus, Edit2, 
-  RefreshCw, CheckCircle, XCircle, Shield, ShieldAlert, FileText, Search, Save, Calendar
+  RefreshCw, CheckCircle, XCircle, Shield, ShieldAlert, FileText, FileSpreadsheet, Search, Save, Calendar
 } from 'lucide-react';
 import { 
   readSheet, appendSheetRow, updateSheetRow, writeAuditLog, SCHEMA, initializeSystemData
 } from '../googleApi';
 import { createStaffAccount, rotateStaffPin, setStaffStatus } from '../firebase';
+import UnitManagementPanel from './UnitManagementPanel';
+import ImportExportDialog from './ImportExportDialog';
+import { IMPORT_EXPORT_MODULES } from '../services/importExport/modules';
 import { 
   UserRecord, ParkingCardRecord, PatrolPointRecord, KeyLogRecord, 
   IncidentReportRecord, BlacklistRecord, AuditLogRecord 
@@ -29,7 +32,7 @@ interface AdminPanelProps {
 
 
 
-type AdminTab = 'dashboard' | 'users' | 'cards' | 'points' | 'keys' | 'blacklist' | 'incidents' | 'settings' | 'audit';
+type AdminTab = 'dashboard' | 'users' | 'units' | 'cards' | 'points' | 'keys' | 'blacklist' | 'incidents' | 'settings' | 'audit';
 
 export default function AdminPanel({ currentUser, loginEmail = '', authorizationResult = '' }: AdminPanelProps) {
   const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
@@ -586,10 +589,11 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
       )}
 
       {/* Responsive Sub-navigation Grid */}
-      <div className="relative z-10 grid grid-cols-3 sm:grid-cols-5 md:grid-cols-9 gap-2 mb-6 bg-slate-950/60 p-1.5 rounded-2xl border border-slate-800">
+      <div className="relative z-10 grid grid-cols-3 sm:grid-cols-5 md:grid-cols-10 gap-2 mb-6 bg-slate-950/60 p-1.5 rounded-2xl border border-slate-800">
         {[
           { tab: 'dashboard', icon: LayoutDashboard, text: 'หน้าแรก' },
           { tab: 'users', icon: Users, text: 'พนักงาน' },
+          { tab: 'units', icon: FileSpreadsheet, text: 'ห้อง' },
           { tab: 'cards', icon: CreditCard, text: 'บัตรจอดรถ' },
           { tab: 'points', icon: MapPin, text: 'จุดตรวจ' },
           { tab: 'keys', icon: Key, text: 'กุญแจหลัก' },
@@ -623,6 +627,16 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
 
       {/* Main Panel Content Body */}
       <div className="relative z-10 min-h-[400px]">
+
+        {activeTab === 'users' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Operators} records={userList} canImport={isAdmin} onImported={fetchData} /></div>}
+        {activeTab === 'cards' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.ParkingCards} records={cardList} canImport={isAdmin} onImported={fetchData} /></div>}
+        {activeTab === 'keys' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Keys} records={keyList} canImport={isAdmin} onImported={fetchData} /></div>}
+        {activeTab === 'blacklist' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Blacklist} records={blacklist} canImport={isAdmin} onImported={fetchData} /></div>}
+        {activeTab === 'incidents' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.IncidentReports} records={incidentList} canImport={isAdmin} onImported={fetchData} /></div>}
+
+        {activeTab === 'units' && (
+          <UnitManagementPanel operatorName={currentUser.name} canImport={isAdmin} />
+        )}
 
         {/* 10. Admin Dashboard Tab */}
         {activeTab === 'dashboard' && (

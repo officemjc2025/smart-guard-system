@@ -30,15 +30,18 @@ export interface ParkingCardRecord {
 export interface UnitRecord {
   unit_id: string;
   site_id: string;
+  building: string;
   room_code?: string;
   room_number: string;
   floor: string;
   area?: string;
   ratio?: string;
   owner_name: string;
+  resident_name: string;
   phone?: string;
   email?: string;
   occupancy_status: string;
+  status: string;
   searchable_text: string;
   search_key: string;
   is_active: boolean;
