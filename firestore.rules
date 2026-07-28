@@ -581,6 +581,37 @@ service cloud.firestore {
              && (!('reason' in data) || (data.reason is string && data.reason.size() <= 2000));
     }
 
+    function validParkingCardHistory(data) {
+      return data.keys().hasOnly([
+               'history_id', 'event_type', 'parking_card_id', 'card_number', 'site_id',
+               'vehicle_log_id', 'replacement_card_id', 'operator_id', 'operator_name',
+               'previous_state', 'new_state', 'reason', 'action_result', 'occurred_at', 'created_at'
+             ])
+             && data.keys().hasAll([
+               'history_id', 'event_type', 'parking_card_id', 'card_number', 'site_id',
+               'vehicle_log_id', 'operator_id', 'operator_name', 'previous_state',
+               'new_state', 'reason', 'action_result', 'occurred_at', 'created_at'
+             ])
+             && data.history_id is string && data.history_id.size() > 0 && data.history_id.size() <= 128
+             && data.event_type in [
+               'CARD_CREATED', 'CARD_UPDATED', 'CARD_SCANNED', 'ENTRY', 'EXIT',
+               'STATUS_CHANGED', 'LOST', 'REPLACEMENT_CREATED', 'VIP_SCAN', 'DELETED'
+             ]
+             && data.parking_card_id is string && data.parking_card_id.size() > 0 && data.parking_card_id.size() <= 128
+             && data.card_number is string && data.card_number.size() <= 64
+             && data.site_id is string && data.site_id == activeSiteId()
+             && data.vehicle_log_id is string && data.vehicle_log_id.size() <= 128
+             && (!('replacement_card_id' in data) || (data.replacement_card_id is string && data.replacement_card_id.size() <= 128))
+             && data.operator_id == request.auth.uid
+             && data.operator_name is string && data.operator_name.size() <= 256
+             && data.previous_state is string && data.previous_state.size() <= 64
+             && data.new_state is string && data.new_state.size() <= 64
+             && data.reason is string && data.reason.size() <= 2000
+             && data.action_result is string && data.action_result.size() <= 64
+             && data.occurred_at is timestamp
+             && data.created_at is timestamp;
+    }
+
     function validUnit(data) {
       return data.keys().hasOnly([
                'firestore_document_id', 'unit_id', 'site_id', 'building', 'room_code', 'room_number', 'floor', 'area', 'ratio',
@@ -806,6 +837,14 @@ service cloud.firestore {
                     && ((request.resource.data.module_name == 'ParkingCards' && validParkingAudit(request.resource.data))
                       || (request.resource.data.module_name == 'units' && validUnitAudit(request.resource.data))
                       || !(request.resource.data.module_name in ['ParkingCards', 'units']));
+      allow update, delete: if false;
+    }
+
+    match /parkingCardHistory/{id} {
+      allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow create: if isActiveUser()
+                    && request.resource.data.history_id == id
+                    && validParkingCardHistory(request.resource.data);
       allow update, delete: if false;
     }
 

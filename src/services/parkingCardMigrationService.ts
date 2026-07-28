@@ -73,6 +73,7 @@ export async function auditExistingParkingCards(siteId: string): Promise<Parking
     if (!existingSite) legacyMissingSiteId += 1;
     const cardNumber = text(data.card_number);
     const qrValue = text(data.qr_code_value);
+    const effectiveQrValue = qrValue || cardNumber;
     if (!cardNumber) missingCardNumber += 1;
     if (!qrValue) missingQrValue += 1;
     const normalizedStatus = parkingCardStatusOrNull(data.status_normalized || data.status);
@@ -90,7 +91,8 @@ export async function auditExistingParkingCards(siteId: string): Promise<Parking
     if (!existingSite) changes.site_id = siteId;
     if (text(data.card_type) !== cardType) changes.card_type = cardType;
     if (text(data.card_number_normalized) !== normalizeCardNumber(cardNumber)) changes.card_number_normalized = normalizeCardNumber(cardNumber);
-    if (text(data.qr_code_normalized) !== normalizeQrValue(qrValue)) changes.qr_code_normalized = normalizeQrValue(qrValue);
+    if (!qrValue && cardNumber) changes.qr_code_value = cardNumber;
+    if (text(data.qr_code_normalized) !== normalizeQrValue(effectiveQrValue)) changes.qr_code_normalized = normalizeQrValue(effectiveQrValue);
     if (normalizedStatus && text(data.status_normalized) !== normalizedStatus) changes.status_normalized = normalizedStatus;
     if (!text(data.firestore_document_id)) changes.firestore_document_id = documentId;
     if (!text(data.created_at)) changes.created_at = text(data.updated_at) || new Date().toISOString();

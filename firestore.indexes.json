@@ -98,6 +98,14 @@
       ]
     },
     {
+      "collectionGroup": "parkingCardHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "parking_card_id", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "vehicleLogs",
       "queryScope": "COLLECTION",
       "fields": [

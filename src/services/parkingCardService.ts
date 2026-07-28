@@ -11,6 +11,7 @@ import {
   where,
   type DocumentData,
   type QueryDocumentSnapshot,
+  type Transaction,
 } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import { VIP_CARD_ENTRY_ENABLED } from '../config/features';
@@ -22,6 +23,11 @@ import { appendSessionActivityInTransaction } from './vehicleSessionActivityServ
 import { firestoreQueueMetricTransition } from './vehicleSessionMetricsFirestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { FUNCTIONS_REGION } from '../config/firebaseFunctions';
+import {
+  isAllowedParkingCardTransition,
+  normalizeParkingCardIdentifier,
+  parkingCardHistoryEvent,
+} from './parkingCardDomain';
 
 export { normalizeParkingCardStatus } from './parkingCardStatus';
 
@@ -63,8 +69,8 @@ export function parkingCardOperationError(operation: string, cardNumber: string,
 
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const dateText = (value: unknown) => value instanceof Timestamp ? value.toDate().toISOString() : text(value);
-export const normalizeCardNumber = (value: unknown) => text(value).normalize('NFKC').replace(/\s+/g, ' ').toLocaleUpperCase('en-US');
-export const normalizeQrValue = (value: unknown) => text(value).normalize('NFKC').replace(/\s+/g, ' ').toLocaleUpperCase('en-US');
+export const normalizeCardNumber = normalizeParkingCardIdentifier;
+export const normalizeQrValue = normalizeParkingCardIdentifier;
 export const isValidCardNumber = (value: unknown) => {
   const cardNumber = text(value);
   return cardNumber.length > 0 && cardNumber.length <= 64 && /^[A-Za-z0-9 /_-]+$/.test(cardNumber) && !/[\u0000-\u001F\u007F]/.test(cardNumber);
@@ -185,7 +191,7 @@ export async function repairLegacyParkingCard(documentId: string, operatorName: 
     };
     transaction.update(reference, changes);
     const audit = auditRecord(operatorName, { ...card, site_id: targetSite }, card.current_vehicle_log_id || '', 'RepairLegacyCard', card.status, card.status, `Assigned missing site to ${targetSite}`);
-    transaction.set(doc(db, 'auditLogs', audit.auditId), { ...audit.data, account_uid: identity.accountUid });
+    writeAuditWithCardHistory(transaction, audit, { account_uid: identity.accountUid });
   });
   const verified = await getDoc(reference);
   if (!verified.exists() || text(verified.data().site_id) !== targetSite) throw new Error('Legacy repair verification failed.');
@@ -251,23 +257,36 @@ function auditRecord(operatorName: string, card: Pick<ParkingCardRecord, 'card_i
   };
 }
 
+function writeAuditWithCardHistory(
+  transaction: Transaction,
+  audit: ReturnType<typeof auditRecord>,
+  overrides: Record<string, unknown> = {},
+) {
+  const auditData = { ...audit.data, ...overrides };
+  transaction.set(doc(db, 'auditLogs', audit.auditId), auditData);
+  if (!text(auditData.record_id)) return;
+  const historyId = `PCH_${crypto.randomUUID()}`;
+  transaction.set(doc(db, 'parkingCardHistory', historyId), {
+    history_id: historyId,
+    event_type: parkingCardHistoryEvent(text(auditData.action)),
+    parking_card_id: text(auditData.record_id),
+    card_number: text(auditData.card_number),
+    site_id: text(auditData.site_id),
+    vehicle_log_id: text(auditData.vehicle_log_id),
+    operator_id: text(auditData.operator_id),
+    operator_name: text(auditData.operator_name),
+    previous_state: text(auditData.previous_state),
+    new_state: text(auditData.new_state),
+    reason: text(auditData.reason),
+    action_result: text(auditData.action_result),
+    occurred_at: serverTimestamp(),
+    created_at: serverTimestamp(),
+  });
+}
+
 function assertTransition(previous: ParkingCardStatus, next: ParkingCardStatus) {
   if (previous === 'InUse' && next === 'Lost') throw new ParkingCardWorkflowError('This card is linked to an active vehicle. Close the vehicle exit or use the Card Not Returned workflow first.', 'illegal-transition');
-  const allowed: Record<ParkingCardStatus, readonly ParkingCardStatus[]> = {
-    Available: ['InUse', 'Disabled', 'Suspended', 'Lost', 'VIP'],
-    Reserved: ['Available', 'InUse'],
-    InUse: ['Available'],
-    Returned: ['Available'],
-    Disabled: ['Available', 'Lost'],
-    Suspended: ['Available'],
-    Lost: ['ReplacementApproved'],
-    Cancelled: [],
-    Replaced: [],
-    ReplacementApproved: ['Retired'],
-    Retired: [],
-    VIP: ['Available'],
-  };
-  if (!allowed[previous].includes(next)) throw new ParkingCardWorkflowError(`Illegal parking-card transition: ${previous} → ${next}.`, 'illegal-transition');
+  if (!isAllowedParkingCardTransition(previous, next)) throw new ParkingCardWorkflowError(`Illegal parking-card transition: ${previous} → ${next}.`, 'illegal-transition');
 }
 
 export async function validateCard(cardNumber: string) {
@@ -282,7 +301,7 @@ export async function inspectParkingCardForEntry(cardNumber: string, operatorNam
   catch (reason) {
     const error = reason instanceof Error ? reason : new Error(String(reason));
     const audit = auditRecord(operatorName, null, '', reason instanceof ParkingCardWorkflowError && reason.code === 'legacy-unassigned' ? 'LegacyCardScannedBeforeMigration' : 'CardLookupFailed', '', '', error.message, 'Blocked');
-    await runTransaction(db, async transaction => { transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data); });
+    await runTransaction(db, async transaction => { writeAuditWithCardHistory(transaction, audit); });
     throw reason;
   }
   let error: ParkingCardWorkflowError | null = null;
@@ -296,7 +315,7 @@ export async function inspectParkingCardForEntry(cardNumber: string, operatorNam
   else if (card.status !== 'Available' && card.status !== 'VIP') error = new ParkingCardWorkflowError(`Parking card is ${card.status} and cannot be used.`, 'unavailable');
   if (error) {
     const audit = auditRecord(operatorName, card, card.current_vehicle_log_id || '', 'EntryBlocked', card.status, card.status, error.message, 'Blocked');
-    await runTransaction(db, async transaction => { transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data); });
+    await runTransaction(db, async transaction => { writeAuditWithCardHistory(transaction, audit); });
     throw error;
   }
   return card;
@@ -327,7 +346,7 @@ export async function lockCard(log: VehicleLogRecord, operatorName: string) {
     else if (card.status !== 'Available' && card.status !== 'VIP') blocked = new ParkingCardWorkflowError(`Parking card is ${card.status} and cannot be used.`, 'unavailable');
     if (blocked) {
       const audit = auditRecord(operatorName, card, log.log_id, 'EntryBlocked', card?.status || 'NotFound', card?.status || 'NotFound', blocked.message, 'Blocked');
-      transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+      writeAuditWithCardHistory(transaction, audit);
       return blocked;
     }
 
@@ -346,7 +365,7 @@ export async function lockCard(log: VehicleLogRecord, operatorName: string) {
     }
     if (cardReference && vipEntry) transaction.update(cardReference, { last_activity_at: now, updated_at: now });
     const audit = auditRecord(operatorName, card, log.log_id, vipEntry ? 'VIPEntry' : 'LockCard', card?.status || '', vipEntry ? 'VIP' : 'InUse');
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
     return null;
   });
   if (result) throw result;
@@ -422,7 +441,7 @@ async function resolveActiveVehicleByCard(rawValue: string, siteId: string, cont
 
 async function auditVehicleLookup(result: ActiveVehicleLookupResult, context: VehicleExitAccountContext, action: string) {
   const audit = auditRecord(context.operatorName, result.card || null, result.vehicleLog?.log_id || '', action, '', result.warningCode || 'FOUND', result.reason || '', result.success ? 'Success' : 'Blocked');
-  await runTransaction(db, async transaction => transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data));
+  await runTransaction(db, async transaction => writeAuditWithCardHistory(transaction, audit));
 }
 
 export async function findActiveVehicleByCard(rawValue: string, siteId: string, context: VehicleExitAccountContext) {
@@ -488,7 +507,7 @@ export async function completeVehicleExit(log: VehicleLogRecord, input: VehicleE
       ...(input.lostCard ? { lost_at: serverTimestamp(), lost_reason: text(input.lostCardReason), reported_by: operatorName, reported_by_account_uid: identity.accountUid } : {}),
     });
     const audit = auditRecord(operatorName, card, log.log_id, input.lostCard ? 'VehicleExitCardLost' : 'VehicleExitCompleted', 'InUse', nextStatus, text(input.lostCardReason));
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
     if (sessionReference && sessionSnapshot?.exists()) {
       const sessionData = sessionSnapshot.data();
       const sessionVersion = typeof sessionData.sessionVersion === 'number' ? sessionData.sessionVersion : 0;
@@ -518,7 +537,7 @@ export async function completeVehicleExit(log: VehicleLogRecord, input: VehicleE
     const message = reason instanceof Error ? reason.message : String(reason);
     const failureAudit = auditRecord(operatorName, normalizeParkingCard(cardSnapshot), log.log_id, 'VehicleExitTransactionFailure', 'InUse', 'InUse', message, 'Failed');
     try {
-      await runTransaction(db, async transaction => transaction.set(doc(db, 'auditLogs', failureAudit.auditId), failureAudit.data));
+      await runTransaction(db, async transaction => writeAuditWithCardHistory(transaction, failureAudit));
     } catch (auditReason) {
       console.error('Vehicle exit failure audit could not be written:', auditReason);
     }
@@ -543,7 +562,7 @@ async function transitionCard(cardId: string, next: ParkingCardStatus, operatorN
     const now = new Date().toISOString();
     transaction.update(reference, { ...extra, status: next, status_normalized: next, card_type: next === 'VIP' ? 'VIP' : (card.card_type === 'VIP' ? 'Temporary' : card.card_type), last_activity_at: now, updated_at: now });
     const audit = auditRecord(operatorName, card, card.current_vehicle_log_id || '', `CardState:${card.status}->${next}`, card.status, next, reason);
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
     return { ...card, ...extra, status: next };
   });
 }
@@ -574,7 +593,7 @@ export async function approveReplacement(lostCardId: string, replacementCardId: 
     const now = new Date().toISOString();
     transaction.update(lostRef, { status: 'ReplacementApproved', replacement_card_id: replacement.card_id, replacement_approved: true, replacement_approved_by: identity.operatorId, replacement_approved_at: now, updated_at: now });
     const audit = auditRecord(operatorName, lost, '', 'ApproveReplacement', 'Lost', 'ReplacementApproved', reason);
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
   });
 }
 
@@ -608,7 +627,7 @@ export async function createParkingCard(card: ParkingCardRecord, operatorName: s
     if (!['Available', 'Suspended'].includes(card.status)) throw new ParkingCardWorkflowError('New parking card has an invalid initial state.', 'illegal-transition');
     transaction.set(reference, prepared);
     const audit = auditRecord(operatorName, { card_id: text(prepared.card_id), card_number: text(prepared.card_number), site_id: text(prepared.site_id) }, '', 'CreateCard', '', text(prepared.status));
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
   });
   const verified = await getDoc(reference);
   if (!verified.exists()) throw new Error('Card create was acknowledged but the Firestore document could not be re-read.');
@@ -627,7 +646,7 @@ export async function updateParkingCardMetadata(cardId: string, fields: Pick<Par
     const card = normalizeParkingCardData(snapshot.id, snapshot.data());
     transaction.update(reference, sanitizeAndValidateFirestoreData({ note: fields.note || '', updated_at: serverTimestamp() }));
     const audit = auditRecord(operatorName, card, card.current_vehicle_log_id || '', 'EditCard', card.note || '', fields.note || '');
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
   });
 }
 
@@ -658,7 +677,7 @@ export async function updateParkingCard(documentId: string, fields: ParkingCardE
     const updated = sanitizeAndValidateFirestoreData({ card_number: cardNumber, card_number_normalized: cardNumberNormalized, qr_code_value: qrValue, qr_code_normalized: qrNormalized, card_type: fields.card_type, note: text(fields.note), updated_at: serverTimestamp() });
     transaction.update(reference, updated);
     const audit = auditRecord(operatorName, card, card.current_vehicle_log_id || '', 'EditCard', JSON.stringify({ card_number: card.card_number, qr_code_value: card.qr_code_value, card_type: card.card_type, note: card.note }), JSON.stringify(updated));
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
   });
 }
 
@@ -674,7 +693,7 @@ export async function deleteParkingCard(cardId: string, operatorName: string) {
     if (['Lost', 'Cancelled', 'Retired', 'Replaced'].includes(card.status) || card.replaced_by_card_id || card.replacement_for_card_id) throw new Error('Lost, retired, cancelled, or replacement-linked cards must remain in history and cannot be deleted.');
     transaction.delete(reference);
     const audit = auditRecord(operatorName, card, card.current_vehicle_log_id || '', 'DeleteCard', card.status, 'Deleted');
-    transaction.set(doc(db, 'auditLogs', audit.auditId), audit.data);
+    writeAuditWithCardHistory(transaction, audit);
   });
   if ((await getDoc(reference)).exists()) throw new Error('Delete verification failed: Firestore document still exists.');
 }
@@ -724,16 +743,18 @@ export async function replaceParkingCard(oldDocumentId: string, input: ParkingCa
     const oldUpdate = sanitizeAndValidateFirestoreData({ status: oldCard.status === 'Cancelled' ? 'Cancelled' : 'Lost', status_normalized: oldCard.status === 'Cancelled' ? 'Cancelled' : 'Lost', ...(oldCard.status === 'Lost' || oldCard.status === 'Cancelled' ? {} : { lost_reason: text(input.reason), lost_at: serverTimestamp(), reported_by: identity.operatorName, reported_by_account_uid: identity.accountUid }), replaced_by_card_id: text(newCard.card_id), replaced_by_document_id: newReference.id, replacement_card_id: text(newCard.card_id), replacement_reason: text(input.reason), replacement_at: serverTimestamp(), replacement_by: identity.operatorId, updated_at: serverTimestamp() });
     transaction.update(oldReference, oldUpdate);
     const audit = auditRecord(operatorName, oldCard, '', 'ReplaceCard', oldCard.status, oldCard.status === 'Cancelled' ? 'Cancelled' : 'Lost', `Replacement issued: ${text(newCard.card_number)}. ${text(input.reason)}`);
-    transaction.set(doc(db, 'auditLogs', audit.auditId), { ...audit.data, new_value: JSON.stringify({ old_card_id: oldCard.card_id, new_card_id: text(newCard.card_id) }) });
+    writeAuditWithCardHistory(transaction, audit, { new_value: JSON.stringify({ old_card_id: oldCard.card_id, new_card_id: text(newCard.card_id) }) });
   });
 }
 
 export async function getParkingCardHistory(card: ParkingCardRecord) {
-  const [audits, vehicles] = await Promise.all([
+  const [history, audits, vehicles] = await Promise.all([
+    getDocs(query(collection(db, 'parkingCardHistory'), where('site_id', '==', currentSiteId()), where('parking_card_id', '==', card.card_id))),
     getDocs(query(collection(db, 'auditLogs'), where('site_id', '==', currentSiteId()), where('module_name', '==', 'ParkingCards'), where('record_id', '==', card.card_id))),
     getDocs(query(collection(db, 'vehicleLogs'), where('site_id', '==', currentSiteId()), where('parking_card_id', '==', card.firestore_document_id))),
   ]);
   return [
+    ...history.docs.map(item => ({ id: item.id, kind: 'History', date: String(item.data().occurred_at?.toDate?.()?.toISOString?.() || item.data().created_at?.toDate?.()?.toISOString?.() || ''), action: text(item.data().event_type), operator: text(item.data().operator_name), oldValue: text(item.data().previous_state), newValue: text(item.data().new_state), relatedVehicleLog: text(item.data().vehicle_log_id), relatedReplacementCard: text(item.data().replacement_card_id), detail: text(item.data().reason) })),
     ...audits.docs.map(item => ({ id: item.id, kind: 'Audit', date: text(item.data().created_at) || String(item.data().timestamp?.toDate?.()?.toISOString?.() || ''), action: text(item.data().action), operator: text(item.data().operator_name) || text(item.data().user_name), oldValue: text(item.data().old_value), newValue: text(item.data().new_value), relatedVehicleLog: text(item.data().vehicle_log_id), relatedReplacementCard: text(item.data().replacement_card_id), detail: text(item.data().reason) })),
     ...vehicles.docs.map(item => ({ id: item.id, kind: 'Vehicle', date: text(item.data().entry_time), action: `Vehicle ${text(item.data().status)}`, operator: text(item.data().operator_name) || text(item.data().recorded_by), oldValue: '', newValue: text(item.data().status), relatedVehicleLog: text(item.data().log_id) || item.id, relatedReplacementCard: '', detail: `${text(item.data().vehicle_plate)} • ${text(item.data().entry_time)}` })),
   ].sort((left, right) => right.date.localeCompare(left.date));

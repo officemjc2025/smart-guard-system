@@ -207,8 +207,9 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
   };
 
   const handleQRScanSuccess = async (code: string) => {
-    // Check if code contains prefix or is card number
-    const cardNumber = code.replace('_QR', '').trim();
+    // QR payload is the canonical parking-card identifier; never rewrite suffixes.
+    const cardNumber = code.trim().replace(/\s+/g, '').toUpperCase();
+    console.info('[QR DEBUG]', { raw: code, parsed: cardNumber, siteId: sessionStorage.getItem('selected_site_id') || 'site-01' });
     setEntryForm(prev => ({ ...prev, card_number: cardNumber }));
     setShowQRScanner(false);
     setStatusMessage(null);
