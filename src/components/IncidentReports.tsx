@@ -8,8 +8,10 @@ import {
   AlertTriangle, Check, Camera, Search, RefreshCw, 
   Clock, ShieldAlert, Edit, User
 } from 'lucide-react';
-import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '../googleApi';
 import { IncidentReportRecord } from '../types';
+import { createIncident, listIncidents, updateIncident } from '../services/incidentService';
+import { createAuditLog } from '../services/auditService';
+import { uploadImageToDrive } from '../services/mediaUploadService';
 import ConfirmModal from './ConfirmModal';
 import UnitSearchSelect from './UnitSearchSelect';
 
@@ -18,6 +20,7 @@ interface IncidentReportsProps {
 }
 
 export default function IncidentReports({ guardName }: IncidentReportsProps) {
+  const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
   const [activeTab, setActiveTab] = useState<'report' | 'list'>('report');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -50,7 +53,7 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
   const fetchIncidents = async () => {
     setLoading(true);
     try {
-      const allInc = await readSheet<IncidentReportRecord>('IncidentReports');
+      const allInc = await listIncidents(siteId);
       setIncidents(allInc.reverse());
     } catch (err) {
       console.error('Failed to load incident reports:', err);
@@ -89,7 +92,7 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
 
       const nowStr = new Date().toISOString();
 
-      const newReport: IncidentReportRecord = {
+      const newReport = {
         incident_id: incidentId,
         incident_datetime: nowStr,
         location: incidentForm.location,
@@ -100,23 +103,20 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
         photo_url: photoUrl,
         reported_by: guardName,
         shift_leader: incidentForm.shift_leader || guardName,
-        status: 'แจ้งแล้ว',
-        created_at: nowStr,
-        updated_at: nowStr
+        status: 'แจ้งแล้ว' as const
       };
 
-      await appendSheetRow('IncidentReports', newReport);
+      await createIncident(siteId, newReport);
 
       // Audit Log
-      await appendSheetRow('AuditLogs', {
+      await createAuditLog(siteId, {
         audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
         user_name: guardName,
         action: 'แจ้งเหตุการณ์ไม่ปกติ',
         module_name: 'IncidentReports',
         record_id: incidentId,
         old_value: '',
-        new_value: incidentForm.incident_type,
-        created_at: nowStr
+        new_value: incidentForm.incident_type
       });
 
       setStatusMessage({ type: 'success', text: `บันทึกแจ้งรายงานเหตุการณ์ "${incidentForm.incident_type}" เรียบร้อยแล้ว!` });
@@ -153,22 +153,20 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
     try {
       const nowStr = new Date().toISOString();
 
-      await updateSheetRow<IncidentReportRecord>('IncidentReports', 'incident_id', selectedIncident.incident_id, {
+      await updateIncident(siteId, selectedIncident.incident_id, {
         status: updateStatus,
-        management_note: managementNote,
-        updated_at: nowStr
+        management_note: managementNote
       });
 
       // Audit Log
-      await appendSheetRow('AuditLogs', {
+      await createAuditLog(siteId, {
         audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
         user_name: guardName,
         action: 'อัปเดตสถานะเหตุการณ์ผิดปกติ',
         module_name: 'IncidentReports',
         record_id: selectedIncident.incident_id,
         old_value: selectedIncident.status,
-        new_value: updateStatus,
-        created_at: nowStr
+        new_value: updateStatus
       });
 
       setStatusMessage({ type: 'success', text: `อัปเดตรายงานสถานะเหตุการณ์ #${selectedIncident.incident_id} สำเร็จ` });

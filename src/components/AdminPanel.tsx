@@ -9,13 +9,41 @@ import {
   ClipboardList, Download, LayoutDashboard, QrCode, Plus, Edit2, 
   RefreshCw, CheckCircle, XCircle, Shield, ShieldAlert, FileText, FileSpreadsheet, Search, Save, Calendar
 } from 'lucide-react';
-import { 
-  readSheet, appendSheetRow, updateSheetRow, writeAuditLog, SCHEMA, initializeSystemData
-} from '../googleApi';
-import { createStaffAccount, rotateStaffPin, setStaffStatus } from '../firebase';
+import { createStaffAccount, listStaffAccounts, rotateStaffPin, setStaffStatus } from '../firebase';
 import UnitManagementPanel from './UnitManagementPanel';
 import ImportExportDialog from './ImportExportDialog';
+import ParkingCardDataAuditPanel from './ParkingCardDataAuditPanel';
+import ParkingCardHistoryModal from './ParkingCardHistoryModal';
+import ParkingCardActionDialog, { type ParkingCardActionValues } from './ParkingCardActionDialog';
+import QueueMigrationPanel from './QueueMigrationPanel';
+import AnalyticsRebuildPanel from './AnalyticsRebuildPanel';
 import { IMPORT_EXPORT_MODULES } from '../services/importExport/modules';
+import {
+  activateCard,
+  bulkDeleteParkingCards,
+  bulkDisableParkingCards,
+  checkParkingCardActiveReferences,
+  createParkingCard,
+  deleteParkingCard,
+  disableParkingCard,
+  importParkingCards,
+  logParkingCardExport,
+  listParkingCardsForManagement,
+  markLost,
+  parkingCardOperationError,
+  suspendCard,
+  replaceParkingCard,
+  repairLegacyParkingCard,
+  updateParkingCard,
+} from '../services/parkingCardService';
+import { exportCsv } from '../services/importExport/csvExportService';
+import { listAuditLogs, writeAuditLog } from '../services/auditService';
+import { createBlacklistEntry, listBlacklist, setBlacklistStatus } from '../services/blacklistService';
+import { listIncidents, updateIncident } from '../services/incidentService';
+import { createKey, listKeys, setKeyStatus } from '../services/keyService';
+import { createPatrolPoint, listPatrolPoints, setPatrolPointStatus } from '../services/patrolService';
+import { listSystemSettings, updateSystemSetting } from '../services/systemSettingsService';
+import { initializeSystemData } from '../services/systemInitializationService';
 import { 
   UserRecord, ParkingCardRecord, PatrolPointRecord, KeyLogRecord, 
   IncidentReportRecord, BlacklistRecord, AuditLogRecord 
@@ -24,7 +52,7 @@ import {
 interface AdminPanelProps {
   currentUser: {
     name: string;
-    role: 'Guard' | 'Shift Leader' | 'Manager' | 'Admin';
+    role: 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
   };
   loginEmail?: string;
   authorizationResult?: string;
@@ -33,6 +61,16 @@ interface AdminPanelProps {
 
 
 type AdminTab = 'dashboard' | 'users' | 'units' | 'cards' | 'points' | 'keys' | 'blacklist' | 'incidents' | 'settings' | 'audit';
+
+const EXPORT_COLUMNS = {
+  Users: ['user_id', 'login_email', 'operator_name', 'role', 'shift', 'phone', 'status', 'created_at', 'updated_at'],
+  ParkingCards: ['card_id', 'site_id', 'card_number', 'qr_code_value', 'card_type', 'status', 'current_vehicle_plate', 'current_vehicle_log_id', 'last_activity_at', 'note', 'created_at', 'updated_at'],
+  PatrolPoints: ['patrol_point_id', 'point_name', 'location_detail', 'qr_code_value', 'required_interval_minutes', 'status', 'created_at', 'updated_at'],
+  Keys: ['key_id', 'room_number', 'key_type', 'key_label', 'status', 'current_borrower_name', 'current_checkout_log_id', 'note', 'created_at', 'updated_at'],
+  Blacklist: ['blacklist_id', 'type', 'vehicle_plate', 'id_card_number', 'name', 'reason', 'severity', 'status', 'created_at', 'updated_at'],
+  IncidentReports: ['incident_id', 'incident_datetime', 'location', 'incident_type', 'description', 'photo_url', 'reported_by', 'shift_leader', 'management_note', 'status', 'created_at', 'updated_at', 'severity', 'assigned_to', 'resolved_at'],
+  AuditLogs: ['audit_id', 'operator_id', 'account_uid', 'operator_name', 'user_name', 'site_id', 'action', 'module_name', 'record_id', 'old_value', 'new_value', 'created_at', 'action_result'],
+} as const;
 
 export default function AdminPanel({ currentUser, loginEmail = '', authorizationResult = '' }: AdminPanelProps) {
   const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
@@ -64,7 +102,12 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
 
   // Form States
   const [userForm, setUserForm] = useState({ name: '', username: '', role: 'Guard', shift: 'ทั่วไป', phone: '', pin: '' });
-  const [cardForm, setCardForm] = useState({ card_number: '', qr_code_value: '', note: '' });
+  const [cardForm, setCardForm] = useState({ card_number: '', qr_code_value: '', card_type: 'Temporary' as ParkingCardRecord['card_type'], note: '' });
+  const [cardSearch, setCardSearch] = useState('');
+  const [parkingCardAuditReady, setParkingCardAuditReady] = useState(false);
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
+  const [historyCard, setHistoryCard] = useState<ParkingCardRecord | null>(null);
+  const [cardActionDialog, setCardActionDialog] = useState<{ mode: 'edit' | 'replace'; card: ParkingCardRecord } | null>(null);
   const [pointForm, setPointForm] = useState({ point_name: '', location_detail: '', required_interval_minutes: 60 });
   const [keyForm, setKeyForm] = useState({ room_number: '', key_type: 'ห้องพัก', key_label: '', note: '' });
   const [blacklistForm, setBlacklistForm] = useState({ type: 'ทะเบียนรถ', vehicle_plate: '', id_card_number: '', name: '', reason: '', severity: 'เฝ้าระวังพิเศษ' });
@@ -74,6 +117,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   const isManager = currentUser.role === 'Manager';
   const isAdmin = currentUser.role === 'Admin';
   const hasEditAccess = isAdmin; // Manager is read-heavy
+  const canManageCards = isAdmin || isManager;
 
   const [initSystemLoading, setInitSystemLoading] = useState(false);
 
@@ -107,15 +151,16 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   const fetchData = async () => {
     setLoading(true);
     try {
+      const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
       const [u, c, p, k, b, i, a, s] = await Promise.all([
-        readSheet<UserRecord>('Users'),
-        readSheet<ParkingCardRecord>('ParkingCards'),
-        readSheet<PatrolPointRecord>('PatrolPoints'),
-        readSheet<any>('Keys'),
-        readSheet<BlacklistRecord>('Blacklist'),
-        readSheet<IncidentReportRecord>('IncidentReports'),
-        readSheet<AuditLogRecord>('AuditLogs'),
-        readSheet<any>('SystemSettings')
+        listStaffAccounts(),
+        listParkingCardsForManagement(isAdmin),
+        listPatrolPoints(siteId),
+        listKeys(siteId),
+        listBlacklist(siteId),
+        listIncidents(siteId),
+        listAuditLogs(siteId),
+        listSystemSettings(siteId)
       ]);
       setUserList(u || []);
       setCardList(c || []);
@@ -158,7 +203,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
         phone: userForm.phone,
         status: 'Active'
       }, userForm.pin);
-      await writeAuditLog(currentUser.name, 'สร้างผู้ใช้งาน Firebase Auth', 'Users', record.user_id, '', JSON.stringify({ username: normalizedUsername, role: userForm.role }));
+      await writeAuditLog(currentUser.name, 'สร้างบัญชีพนักงาน', 'Operators', record.operatorId, '', JSON.stringify({ username: normalizedUsername, role: userForm.role }));
       setUserForm({ name: '', username: '', role: 'Guard', shift: 'ทั่วไป', phone: '', pin: '' });
       setShowAddForm(false);
       showToast('success', 'สร้าง Username และ PIN สำเร็จ');
@@ -172,29 +217,35 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
 
   const handleAddCard = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!hasEditAccess) return showToast('error', 'สิทธิ์ระดับผู้จัดการไม่ได้รับอนุญาตให้ทำการแก้ไขค่าระบบหลัก');
+    if (!canManageCards) return showToast('error', 'ไม่มีสิทธิ์จัดการบัตรจอดรถ');
     try {
       setLoading(true);
       const cardId = 'C' + Math.floor(Math.random() * 9000 + 1000);
       const now = new Date().toISOString();
-      const qrValue = cardForm.qr_code_value || `CARD_${cardForm.card_number}_QR`;
+      const qrValue = cardForm.qr_code_value.trim() || cardForm.card_number.trim();
       const record: ParkingCardRecord = {
+        firestore_document_id: '',
         card_id: cardId,
+        site_id: sessionStorage.getItem('selected_site_id') || 'site-01',
         card_number: cardForm.card_number,
+        card_number_normalized: '',
         qr_code_value: qrValue,
-        status: 'ว่าง',
+        qr_code_normalized: '',
+        card_type: cardForm.card_type,
+        status: cardForm.card_type === 'VIP' ? 'VIP' : 'Available',
+        status_normalized: cardForm.card_type === 'VIP' ? 'VIP' : 'Available',
         note: cardForm.note,
         created_at: now,
         updated_at: now
       };
-      await appendSheetRow('ParkingCards', record);
-      await writeAuditLog(currentUser.name, 'เพิ่มบัตรจอดรถ', 'ParkingCards', cardId, '', JSON.stringify(record));
-      setCardForm({ card_number: '', qr_code_value: '', note: '' });
+      const persisted = await createParkingCard(record, currentUser.name);
+      setCardList(current => [...current.filter(card => card.firestore_document_id !== persisted.firestore_document_id), persisted]);
+      setCardForm({ card_number: '', qr_code_value: '', card_type: 'Temporary', note: '' });
       setShowAddForm(false);
       showToast('success', 'เพิ่มบัตรจอดรถสำเร็จ!');
       fetchData();
-    } catch (err: any) {
-      showToast('error', err.message);
+    } catch (err: unknown) {
+      showToast('error', parkingCardOperationError('Create', cardForm.card_number, err, currentUser.role));
     } finally {
       setLoading(false);
     }
@@ -218,14 +269,14 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
         created_at: now,
         updated_at: now
       };
-      await appendSheetRow('PatrolPoints', record);
+      await createPatrolPoint(sessionStorage.getItem('selected_site_id') || 'site-01', record);
       await writeAuditLog(currentUser.name, 'เพิ่มจุดตรวจพิกัด', 'PatrolPoints', pointId, '', JSON.stringify(record));
       setPointForm({ point_name: '', location_detail: '', required_interval_minutes: 60 });
       setShowAddForm(false);
       showToast('success', 'เพิ่มจุดตรวจพิกัดสำเร็จ!');
       fetchData();
-    } catch (err: any) {
-      showToast('error', err.message);
+    } catch (err: unknown) {
+      showToast('error', err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -250,14 +301,14 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
         created_at: now,
         updated_at: now
       };
-      await appendSheetRow('Keys', record);
+      await createKey(sessionStorage.getItem('selected_site_id') || 'site-01', record);
       await writeAuditLog(currentUser.name, 'เพิ่มกุญแจห้องในระบบ', 'Keys', keyId, '', JSON.stringify(record));
       setKeyForm({ room_number: '', key_type: 'ห้องพัก', key_label: '', note: '' });
       setShowAddForm(false);
       showToast('success', 'เพิ่มรหัสกุญแจห้องสำเร็จ!');
       fetchData();
-    } catch (err: any) {
-      showToast('error', err.message);
+    } catch (err: unknown) {
+      showToast('error', err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -282,7 +333,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
         created_at: now,
         updated_at: now
       };
-      await appendSheetRow('Blacklist', record);
+      await createBlacklistEntry(sessionStorage.getItem('selected_site_id') || 'site-01', record);
       await writeAuditLog(currentUser.name, 'สร้างประวัติแบล็กลิสต์', 'Blacklist', blId, '', JSON.stringify(record));
       setBlacklistForm({ type: 'ทะเบียนรถ', vehicle_plate: '', id_card_number: '', name: '', reason: '', severity: 'เฝ้าระวังพิเศษ' });
       setShowAddForm(false);
@@ -308,7 +359,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
     try {
       setLoading(true);
       const replacement = await rotateStaffPin(user as any, newPin);
-      await writeAuditLog(currentUser.name, 'รีเซ็ต PIN และหมุน Firebase Auth UID', 'Users', replacement.user_id, '', user.operator_name, loginEmail, currentUser.name);
+      await writeAuditLog(currentUser.name, 'รีเซ็ต PIN พนักงาน', 'Operators', replacement.operator_id || user.user_id, '', user.operator_name, loginEmail, currentUser.name);
       showToast('success', `รีเซ็ต PIN ให้ ${user.operator_name} เรียบร้อยแล้ว`);
       fetchData();
     } catch (err: any) {
@@ -343,7 +394,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
     try {
       setLoading(true);
       const nextStatus = pt.status === 'Active' ? 'Inactive' : 'Active';
-      await updateSheetRow('PatrolPoints', 'patrol_point_id', pt.patrol_point_id, { status: nextStatus, updated_at: new Date().toISOString() });
+      await setPatrolPointStatus(sessionStorage.getItem('selected_site_id') || 'site-01', pt.patrol_point_id, nextStatus);
       await writeAuditLog(currentUser.name, `เปลี่ยนสถานะจุดตรวจพิกัด`, 'PatrolPoints', pt.patrol_point_id, pt.status, nextStatus);
       showToast('success', 'อัปเดตสถานะจุดตรวจพิกัดสำเร็จ!');
       fetchData();
@@ -354,26 +405,111 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
     }
   };
 
-  const handleUpdateCardStatus = async (cardId: string, oldStatus: string, nextStatus: any) => {
-    if (!hasEditAccess) return showToast('error', 'สิทธิ์ระดับผู้จัดการไม่ได้รับอนุญาตให้แก้ไขบัตรจอดรถ');
+  const handleUpdateCardStatus = async (cardId: string, oldStatus: string, nextStatus: ParkingCardRecord['status']) => {
+    if (!canManageCards) return showToast('error', 'ไม่มีสิทธิ์จัดการบัตรจอดรถ');
+    const reason = window.prompt(`ระบุเหตุผล: ${oldStatus} → ${nextStatus}`);
+    if (!reason?.trim()) return showToast('error', 'กรุณาระบุเหตุผลในการเปลี่ยนสถานะ');
     try {
       setLoading(true);
-      await updateSheetRow('ParkingCards', 'card_id', cardId, { status: nextStatus, updated_at: new Date().toISOString() });
-      await writeAuditLog(currentUser.name, `เปลี่ยนสถานะบัตรจอดรถ`, 'ParkingCards', cardId, oldStatus, nextStatus);
+      if (nextStatus === 'Disabled') await disableParkingCard(cardId, currentUser.name, reason.trim());
+      else if (nextStatus === 'Suspended') await suspendCard(cardId, currentUser.name, reason.trim());
+      else if (nextStatus === 'Lost') await markLost(cardId, currentUser.name, reason.trim());
+      else if (nextStatus === 'Available') await activateCard(cardId, currentUser.name, reason.trim());
+      else throw new Error('สถานะนี้ต้องดำเนินการผ่าน workflow approval เฉพาะ');
       showToast('success', 'อัปเดตสถานะบัตรจอดรถสำเร็จ!');
       fetchData();
-    } catch (err: any) {
-      showToast('error', err.message);
+    } catch (err: unknown) {
+      const card = cardList.find(item => item.firestore_document_id === cardId);
+      const operation = nextStatus === 'Lost' ? 'Report Lost' : nextStatus === 'Disabled' ? 'Disable' : 'Update Status';
+      showToast('error', parkingCardOperationError(operation, card?.card_number || cardId, err, currentUser.role));
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleEditCard = async (card: ParkingCardRecord, values: ParkingCardActionValues) => {
+    try {
+      const blockedRestore = ['Lost', 'Cancelled', 'Retired', 'Replaced'].includes(card.status) && values.status === 'Available';
+      if (blockedRestore) throw new Error(`${card.status} cards cannot be restored through Edit.`);
+      await updateParkingCard(card.firestore_document_id, { card_number: values.card_number, qr_code_value: values.qr_code_value, card_type: values.card_type, note: values.note }, currentUser.name);
+      if (values.status !== card.status) {
+        if (values.status === 'Available') await activateCard(card.firestore_document_id, currentUser.name, values.reason || 'Edited by card management');
+        else if (values.status === 'Disabled') await disableParkingCard(card.firestore_document_id, currentUser.name, values.reason || 'Disabled by card management');
+        else if (values.status === 'Suspended') await suspendCard(card.firestore_document_id, currentUser.name, values.reason || 'Suspended by card management');
+        else if (values.status === 'Lost') await markLost(card.firestore_document_id, currentUser.name, values.reason || 'Reported lost by card management');
+        else throw new Error('Status transition is not supported from Edit Card.');
+      }
+      showToast('success', 'แก้ไขบัตรสำเร็จ'); await fetchData();
+    } catch (reason) {
+      throw new Error(parkingCardOperationError('Edit', card.card_number, reason, currentUser.role));
+    }
+  };
+
+  const handleDeleteCard = async (card: ParkingCardRecord) => {
+    if (!canManageCards) return;
+    if (card.status === 'InUse') return showToast('error', `Delete blocked:\nCard is In Use.\nActive vehicle plate: ${card.current_vehicle_plate || 'unknown'}\nResolve the active vehicle transaction first.`);
+    const check = await checkParkingCardActiveReferences(card.firestore_document_id);
+    if (!check.safe) return showToast('error', check.reason || 'Card cannot be deleted.');
+    if (!window.confirm(`Card Number: ${card.card_number}\nQR Code: ${card.qr_code_value}\nStatus: ${card.status}\n\nDeletion cannot be automatically undone. Continue?`)) return;
+    try {
+      await deleteParkingCard(card.firestore_document_id, currentUser.name);
+      setCardList(current => current.filter(item => item.firestore_document_id !== card.firestore_document_id)); showToast('success', `Deleted ${card.card_number}`);
+    } catch (reason) {
+      showToast('error', parkingCardOperationError('Delete', card.card_number, reason, currentUser.role));
+    }
+  };
+
+  const handleRepairLegacyCard = async (card: ParkingCardRecord) => {
+    if (!isAdmin || card.site_id) return;
+    const targetSite = sessionStorage.getItem('selected_site_id') || 'site-01';
+    const details = `Card Number: ${card.card_number}\nCurrent status: ${card.status}\nCurrent vehicle plate: ${card.current_vehicle_plate || '-'}\nCurrent vehicle log ID: ${card.current_vehicle_log_id || '-'}\nCurrent site assignment: Missing\nTarget site: ${targetSite}`;
+    if (!window.confirm(`${details}\n\nAssign this legacy card to the approved current site?`)) return;
+    try {
+      const repaired = await repairLegacyParkingCard(card.firestore_document_id, currentUser.name);
+      setCardList(current => current.map(item => item.firestore_document_id === repaired.firestore_document_id ? repaired : item));
+      showToast('success', `Legacy card ${card.card_number} assigned to ${targetSite}`);
+    } catch (reason) {
+      showToast('error', parkingCardOperationError('Repair Legacy Card', card.card_number, reason, currentUser.role));
+    }
+  };
+
+  const selectedCards = () => cardList.filter(card => selectedCardIds.has(card.firestore_document_id));
+  const handleBulkDisableCards = async () => {
+    const result = await bulkDisableParkingCards(selectedCards(), currentUser.name);
+    const details = [...result.skipped.map(item => `${item.cardNumber}: ${item.reason}`), ...result.failed.map(item => `${item.cardNumber}: ${item.reason}`)];
+    showToast('success', `Successful ${result.disabled} • Skipped ${result.skipped.length} • Failed ${result.failed.length}${details.length ? ` — ${details.join(' | ')}` : ''}`);
+    setSelectedCardIds(new Set()); await fetchData();
+  };
+  const handleBulkDeleteCards = async () => {
+    if (!window.confirm(`Delete selected cards? Active/Lost cards will be skipped.`)) return;
+    const result = await bulkDeleteParkingCards(selectedCards(), currentUser.name);
+    const details = [...result.skipped.map(item => `${item.cardNumber}: ${item.reason}`), ...result.failed.map(item => `${item.cardNumber}: ${item.reason}`)];
+    showToast('success', `Successful ${result.deleted} • Skipped ${result.skipped.length} • Failed ${result.failed.length}${details.length ? ` — ${details.join(' | ')}` : ''}`);
+    setSelectedCardIds(new Set()); await fetchData();
+  };
+  const handleReplaceCard = async (card: ParkingCardRecord, values: ParkingCardActionValues) => {
+    try {
+      await replaceParkingCard(card.firestore_document_id, { card_number: values.card_number, qr_code_value: values.qr_code_value, card_type: values.card_type, note: values.note, reason: values.reason }, currentUser.name);
+      showToast('success', 'Replacement card created and linked'); await fetchData();
+    } catch (reason) {
+      throw new Error(parkingCardOperationError('Replace', card.card_number, reason, currentUser.role));
+    }
+  };
+  const handleExportSelectedCards = async (format: 'csv' | 'json') => {
+    const rows = selectedCards(); if (!rows.length) return showToast('error', 'กรุณาเลือกบัตร');
+    if (format === 'csv') exportCsv(rows.map(row => ({ ...row })), IMPORT_EXPORT_MODULES.ParkingCards);
+    else {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = `parking-cards-selected-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url);
+    }
+    await logParkingCardExport(currentUser.name, format, rows.length);
   };
 
   const handleUpdateKeyStatus = async (keyId: string, oldStatus: string, nextStatus: string) => {
     if (!hasEditAccess) return showToast('error', 'สิทธิ์ระดับผู้จัดการไม่ได้รับอนุญาตให้แก้ไขข้อมูลกุญแจ');
     try {
       setLoading(true);
-      await updateSheetRow('Keys', 'key_id', keyId, { status: nextStatus, updated_at: new Date().toISOString() });
+      await setKeyStatus(sessionStorage.getItem('selected_site_id') || 'site-01', keyId, nextStatus);
       await writeAuditLog(currentUser.name, `เปลี่ยนสถานะกุญแจห้อง`, 'Keys', keyId, oldStatus, nextStatus);
       showToast('success', 'อัปเดตสถานะกุญแจห้องเรียบร้อย!');
       fetchData();
@@ -389,7 +525,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
     try {
       setLoading(true);
       const nextStatus = bl.status === 'Active' ? 'Inactive' : 'Active';
-      await updateSheetRow('Blacklist', 'blacklist_id', bl.blacklist_id, { status: nextStatus, updated_at: new Date().toISOString() });
+      await setBlacklistStatus(sessionStorage.getItem('selected_site_id') || 'site-01', bl.blacklist_id, nextStatus);
       await writeAuditLog(currentUser.name, `เปลี่ยนสถานะแบล็กลิสต์`, 'Blacklist', bl.blacklist_id, bl.status, nextStatus);
       showToast('success', 'เปลี่ยนสถานะรายชื่อเรียบร้อย!');
       fetchData();
@@ -417,7 +553,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
       if (isClosing) {
         updatePayload.resolved_at = new Date().toISOString();
       }
-      await updateSheetRow('IncidentReports', 'incident_id', incidentId, updatePayload);
+      await updateIncident(sessionStorage.getItem('selected_site_id') || 'site-01', incidentId, updatePayload);
       await writeAuditLog(
         currentUser.name, 
         'ทบทวนรายงานเหตุผิดปกติ', 
@@ -441,10 +577,9 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
     if (!hasEditAccess) return showToast('error', 'สิทธิ์ระดับผู้จัดการไม่ได้รับอนุญาตให้เปลี่ยนการตั้งค่าระบบ');
     try {
       setLoading(true);
-      await updateSheetRow('SystemSettings', 'setting_key', key, { 
+      await updateSystemSetting(sessionStorage.getItem('selected_site_id') || 'site-01', key, {
         setting_value: value, 
-        updated_by: currentUser.name, 
-        updated_at: new Date().toISOString() 
+        updated_by: currentUser.name,
       });
       await writeAuditLog(currentUser.name, 'เปลี่ยนค่าตัวแปรระบบ', 'SystemSettings', key, oldValue, value);
       showToast('success', `บันทึกค่าระบบ "${key}" เรียบร้อยแล้ว`);
@@ -457,8 +592,8 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   };
 
   // CSV Export & Backup Actions
-  const handleExportCSV = (sheetName: keyof typeof SCHEMA) => {
-    const headers = SCHEMA[sheetName];
+  const handleExportCSV = (sheetName: keyof typeof EXPORT_COLUMNS) => {
+    const headers = EXPORT_COLUMNS[sheetName];
     let rows: any[] = [];
     if (sheetName === 'Users') rows = userList;
     else if (sheetName === 'ParkingCards') rows = cardList;
@@ -525,8 +660,8 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
 
   // Helper stats for Dashboard
   const activeUsers = userList.filter(u => u.status === 'Active').length;
-  const activeCards = cardList.filter(c => c.status === 'ใช้งานอยู่').length;
-  const lostCards = cardList.filter(c => c.status === 'สูญหาย/ระงับ' || c.status === 'ระงับชั่วคราว').length;
+  const activeCards = cardList.filter(c => c.status === 'InUse').length;
+  const lostCards = cardList.filter(c => c.status === 'Lost' || c.status === 'Suspended').length;
   const activePoints = pointList.filter(p => p.status === 'Active').length;
   const keysCheckedOut = keyList.filter(k => k.status === 'Checked Out' || k.status === 'ถูกเบิก').length;
   const openIncidents = incidentList.filter(i => i.status !== 'ปิดงานแล้ว' && i.status !== 'Closed').length;
@@ -629,7 +764,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
       <div className="relative z-10 min-h-[400px]">
 
         {activeTab === 'users' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Operators} records={userList} canImport={isAdmin} onImported={fetchData} /></div>}
-        {activeTab === 'cards' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.ParkingCards} records={cardList} canImport={isAdmin} onImported={fetchData} /></div>}
+        {activeTab === 'cards' && <div className="mb-4 flex flex-col items-end gap-1"><ImportExportDialog module={IMPORT_EXPORT_MODULES.ParkingCards} records={cardList} canImport={isAdmin && parkingCardAuditReady} commitImport={preview => importParkingCards(preview, currentUser.name)} onImported={fetchData} enableJson currentRole={currentUser.role} onExport={(format, count) => logParkingCardExport(currentUser.name, format, count)} />{isAdmin && !parkingCardAuditReady && <span className="text-[10px] font-bold text-amber-400">กรุณาตรวจสอบข้อมูลบัตรเดิมก่อน Import</span>}</div>}
         {activeTab === 'keys' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Keys} records={keyList} canImport={isAdmin} onImported={fetchData} /></div>}
         {activeTab === 'blacklist' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Blacklist} records={blacklist} canImport={isAdmin} onImported={fetchData} /></div>}
         {activeTab === 'incidents' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.IncidentReports} records={incidentList} canImport={isAdmin} onImported={fetchData} /></div>}
@@ -780,7 +915,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
               <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
                 <Users className="w-4 h-4 text-blue-500" /> จัดการสิทธิ์การใช้งาน และกะปฏิบัติการของพนักงาน
               </h3>
-              {!showAddForm && isAdmin && (
+              {!showAddForm && canManageCards && (
                 <button
                   onClick={() => setShowAddForm(true)}
                   className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs cursor-pointer"
@@ -789,6 +924,8 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                 </button>
               )}
             </div>
+
+            {canManageCards && selectedCardIds.size > 0 && <div className="flex flex-wrap gap-2 rounded-xl border border-slate-800 bg-slate-950 p-3"><span className="mr-2 self-center text-xs font-bold text-slate-400">Selected: {selectedCardIds.size} cards</span><button onClick={() => void handleBulkDisableCards()} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white">Disable Selected</button><button onClick={() => void handleBulkDeleteCards()} className="rounded-lg bg-red-800 px-3 py-2 text-xs font-bold text-white">Delete Selected</button><button onClick={() => void handleExportSelectedCards('csv')} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white">Export Selected CSV</button><button onClick={() => setSelectedCardIds(new Set())} className="rounded-lg bg-slate-700 px-3 py-2 text-xs font-bold text-white">Clear Selection</button></div>}
 
             {showAddForm && (
               <form onSubmit={handleAddUser} className="bg-slate-950 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4">
@@ -828,7 +965,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                       className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none"
                     >
                       <option value="Guard">Guard (เจ้าหน้าที่ รปภ.)</option>
-                      <option value="Shift Leader">Shift Leader (หัวหน้ากะตรวจตรา)</option>
+                      <option value="ShiftHead">Shift Leader (หัวหน้ากะตรวจตรา)</option>
                       <option value="Manager">Manager (ผู้จัดการนิติอาคาร)</option>
                       <option value="Admin">Admin (แอดมินสูงสุด)</option>
                     </select>
@@ -917,7 +1054,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                           <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${
                             user.role === 'Admin' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
                             user.role === 'Manager' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
-                            user.role === 'Shift Leader' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                            user.role === 'ShiftHead' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
                             'bg-slate-500/10 text-slate-400 border border-slate-500/20'
                           }`}>
                             {user.role}
@@ -979,11 +1116,12 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
         {/* 2. Parking Card Management Tab */}
         {activeTab === 'cards' && (
           <div className="flex flex-col gap-4">
+            {isAdmin && <ParkingCardDataAuditPanel onMigrated={fetchData} onAuditReady={() => setParkingCardAuditReady(true)} />}
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
                 <CreditCard className="w-4 h-4 text-emerald-500" /> ควบคุมและตรวจสอบบัตรจอดรถชั่วคราว (Parking Card Assets)
               </h3>
-              {!showAddForm && isAdmin && (
+              {!showAddForm && canManageCards && (
                 <button
                   onClick={() => setShowAddForm(true)}
                   className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs cursor-pointer"
@@ -994,9 +1132,9 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
             </div>
 
             {showAddForm && (
-              <form onSubmit={handleAddCard} className="bg-slate-950 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4">
+              <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/75 p-3" onMouseDown={() => setShowAddForm(false)}><form role="dialog" aria-modal="true" aria-label="Create New Parking Card" onMouseDown={event => event.stopPropagation()} onSubmit={handleAddCard} className="w-full max-w-4xl bg-slate-950 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4">
                 <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider">บันทึกเพิ่มบัตรผู้มาติดต่อรายวัน</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-6 gap-4">
                   <div>
                     <label className="text-[10px] text-slate-400 font-bold block mb-1">หมายเลขหน้าบัตร</label>
                     <input
@@ -1019,6 +1157,13 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                     />
                   </div>
                   <div>
+                    <label className="text-[10px] text-slate-400 font-bold block mb-1">ประเภทบัตร</label>
+                    <select value={cardForm.card_type} onChange={e => setCardForm({ ...cardForm, card_type: e.target.value as ParkingCardRecord['card_type'] })} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none">
+                      {['Temporary', 'Resident', 'Contractor', 'Staff', 'Other'].map(type => <option key={type}>{type}</option>)}
+                      <option value="VIP" disabled>VIP (ยังไม่เปิดใช้งาน)</option>
+                    </select>
+                  </div>
+                  <div>
                     <label className="text-[10px] text-slate-400 font-bold block mb-1">หมายเหตุ / ประเภทการใช้งาน</label>
                     <input
                       type="text"
@@ -1028,6 +1173,8 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                       placeholder="เช่น บัตรสำรอง สำหรับ VIP"
                     />
                   </div>
+                  <div><label className="text-[10px] text-slate-400 font-bold block mb-1">Site</label><input disabled value={sessionStorage.getItem('selected_site_id') || 'site-01'} className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-400" /></div>
+                  <div><label className="text-[10px] text-slate-400 font-bold block mb-1">Status</label><input disabled value="Available" className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-400" /></div>
                 </div>
                 <div className="flex justify-end gap-2 mt-2">
                   <button
@@ -1044,68 +1191,61 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                     สร้างคีย์การ์ดผู้ติดต่อ
                   </button>
                 </div>
-              </form>
+              </form></div>
             )}
 
             <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">
+              <div className="border-b border-slate-800 p-3">
+                <input type="search" value={cardSearch} onChange={event => setCardSearch(event.target.value)} placeholder="ค้นหา Card Number, QR, Status, Card Type หรือ Vehicle Plate" className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white outline-none focus:border-blue-500" />
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="border-b border-slate-800 bg-slate-900 text-slate-400 font-bold">
-                      <th className="p-4">รหัสระบุบัตร</th>
-                      <th className="p-4">หมายเลขหน้าบัตร</th>
-                      <th className="p-4">รหัส QR Code บาร์โค้ด</th>
-                      <th className="p-4">สถานะบัตร</th>
-                      <th className="p-4">รถยนต์ที่ถือกราฟ</th>
-                      <th className="p-4">หมายเหตุ</th>
-                      <th className="p-4 text-center">จัดการสถานะ / QR</th>
+                      <th className="p-4"><input type="checkbox" aria-label="Select all cards" checked={cardList.length > 0 && selectedCardIds.size === cardList.length} onChange={event => setSelectedCardIds(event.target.checked ? new Set(cardList.map(card => card.firestore_document_id)) : new Set())} /></th>
+                      <th className="p-4">Card Number / QR</th><th className="p-4">Card Type</th><th className="p-4">Status</th><th className="p-4">Current Vehicle</th><th className="p-4">Site</th><th className="p-4">Created Date</th><th className="p-4">Updated Date</th><th className="p-4 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {cardList.map((card, idx) => (
-                      <tr key={idx} className="border-b border-slate-900 hover:bg-slate-900/50">
-                        <td className="p-4 font-mono font-bold text-slate-400">{card.card_id}</td>
-                        <td className="p-4 font-bold text-white">{card.card_number}</td>
-                        <td className="p-4 font-mono text-slate-300 text-xs flex items-center gap-1">
-                          <span>{card.qr_code_value}</span>
+                    {cardList.filter(card => [card.card_number, card.qr_code_value, card.current_vehicle_plate, card.status, card.card_type].some(value => String(value || '').toLowerCase().includes(cardSearch.trim().toLowerCase()))).map(card => (
+                      <tr key={card.firestore_document_id} className="border-b border-slate-900 hover:bg-slate-900/50">
+                        <td className="p-4"><input type="checkbox" aria-label={`Select ${card.card_number}`} checked={selectedCardIds.has(card.firestore_document_id)} onChange={event => setSelectedCardIds(current => { const next = new Set(current); if (event.target.checked) next.add(card.firestore_document_id); else next.delete(card.firestore_document_id); return next; })} /></td>
+                        <td className="p-4 font-bold text-white"><span className="block">{card.card_number}</span><span className="flex items-center gap-1 font-mono text-[10px] font-normal text-slate-400">{card.qr_code_value}
                           <button
                             onClick={() => setQrModalCode({ value: card.qr_code_value, title: `รหัส QR บัตรจอดรถหมายเลข: ${card.card_number}` })}
                             className="p-1 text-blue-400 hover:text-white"
                             title="แสดงภาพ QR สำหรับติดตั้งหน้ารถ"
                           >
                             <QrCode className="w-3.5 h-3.5" />
-                          </button>
+                          </button></span>
                         </td>
+                        <td className="p-4 font-bold text-slate-300">{card.card_type}</td>
                         <td className="p-4">
                           <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                            card.status === 'ว่าง' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
-                            card.status === 'ใช้งานอยู่' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                            card.status === 'Available' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                            card.status === 'InUse' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
                             'bg-red-500/10 text-red-400 border border-red-500/20'
                           }`}>
                             {card.status}
                           </span>
                         </td>
                         <td className="p-4 font-bold text-blue-400">{card.current_vehicle_plate || '-'}</td>
-                        <td className="p-4 text-slate-400 max-w-xs truncate">{card.note || '-'}</td>
-                        <td className="p-4 text-center flex justify-center gap-1.5">
-                          {isAdmin ? (
+                        <td className="p-4 text-slate-400">{card.site_id || <span className="rounded bg-amber-900 px-2 py-1 text-amber-300">Legacy / Missing Site</span>}</td><td className="p-4 text-slate-400">{card.created_at ? new Date(card.created_at).toLocaleDateString('th-TH') : '-'}</td><td className="p-4 text-slate-400">{card.updated_at ? new Date(card.updated_at).toLocaleString('th-TH') : '-'}</td>
+                        <td className="p-4"><div className="flex flex-wrap justify-center gap-1.5">
+                          {canManageCards ? (
                             <>
-                              <button
-                                onClick={() => handleUpdateCardStatus(card.card_id, card.status, 'ว่าง')}
-                                className="px-2 py-1 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 font-bold rounded text-[10px] border border-emerald-500/20"
-                              >
-                                ตั้งค่าว่าง
-                              </button>
-                              <button
-                                onClick={() => handleUpdateCardStatus(card.card_id, card.status, 'สูญหาย/ระงับ')}
-                                className="px-2 py-1 bg-red-600/10 hover:bg-red-600/20 text-red-400 font-bold rounded text-[10px] border border-red-500/20"
-                              >
-                                ระงับใช้
-                              </button>
+                              <button onClick={() => setCardActionDialog({ mode: 'edit', card })}
+                                className="px-2 py-1 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 font-bold rounded text-[10px] border border-blue-500/20">แก้ไข</button>
+                              <button onClick={() => setHistoryCard(card)} className="px-2 py-1 bg-slate-700 text-slate-200 font-bold rounded text-[10px]">History</button>
+                              <button onClick={() => handleUpdateCardStatus(card.firestore_document_id, card.status, 'Disabled')} className="px-2 py-1 bg-red-600/10 text-red-400 font-bold rounded text-[10px] border border-red-500/20">Disable</button>
+                              <button onClick={() => handleUpdateCardStatus(card.firestore_document_id, card.status, 'Lost')} className="px-2 py-1 bg-amber-600/10 text-amber-400 font-bold rounded text-[10px] border border-amber-500/20">Report Lost</button>
+                              <button onClick={() => setCardActionDialog({ mode: 'replace', card })} className="px-2 py-1 bg-purple-600/10 text-purple-300 font-bold rounded text-[10px] border border-purple-500/20">Replace Card</button>
+                              {isAdmin && !card.site_id && <button onClick={() => void handleRepairLegacyCard(card)} className="px-2 py-1 bg-cyan-600/10 text-cyan-300 font-bold rounded text-[10px] border border-cyan-500/20">Repair Legacy Card</button>}
+                              <button onClick={() => void handleDeleteCard(card)} className="px-2 py-1 bg-red-950 text-red-300 font-bold rounded text-[10px] border border-red-900">Delete</button>
                             </>
                           ) : (
                             <span className="text-[10px] text-slate-500 font-bold">อ่านอย่างเดียว</span>
-                          )}
+                          )}</div>
                         </td>
                       </tr>
                     ))}
@@ -1115,6 +1255,8 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
             </div>
           </div>
         )}
+        {historyCard && <ParkingCardHistoryModal card={historyCard} onClose={() => setHistoryCard(null)} />}
+        {cardActionDialog && <ParkingCardActionDialog mode={cardActionDialog.mode} card={cardActionDialog.card} onClose={() => setCardActionDialog(null)} onSubmit={values => cardActionDialog.mode === 'edit' ? handleEditCard(cardActionDialog.card, values) : handleReplaceCard(cardActionDialog.card, values)} />}
 
         {/* 3. Patrol Point Management Tab */}
         {activeTab === 'points' && (
@@ -1840,6 +1982,8 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
         {/* 8 & 9. Audit Log Viewer & Backup Tab */}
         {activeTab === 'audit' && (
           <div className="flex flex-col gap-5">
+            <QueueMigrationPanel isAdmin={isAdmin} />
+            <AnalyticsRebuildPanel isAdmin={isAdmin} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               
               {/* 8. Audit Log Filter and Search View */}

@@ -31,7 +31,7 @@ export default function UnitSearchSelect({
     const needle = normalize(query);
     const statuses = statusFilter ? new Set(Array.isArray(statusFilter) ? statusFilter : [statusFilter]) : null;
     return units.filter(unit => (!statuses || statuses.has(unit.status)) && (!needle ||
-      [unit.room_number, unit.owner_name, unit.resident_name, unit.phone]
+      [unit.room_number, unit.building, unit.floor, unit.owner_name, unit.resident_name, unit.phone]
         .some(field => normalize(field || '').includes(needle)))).slice(0, 50);
   }, [query, statusFilter, units]);
 
@@ -46,7 +46,7 @@ export default function UnitSearchSelect({
   const manual = () => {
     const room = query.trim();
     if (!room) return;
-    onSelect({ unit_id: '', site_id: '', building: '', room_number: room, floor: '', owner_name: '', resident_name: '', occupancy_status: '', status: '', searchable_text: room, search_key: normalize(room), is_active: true, created_at: '', updated_at: '' });
+    onSelect({ firestore_document_id: '', unit_id: '', site_id: '', building: '', room_number: room, floor: '', owner_name: '', resident_name: '', occupancy_status: 'Active', status: 'Active', searchable_text: room, search_key: normalize(room), is_active: true, created_at: '', updated_at: '' });
     setOpen(false);
   };
 

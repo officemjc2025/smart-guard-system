@@ -1,6 +1,9 @@
 {
   "projects": {
-    "default": "securityprojectv1"
+    "default": "securityprojectv1-staging",
+    "development": "securityprojectv1-development",
+    "production": "securityprojectv1",
+    "staging": "securityprojectv1-staging"
   },
   "targets": {},
   "etags": {}

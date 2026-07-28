@@ -10,6 +10,9 @@ functions/.env.*
 !functions/.env.example
 .DS_Store
 *.log
+.tools/
+.infrastructure-checkpoint.json
+backups/staging/
 firebase-debug.log
 service-account*.json
 *private-key*

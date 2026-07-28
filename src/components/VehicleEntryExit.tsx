@@ -3,22 +3,42 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Car, Search, Check, AlertTriangle, ShieldAlert,
   ArrowUpRight, ArrowDownLeft, Camera, ShieldX, HelpCircle
 } from 'lucide-react';
-import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '../googleApi';
-import { VehicleLogRecord, ParkingCardRecord, BlacklistRecord } from '../types';
+import { getMediaUploadConfigurationError, uploadImageToDrive } from '../services/mediaUploadService';
+import { VehicleLogRecord, BlacklistRecord, type VehicleSessionRecord } from '../types';
+import { listActiveBlacklist } from '../services/blacklistService';
+import { completeVehicleExit, findActiveVehicleByCard, scanReturnedParkingCard, searchActiveVehicles } from '../services/parkingCardService';
+import {
+  acquireVehicleSessionLock,
+  completeVehicleSession,
+  createVehicleSessionFromScan,
+  releaseVehicleSessionLock,
+  subscribeAssignedVehicleSessions,
+  subscribePendingVehicleSessions,
+  updateVehicleSession,
+} from '../services/vehicleSessionService';
+import {
+  listOfflineVehicleSessions,
+  queueOfflineVehicleSession,
+  removeOfflineVehicleSession,
+} from '../services/vehicleSessionOfflineQueue';
 import QRScanner from './QRScanner';
 import ConfirmModal from './ConfirmModal';
 import UnitSearchSelect from './UnitSearchSelect';
+import OperationalQueueDashboard from './OperationalQueueDashboard';
+import VehicleSessionTimeline from './VehicleSessionTimeline';
+import OperationalAnalyticsDashboard from './OperationalAnalyticsDashboard';
 
 interface VehicleEntryExitProps {
   guardName: string;
+  userRole: string;
 }
 
-export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
+export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryExitProps) {
   const [activeTab, setActiveTab] = useState<'entry' | 'exit'>('entry');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -39,6 +59,7 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
     visitor_phone: '',
     target_room: '',
     target_unit_id: '',
+    target_building: '',
     unit_lookup_status: undefined as 'matched' | 'manual' | undefined,
     purpose: 'เยี่ยมญาติ',
     note: ''
@@ -46,6 +67,10 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
   const [entryPlatePhoto, setEntryPlatePhoto] = useState<string>('');
   const [entryVehiclePhoto, setEntryVehiclePhoto] = useState<string>('');
   const [showQRScanner, setShowQRScanner] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState('');
+  const [pendingSessions, setPendingSessions] = useState<VehicleSessionRecord[]>([]);
+  const [assignedSessions, setAssignedSessions] = useState<VehicleSessionRecord[]>([]);
+  const offlineSyncRunning = useRef(false);
 
   // Exit Form State
   const [parkedVehicles, setParkedVehicles] = useState<VehicleLogRecord[]>([]);
@@ -53,25 +78,99 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
   const [selectedExitVehicle, setSelectedExitVehicle] = useState<VehicleLogRecord | null>(null);
   const [exitPlatePhoto, setExitPlatePhoto] = useState<string>('');
   const [exitVehiclePhoto, setExitVehiclePhoto] = useState<string>('');
+  const [exitNote, setExitNote] = useState('');
+  const [abnormalNote, setAbnormalNote] = useState('');
+  const [lostCard, setLostCard] = useState(false);
+  const [lostCardReason, setLostCardReason] = useState('');
+  const [exitLoadError, setExitLoadError] = useState('');
+  const [showExitScanner, setShowExitScanner] = useState(false);
 
   useEffect(() => {
     fetchInitialData();
   }, [activeTab]);
 
+  useEffect(() => {
+    const configurationError = getMediaUploadConfigurationError();
+    if (configurationError) setStatusMessage({ type: 'error', text: configurationError });
+  }, []);
+
+  useEffect(() => {
+    const sync = () => { void syncOfflineSessions(); };
+    window.addEventListener('online', sync);
+    if (navigator.onLine) sync();
+    return () => window.removeEventListener('online', sync);
+  }, [guardName]);
+
+  async function syncOfflineSessions() {
+    if (offlineSyncRunning.current || !navigator.onLine) return;
+    offlineSyncRunning.current = true;
+    try {
+      const queued = await listOfflineVehicleSessions();
+      for (const item of queued) {
+        const sessionId = await createVehicleSessionFromScan(item.cardValue, item.siteId, item.operatorName, item.actorRole);
+        let platePhotoUrl = '';
+        let vehiclePhotoUrl = '';
+        if (item.platePhotoDataUrl) {
+          platePhotoUrl = await uploadImageToDrive(item.platePhotoDataUrl, `plate_in_offline_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: sessionId, siteId: item.siteId, uploadedBy: item.operatorName });
+        }
+        if (item.vehiclePhotoDataUrl) {
+          vehiclePhotoUrl = await uploadImageToDrive(item.vehiclePhotoDataUrl, `vehicle_in_offline_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: sessionId, siteId: item.siteId, uploadedBy: item.operatorName });
+        }
+        if (item.patch) {
+          const nextVersion = await updateVehicleSession(sessionId, {
+            ...item.patch,
+            entry_plate_photo_url: platePhotoUrl || item.patch.entry_plate_photo_url,
+            entry_vehicle_photo_url: vehiclePhotoUrl || item.patch.entry_vehicle_photo_url,
+          }, 'Ready', 'Ready', item.operatorName, item.actorRole, 1);
+          await completeVehicleSession(sessionId, item.operatorName, item.actorRole, nextVersion);
+        }
+        await removeOfflineVehicleSession(item.localId);
+      }
+      if (queued.length) setStatusMessage({ type: 'success', text: `ซิงก์ Vehicle Session ออฟไลน์สำเร็จ ${queued.length} รายการ` });
+    } catch (reason) {
+      setStatusMessage({ type: 'error', text: `ยังซิงก์รายการออฟไลน์ไม่ได้: ${reason instanceof Error ? reason.message : String(reason)}` });
+    } finally {
+      offlineSyncRunning.current = false;
+    }
+  }
+
+  useEffect(() => {
+    const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
+    const stopPending = subscribePendingVehicleSessions(siteId, setPendingSessions);
+    const stopAssigned = subscribeAssignedVehicleSessions(siteId, setAssignedSessions);
+    return () => { stopPending(); stopAssigned(); };
+  }, []);
+
   const fetchInitialData = async () => {
     setLoading(true);
     try {
       const [blList, allVehicles] = await Promise.all([
-        readSheet<BlacklistRecord>('Blacklist'),
-        readSheet<VehicleLogRecord>('VehicleLogs')
+        listActiveBlacklist(sessionStorage.getItem('selected_site_id') || 'site-01'),
+        searchActiveVehicles(sessionStorage.getItem('selected_site_id') || 'site-01', { operatorName: guardName, role: userRole })
       ]);
-      setBlacklist(blList.filter(b => b.status === 'Active'));
-      setParkedVehicles(allVehicles.filter(v => v.status === 'กำลังจอด'));
+      setBlacklist(blList);
+      setParkedVehicles(allVehicles);
+      setExitLoadError('');
     } catch (err) {
       console.error('Failed to load vehicle data:', err);
+      setExitLoadError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleReturnedCardLookup = async (rawValue = exitSearchQuery, scanned = false) => {
+    setLoading(true); setStatusMessage(null);
+    try {
+      const lookup = scanned ? scanReturnedParkingCard : findActiveVehicleByCard;
+      const result = await lookup(rawValue.trim(), sessionStorage.getItem('selected_site_id') || 'site-01', { operatorName: guardName, role: userRole });
+      if (!result.success || !result.vehicleLog) throw new Error(result.reason || 'No active vehicle linked to this card.');
+      setSelectedExitVehicle(result.vehicleLog);
+      if (result.warningCode === 'LEGACY_SITE_MISSING') setStatusMessage({ type: 'error', text: 'Legacy / Missing Site — Admin compatibility mode. Verify details before exit.' });
+      setShowExitScanner(false);
+    } catch (reason) {
+      setStatusMessage({ type: 'error', text: reason instanceof Error ? reason.message : String(reason) });
+    } finally { setLoading(false); }
   };
 
   // Check Blacklist whenever plate changes
@@ -107,11 +206,59 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
     reader.readAsDataURL(file);
   };
 
-  const handleQRScanSuccess = (code: string) => {
+  const handleQRScanSuccess = async (code: string) => {
     // Check if code contains prefix or is card number
     const cardNumber = code.replace('_QR', '').trim();
     setEntryForm(prev => ({ ...prev, card_number: cardNumber }));
     setShowQRScanner(false);
+    setStatusMessage(null);
+    try {
+      if (!navigator.onLine) {
+        const localId = `OFFLINE_${crypto.randomUUID()}`;
+        await queueOfflineVehicleSession({
+          localId, cardValue: cardNumber,
+          siteId: sessionStorage.getItem('selected_site_id') || 'site-01',
+          operatorName: guardName, actorRole: userRole, queuedAt: new Date().toISOString(),
+        });
+        setActiveSessionId(localId);
+        setStatusMessage({ type: 'success', text: 'บันทึก QR แบบออฟไลน์แล้ว ระบบจะซิงก์อัตโนมัติเมื่อกลับมาออนไลน์' });
+        return;
+      }
+      const sessionId = await createVehicleSessionFromScan(
+        cardNumber,
+        sessionStorage.getItem('selected_site_id') || 'site-01',
+        guardName,
+        userRole,
+      );
+      setActiveSessionId(sessionId);
+      setStatusMessage({ type: 'success', text: 'สร้าง Vehicle Session แล้ว สามารถบันทึกต่อหรือให้เจ้าหน้าที่ท่านอื่นรับช่วงได้' });
+    } catch (reason: unknown) {
+      setEntryForm(prev => ({ ...prev, card_number: '' }));
+      setStatusMessage({ type: 'error', text: reason instanceof Error ? reason.message : String(reason) });
+    }
+  };
+
+  const continueSession = async (session: VehicleSessionRecord) => {
+    try {
+      await acquireVehicleSessionLock(session.session_id, guardName, userRole === 'Admin', session.sessionVersion);
+      setActiveSessionId(session.session_id);
+      setEntryForm({
+        card_number: session.card_number,
+        vehicle_plate: session.vehicle_plate || '',
+        vehicle_type: session.vehicle_type || 'รถยนต์',
+        visitor_name: session.visitor_name || '',
+        visitor_phone: session.visitor_phone || '',
+        target_room: session.target_room || '',
+        target_unit_id: session.target_unit_id || '',
+        target_building: session.target_building || '',
+        unit_lookup_status: session.unit_lookup_status,
+        purpose: session.purpose || 'เยี่ยมญาติ',
+        note: session.note || '',
+      });
+      setStatusMessage({ type: 'success', text: `กำลังดำเนินการต่อ Session ${session.card_number}` });
+    } catch (reason) {
+      setStatusMessage({ type: 'error', text: reason instanceof Error ? reason.message : String(reason) });
+    }
   };
 
   const handleEntrySubmit = async (e: React.FormEvent) => {
@@ -125,66 +272,51 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
     setStatusMessage(null);
 
     try {
-      // 1. Upload photos if they exist
+      const patch = {
+        vehicle_plate: entryForm.vehicle_plate, vehicle_type: entryForm.vehicle_type,
+        visitor_name: entryForm.visitor_name, visitor_phone: entryForm.visitor_phone,
+        target_room: entryForm.target_room, target_unit_id: entryForm.target_unit_id || undefined,
+        target_building: entryForm.target_building || undefined,
+        unit_lookup_status: entryForm.unit_lookup_status, purpose: entryForm.purpose,
+        note: entryForm.note,
+      };
+      if (!navigator.onLine || activeSessionId.startsWith('OFFLINE_')) {
+        const localId = activeSessionId || `OFFLINE_${crypto.randomUUID()}`;
+        await queueOfflineVehicleSession({
+          localId, cardValue: entryForm.card_number,
+          siteId: sessionStorage.getItem('selected_site_id') || 'site-01',
+          operatorName: guardName, actorRole: userRole, patch,
+          platePhotoDataUrl: entryPlatePhoto || undefined,
+          vehiclePhotoDataUrl: entryVehiclePhoto || undefined,
+          queuedAt: new Date().toISOString(),
+        });
+        setActiveSessionId(localId);
+        setStatusMessage({ type: 'success', text: 'เก็บ QR รูปภาพ และข้อมูลผู้มาติดต่อไว้ในเครื่องแล้ว จะซิงก์อัตโนมัติเมื่อออนไลน์' });
+        return;
+      }
+      let sessionId = activeSessionId;
+      if (!sessionId) {
+        sessionId = await createVehicleSessionFromScan(entryForm.card_number, sessionStorage.getItem('selected_site_id') || 'site-01', guardName, userRole);
+        setActiveSessionId(sessionId);
+      }
+
+      // Upload all required evidence before the atomic Firestore transaction.
       let platePhotoUrl = '';
       let vehiclePhotoUrl = '';
-      const logId = 'V' + Math.floor(Math.random() * 1000000);
+      const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
 
       if (entryPlatePhoto) {
-        platePhotoUrl = await uploadImageToDrive(entryPlatePhoto, `plate_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: logId, siteId: 'smart-guard', uploadedBy: guardName });
+        platePhotoUrl = await uploadImageToDrive(entryPlatePhoto, `plate_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: sessionId, siteId, uploadedBy: guardName });
       }
       if (entryVehiclePhoto) {
-        vehiclePhotoUrl = await uploadImageToDrive(entryVehiclePhoto, `vehicle_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: logId, siteId: 'smart-guard', uploadedBy: guardName });
+        vehiclePhotoUrl = await uploadImageToDrive(entryVehiclePhoto, `vehicle_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: sessionId, siteId, uploadedBy: guardName });
       }
-
-      const nowStr = new Date().toISOString();
-
-      // 2. Write to VehicleLogs
-      const newLog: VehicleLogRecord = {
-        log_id: logId,
-        card_number: entryForm.card_number,
-        vehicle_plate: entryForm.vehicle_plate,
-        vehicle_type: entryForm.vehicle_type,
-        visitor_name: entryForm.visitor_name,
-        visitor_phone: entryForm.visitor_phone,
-        target_room: entryForm.target_room,
-        target_unit_id: entryForm.target_unit_id || undefined,
-        unit_lookup_status: entryForm.unit_lookup_status,
-        purpose: entryForm.purpose,
-        entry_time: nowStr,
-        entry_plate_photo_url: platePhotoUrl,
-        entry_vehicle_photo_url: vehiclePhotoUrl,
-        status: 'กำลังจอด',
-        recorded_by: guardName,
-        note: entryForm.note,
-        created_at: nowStr,
-        updated_at: nowStr
-      };
-
-      await appendSheetRow('VehicleLogs', newLog);
-
-      // 3. Update ParkingCard Status
-      try {
-        await updateSheetRow<ParkingCardRecord>('ParkingCards', 'card_number', entryForm.card_number, {
-          status: 'ใช้งานอยู่',
-          current_vehicle_plate: entryForm.vehicle_plate,
-          updated_at: nowStr
-        });
-      } catch (err) {
-        console.warn('Could not update card row. Seeding missing cards...', err);
-      }
-
-      // Add audit log
-      await appendSheetRow('AuditLogs', {
-        audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
-        user_name: guardName,
-        action: 'บันทึกรถเข้าอาคาร',
-        module_name: 'VehicleLogs',
-        record_id: logId,
-        old_value: '',
-        new_value: entryForm.vehicle_plate,
-        created_at: nowStr
-      });
+      const expectedVersion = activeSession?.sessionVersion ?? 1;
+      const nextVersion = await updateVehicleSession(sessionId, {
+        ...patch, entry_plate_photo_url: platePhotoUrl || undefined,
+        entry_vehicle_photo_url: vehiclePhotoUrl || undefined,
+      }, 'Ready', 'Ready', guardName, userRole, expectedVersion);
+      await completeVehicleSession(sessionId, guardName, userRole, nextVersion);
 
       setStatusMessage({ type: 'success', text: `บันทึกรถเข้าสำเร็จ! เลขทะเบียน: ${entryForm.vehicle_plate}` });
       
@@ -197,16 +329,19 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
         visitor_phone: '',
         target_room: '',
         target_unit_id: '',
+        target_building: '',
         unit_lookup_status: undefined,
         purpose: 'เยี่ยมญาติ',
         note: ''
       });
       setEntryPlatePhoto('');
       setEntryVehiclePhoto('');
+      setActiveSessionId('');
       setBlacklistWarning(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setStatusMessage({ type: 'error', text: `เกิดข้อผิดพลาด: ${err.message}` });
+      const message = err instanceof Error ? err.message : String(err);
+      setStatusMessage({ type: 'error', text: `เกิดข้อผิดพลาด: ${message}` });
     } finally {
       setLoading(false);
     }
@@ -236,44 +371,15 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
         exitVehicleUrl = await uploadImageToDrive(exitVehiclePhoto, `vehicle_out_${selectedExitVehicle.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: selectedExitVehicle.log_id, siteId: 'smart-guard', uploadedBy: guardName });
       }
 
-      const nowStr = new Date().toISOString();
+      await completeVehicleExit(selectedExitVehicle, {
+        exitPlatePhotoUrl: exitPlateUrl, exitVehiclePhotoUrl: exitVehicleUrl, exitNote, abnormalNote, lostCard, lostCardReason,
+      }, { operatorName: guardName, role: userRole });
 
-      // Update Vehicle Log to OUT
-      await updateSheetRow<VehicleLogRecord>('VehicleLogs', 'log_id', selectedExitVehicle.log_id, {
-        exit_time: nowStr,
-        exit_plate_photo_url: exitPlateUrl,
-        exit_vehicle_photo_url: exitVehicleUrl,
-        status: 'ออกแล้ว',
-        updated_at: nowStr
-      });
-
-      // Update Parking Card to Available
-      try {
-        await updateSheetRow<ParkingCardRecord>('ParkingCards', 'card_number', selectedExitVehicle.card_number, {
-          status: 'ว่าง',
-          current_vehicle_plate: '',
-          updated_at: nowStr
-        });
-      } catch (err) {
-        console.warn('Card card_number not found in database', err);
-      }
-
-      // Add audit log
-      await appendSheetRow('AuditLogs', {
-        audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
-        user_name: guardName,
-        action: 'บันทึกรถออกอาคาร',
-        module_name: 'VehicleLogs',
-        record_id: selectedExitVehicle.log_id,
-        old_value: 'กำลังจอด',
-        new_value: 'ออกแล้ว',
-        created_at: nowStr
-      });
-
-      setStatusMessage({ type: 'success', text: `บันทึกรถออกเสร็จสมบูรณ์! ทะเบียน: ${selectedExitVehicle.vehicle_plate}` });
+      setStatusMessage({ type: 'success', text: `Vehicle ${selectedExitVehicle.vehicle_plate} exited successfully. Card ${selectedExitVehicle.card_number} is now ${lostCard ? 'Lost' : 'available'}.` });
       setSelectedExitVehicle(null);
       setExitPlatePhoto('');
       setExitVehiclePhoto('');
+      setExitNote(''); setAbnormalNote(''); setLostCard(false); setLostCardReason(''); setExitSearchQuery('');
       fetchInitialData();
     } catch (err: any) {
       console.error(err);
@@ -283,11 +389,11 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
     }
   };
 
-  const filteredParked = parkedVehicles.filter(v => 
-    v.vehicle_plate.includes(exitSearchQuery) || 
-    v.card_number.includes(exitSearchQuery) ||
-    v.visitor_name.includes(exitSearchQuery)
-  );
+  const normalizedSearch = exitSearchQuery.trim().toLocaleLowerCase();
+  const compactSearch = normalizedSearch.replace(/\s+/g, '');
+  const filteredParked = parkedVehicles.filter(v => [v.vehicle_plate, v.card_number, v.visitor_name, v.visitor_phone, v.target_room]
+    .some(value => value.toLocaleLowerCase().includes(normalizedSearch) || value.toLocaleLowerCase().replace(/\s+/g, '').includes(compactSearch)));
+  const activeSession = pendingSessions.find(session => session.session_id === activeSessionId);
 
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col gap-5 px-1 pb-10">
@@ -324,13 +430,33 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
             ? 'bg-emerald-50 border border-emerald-200 text-emerald-800' 
             : 'bg-red-50 border border-red-200 text-red-800'
         }`}>
-          <Check className="w-5 h-5 shrink-0" />
+          {statusMessage.type === 'error' ? <AlertTriangle className="w-5 h-5 shrink-0" /> : <Check className="w-5 h-5 shrink-0" />}
           <span>{statusMessage.text}</span>
         </div>
       )}
 
       {activeTab === 'entry' ? (
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col gap-6">
+          <OperationalAnalyticsDashboard siteId={sessionStorage.getItem('selected_site_id') || 'site-01'} role={userRole} operatorName={guardName} />
+          <OperationalQueueDashboard
+            siteId={sessionStorage.getItem('selected_site_id') || 'site-01'}
+            operatorName={guardName}
+            role={userRole}
+            onContinue={session => void continueSession(session)}
+          />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-xl bg-amber-50 p-3"><p className="text-xs font-bold text-amber-700">งานค้าง</p><p className="text-2xl font-black text-amber-900">{pendingSessions.length}</p></div>
+            <div className="rounded-xl bg-indigo-50 p-3"><p className="text-xs font-bold text-indigo-700">มอบหมายให้ฉัน</p><p className="text-2xl font-black text-indigo-900">{assignedSessions.length}</p></div>
+            <div className="col-span-2 rounded-xl border border-slate-200 p-3">
+              <p className="mb-2 text-xs font-black text-slate-700">ดำเนินการ Session ต่อ</p>
+              <div className="flex gap-2 overflow-x-auto">
+                {pendingSessions.slice(0, 6).map(session => <button type="button" key={session.session_id} onClick={() => void continueSession(session)} className="shrink-0 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white">{session.card_number} · {session.stage}</button>)}
+                {!pendingSessions.length && <span className="text-xs text-slate-400">ไม่มีรายการค้าง</span>}
+              </div>
+            </div>
+          </div>
+          {activeSessionId && <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs font-bold text-indigo-800">Session กำลังทำงาน: {activeSessionId} <button type="button" className="ml-2 underline" onClick={() => { void releaseVehicleSessionLock(activeSessionId); setActiveSessionId(''); }}>พักไว้ก่อน</button></div>}
+          {activeSession && <VehicleSessionTimeline session={activeSession} />}
           <div className="flex justify-between items-center">
             <h2 className="text-lg font-black text-slate-800">ข้อมูลผู้มาติดต่อเข้าพื้นที่</h2>
             <button
@@ -428,7 +554,8 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
 
               <UnitSearchSelect value={entryForm.target_room} selectedUnitId={entryForm.target_unit_id}
                 label="ห้อง/พื้นที่มาติดต่อ" required allowManualEntry
-                onSelect={unit => setEntryForm(prev => ({ ...prev, target_room: unit?.room_number || '', target_unit_id: unit?.unit_id || '', unit_lookup_status: unit ? (unit.unit_id ? 'matched' : 'manual') : undefined }))} />
+                statusFilter="Active"
+                onSelect={unit => setEntryForm(prev => ({ ...prev, target_room: unit?.room_number || '', target_unit_id: unit?.unit_id || '', target_building: unit?.building || '', unit_lookup_status: unit ? (unit.unit_id ? 'matched' : 'manual') : undefined }))} />
 
               {/* Purpose */}
               <div className="flex flex-col gap-1.5">
@@ -533,17 +660,22 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
         /* EXIT TAB */
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col gap-5">
           <h2 className="text-lg font-black text-slate-800">ค้นหาและบันทึกข้อมูลรถออกอาคาร</h2>
+
+          <button type="button" onClick={() => setShowExitScanner(true)} className="min-h-14 w-full rounded-xl bg-indigo-600 px-5 py-4 text-base font-black text-white shadow active:scale-[0.99]">
+            สแกนบัตรที่คืน (Scan Returned Card)
+          </button>
+          {showExitScanner && <QRScanner onScanSuccess={code => void handleReturnedCardLookup(code.trim(), true)} onClose={() => setShowExitScanner(false)} />}
+          <div className="text-center text-xs font-bold text-slate-400">หรือกรอก Card Number / QR Code</div>
           
-          <div className="relative">
-            <Search className="absolute left-3.5 top-3.5 text-slate-400 w-5 h-5" />
-            <input
-              type="text"
-              value={exitSearchQuery}
-              onChange={(e) => setExitSearchQuery(e.target.value)}
-              placeholder="พิมพ์ทะเบียนรถ, เลขบัตร หรือชื่อผู้มาติดต่อเพื่อค้นหา..."
-              className="w-full pl-11 pr-4 py-3 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold"
-            />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="relative flex-1">
+              <Search className="absolute left-3.5 top-3.5 text-slate-400 w-5 h-5" />
+              <input type="text" value={exitSearchQuery} onChange={(e) => setExitSearchQuery(e.target.value)} placeholder="ทะเบียนรถ, Card/QR, ชื่อ, โทรศัพท์ หรือห้อง" className="w-full pl-11 pr-4 py-3 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold" />
+            </div>
+            <button type="button" disabled={loading || !exitSearchQuery.trim()} onClick={() => void handleReturnedCardLookup()} className="min-h-12 rounded-xl bg-slate-900 px-5 text-sm font-black text-white disabled:opacity-40">Find Active Vehicle</button>
           </div>
+
+          {exitLoadError && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">Firestore query failed: {exitLoadError}</div>}
 
           {loading && (
             <div className="py-10 text-center font-bold text-slate-500 animate-pulse text-sm">
@@ -551,20 +683,21 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
             </div>
           )}
 
-          {!loading && parkedVehicles.length === 0 && (
+          {!loading && !exitLoadError && parkedVehicles.length === 0 && (
             <div className="py-10 text-center text-slate-400 border border-dashed border-slate-200 rounded-xl">
               <Car className="w-12 h-12 text-slate-200 mx-auto mb-2" />
               <p className="text-sm font-bold">ไม่มีรถยนต์จอดอยู่ในระบบ ณ ขณะนี้</p>
             </div>
           )}
 
+          {!loading && !exitLoadError && parkedVehicles.length > 0 && filteredParked.length === 0 && !selectedExitVehicle && <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-500">Search returned no active vehicle match.</div>}
+
           {!loading && parkedVehicles.length > 0 && !selectedExitVehicle && (
             <div className="flex flex-col gap-2.5 max-h-96 overflow-y-auto">
               {filteredParked.map((v) => (
                 <div
                   key={v.log_id}
-                  onClick={() => setSelectedExitVehicle(v)}
-                  className="flex justify-between items-center p-4 bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-xl transition-all cursor-pointer group"
+                  className="flex flex-col justify-between gap-3 p-4 bg-slate-50 border border-slate-200 rounded-xl transition-all sm:flex-row sm:items-center"
                 >
                   <div className="flex items-center gap-3">
                     <div className="p-3 bg-white border border-slate-200 rounded-xl text-slate-700 font-black font-mono text-sm">
@@ -573,8 +706,10 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
                     <div>
                       <span className="text-base font-black text-slate-800">{v.vehicle_plate}</span>
                       <p className="text-xs text-slate-500 font-medium">
-                        {v.vehicle_type} • {v.visitor_name || 'ไม่ระบุชื่อ'} • ไปห้อง {v.target_room}
+                        {v.vehicle_type} • {v.visitor_name || 'ไม่ระบุชื่อ'} • {v.visitor_phone || 'ไม่มีเบอร์'} • ห้อง {v.target_room}
                       </p>
+                      <p className="text-xs text-slate-500">{v.purpose} • โดย {v.recorded_by || v.operator_name || 'ไม่ระบุ'}</p>
+                      {!v.site_id && <span className="mt-1 inline-block rounded bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">Legacy / Missing Site</span>}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
@@ -584,6 +719,7 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
                     <span className="text-[10px] font-mono text-slate-400">
                       เข้า: {new Date(v.entry_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
                     </span>
+                    <button type="button" onClick={() => setSelectedExitVehicle(v)} className="mt-1 min-h-10 rounded-lg bg-indigo-600 px-3 text-xs font-black text-white">{userRole === 'Admin' && !v.site_id ? 'Close Legacy Test Vehicle' : 'Process Exit'}</button>
                   </div>
                 </div>
               ))}
@@ -612,7 +748,13 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
                 <div>📞 เบอร์โทรศัพท์: <span className="font-bold text-slate-800">{selectedExitVehicle.visitor_phone || 'ไม่ระบุ'}</span></div>
                 <div>🏢 ห้องติดต่อ: <span className="font-bold text-slate-800">{selectedExitVehicle.target_room}</span></div>
                 <div>⏱️ เวลาเข้า: <span className="font-bold text-slate-800">{new Date(selectedExitVehicle.entry_time).toLocaleString('th-TH')}</span></div>
+                <div>🕒 เวลาที่จอด: <span className="font-bold text-slate-800">{Math.max(0, Math.floor((Date.now() - new Date(selectedExitVehicle.entry_time).getTime()) / 60000))} นาที</span></div>
+                <div>🛡️ ผู้บันทึกเข้า: <span className="font-bold text-slate-800">{selectedExitVehicle.recorded_by || selectedExitVehicle.operator_name || 'ไม่ระบุ'}</span></div>
+                <div>📝 วัตถุประสงค์: <span className="font-bold text-slate-800">{selectedExitVehicle.purpose || 'ไม่ระบุ'}</span></div>
+                <div>📌 หมายเหตุเข้า: <span className="font-bold text-slate-800">{selectedExitVehicle.note || 'ไม่มี'}</span></div>
               </div>
+
+              {(selectedExitVehicle.entry_plate_photo_url || selectedExitVehicle.entry_vehicle_photo_url) && <div className="grid grid-cols-2 gap-3">{selectedExitVehicle.entry_plate_photo_url && <img src={selectedExitVehicle.entry_plate_photo_url} alt="Entry plate" className="h-28 w-full rounded-xl object-cover" />}{selectedExitVehicle.entry_vehicle_photo_url && <img src={selectedExitVehicle.entry_vehicle_photo_url} alt="Entry vehicle" className="h-28 w-full rounded-xl object-cover" />}</div>}
 
               <form onSubmit={handleExitSubmit} className="flex flex-col gap-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -669,12 +811,17 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
                   </div>
                 </div>
 
+                <textarea value={exitNote} onChange={event => setExitNote(event.target.value)} placeholder="Exit Note (optional)" className="w-full rounded-xl border border-slate-300 bg-white p-3 text-sm" />
+                <textarea value={abnormalNote} onChange={event => setAbnormalNote(event.target.value)} placeholder="Abnormal Note (optional)" className="w-full rounded-xl border border-slate-300 bg-white p-3 text-sm" />
+                <label className="flex min-h-12 items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm font-black text-amber-900"><input type="checkbox" checked={lostCard} onChange={event => setLostCard(event.target.checked)} className="h-5 w-5" /> Card Not Returned / Lost Card</label>
+                {lostCard && <textarea required value={lostCardReason} onChange={event => setLostCardReason(event.target.value)} placeholder="Lost Card Note *" className="w-full rounded-xl border-2 border-amber-400 bg-white p-3 text-sm" />}
+
                 <button
                   type="submit"
                   disabled={loading}
                   className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all shadow active:scale-95 disabled:opacity-50 cursor-pointer text-sm"
                 >
-                  {loading ? 'กำลังบันทึกออกจากพื้นที่...' : '🚪 บันทึกรถออกจากอาคารและคืนบัตรสำเร็จ'}
+                  {loading ? 'กำลังปิดรายการ...' : 'ยืนยันรถออกและปิดรายการ (Confirm Vehicle Exit)'}
                 </button>
               </form>
             </div>
@@ -685,7 +832,7 @@ export default function VehicleEntryExit({ guardName }: VehicleEntryExitProps) {
       <ConfirmModal
         isOpen={showExitModal}
         title="ยืนยันบันทึกรถออก"
-        message={`คุณต้องการยืนยันบันทึกรถยนต์ทะเบียน "${selectedExitVehicle?.vehicle_plate}" ทำการออกจากพื้นที่โครงการและรับคืนบัตรจอดรถหมายเลข "${selectedExitVehicle?.card_number}" หรือไม่?`}
+        message={`Vehicle Plate: ${selectedExitVehicle?.vehicle_plate}\nParking Card: ${selectedExitVehicle?.card_number}\nEntry Time: ${selectedExitVehicle?.entry_time ? new Date(selectedExitVehicle.entry_time).toLocaleString('th-TH') : '-'}\nCurrent Time: ${new Date().toLocaleString('th-TH')}\n\nThis will close the active transaction${lostCard ? ' and mark the card Lost' : ' and release the card'}.`}
         confirmText="ยืนยันบันทึกออก"
         cancelText="ยกเลิก"
         onConfirm={handleConfirmExit}

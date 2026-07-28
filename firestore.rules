@@ -1,4 +1,12 @@
 rules_version = '2';
+// ===============================================================
+// Assumed critical data model (SPR-005)
+// parkingCards/{card_id}: immutable card_id/site_id, canonical status,
+// card type, active vehicle references, replacement/lost metadata.
+// vehicleLogs/{log_id}: immutable log/card/site/entry identity and entry/exit data.
+// auditLogs/{audit_id}: authenticated operator/account identity, site, card/log,
+// state transition, server timestamp and optional reason; immutable after create.
+// ===============================================================
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
@@ -21,13 +29,607 @@ service cloud.firestore {
       return isActiveUser() && ownProfile().role == 'Admin';
     }
 
+    function canManageUnits() {
+      return isActiveUser() && ownProfile().role in ['Admin', 'Manager'];
+    }
+
+    function canManageParkingCards() {
+      return isActiveUser() && ownProfile().role in ['Admin', 'Manager'];
+    }
+
+    function canProcessVehicleExit() {
+      return isActiveUser() && ownProfile().role in ['Guard', 'ShiftHead', 'Manager', 'Admin'];
+    }
+
+    function activeSiteId() {
+      return ownProfileExists() && ('site_id' in ownProfile()) ? ownProfile().site_id : 'site-01';
+    }
+
     function bootstrapOpen() {
       return !exists(/databases/$(database)/documents/systemSettings/authBootstrap);
     }
 
+    function validParkingCard(data) {
+      return data.keys().hasOnly([
+               'firestore_document_id', 'card_id', 'site_id', 'card_number', 'card_number_normalized', 'qr_code_value', 'qr_code_normalized', 'card_type', 'status', 'status_normalized', 'status_original',
+               'current_vehicle_plate', 'current_vehicle_log_id', 'current_vehicle_session_id', 'last_activity_at', 'member_id', 'lost_reason', 'lost_at', 'reported_by', 'reported_by_account_uid', 'related_vehicle_log_id',
+               'replacement_card_id', 'replaced_by_card_id', 'replaced_by_document_id', 'replacement_for_card_id', 'replacement_for_document_id', 'replacement_reason', 'replacement_at', 'replacement_by', 'created_by', 'replacement_approved', 'replacement_approved_by',
+               'replacement_approved_at', 'note', 'created_at', 'updated_at'
+             ])
+             && data.keys().hasAll(['card_id', 'site_id', 'card_number', 'qr_code_value', 'card_type', 'status', 'created_at', 'updated_at'])
+             && data.card_id is string
+             && data.site_id is string && data.site_id.size() > 0 && data.site_id.size() <= 64
+             && data.card_number is string
+             && data.card_number.size() > 0 && data.card_number.size() <= 64
+             && data.card_number.matches('^[A-Za-z0-9 /_-]+$')
+             && data.qr_code_value is string && data.qr_code_value.size() <= 256
+             && data.card_type in ['Normal', 'Temporary', 'VIP', 'Resident', 'Contractor', 'Staff', 'Other']
+             && data.status in ['Available', 'Reserved', 'Returned', 'InUse', 'In Use', 'Disabled', 'Suspended', 'Lost', 'Cancelled', 'Replaced', 'ReplacementApproved', 'Retired', 'VIP', 'ว่าง', 'ใช้งานอยู่', 'กำลังใช้งาน', 'VehicleInside', 'ระงับ', 'บัตรหาย']
+             && (!('status_normalized' in data) || data.status_normalized in ['Available', 'Reserved', 'Returned', 'InUse', 'Disabled', 'Suspended', 'Lost', 'Cancelled', 'Replaced', 'ReplacementApproved', 'Retired', 'VIP'])
+             && (data.card_type == 'VIP' ? (!('status_normalized' in data) || data.status_normalized == 'VIP') : (!('status_normalized' in data) || data.status_normalized != 'VIP'))
+             && (!('firestore_document_id' in data) || (data.firestore_document_id is string && data.firestore_document_id.size() > 0 && data.firestore_document_id.size() <= 128))
+             && (!('card_number_normalized' in data) || (data.card_number_normalized is string && data.card_number_normalized.size() <= 64))
+             && (!('qr_code_normalized' in data) || (data.qr_code_normalized is string && data.qr_code_normalized.size() <= 256))
+             && (!('status_original' in data) || (data.status_original is string && data.status_original.size() <= 64))
+             && ((data.created_at is string && data.created_at.size() <= 64) || data.created_at is timestamp)
+             && ((data.updated_at is string && data.updated_at.size() <= 64) || data.updated_at is timestamp)
+             && (!('current_vehicle_plate' in data) || (data.current_vehicle_plate is string && data.current_vehicle_plate.size() <= 64))
+             && (!('current_vehicle_log_id' in data) || (data.current_vehicle_log_id is string && data.current_vehicle_log_id.size() <= 128))
+             && (!('current_vehicle_session_id' in data) || (data.current_vehicle_session_id is string && data.current_vehicle_session_id.size() <= 128))
+             && (!('last_activity_at' in data) || (data.last_activity_at is string && data.last_activity_at.size() <= 64) || data.last_activity_at is timestamp)
+             && (!('member_id' in data) || (data.member_id is string && data.member_id.size() <= 128))
+             && (!('lost_reason' in data) || (data.lost_reason is string && data.lost_reason.size() <= 1000))
+             && (!('lost_at' in data) || (data.lost_at is string && data.lost_at.size() <= 64) || data.lost_at is timestamp)
+             && (!('reported_by' in data) || (data.reported_by is string && data.reported_by.size() <= 256))
+             && (!('reported_by_account_uid' in data) || (data.reported_by_account_uid is string && data.reported_by_account_uid.size() <= 128))
+             && (!('related_vehicle_log_id' in data) || (data.related_vehicle_log_id is string && data.related_vehicle_log_id.size() <= 128))
+             && (!('replacement_card_id' in data) || (data.replacement_card_id is string && data.replacement_card_id.size() <= 128))
+             && (!('replaced_by_card_id' in data) || (data.replaced_by_card_id is string && data.replaced_by_card_id.size() <= 128))
+             && (!('replaced_by_document_id' in data) || (data.replaced_by_document_id is string && data.replaced_by_document_id.size() <= 128))
+             && (!('replacement_for_card_id' in data) || (data.replacement_for_card_id is string && data.replacement_for_card_id.size() <= 128))
+             && (!('replacement_for_document_id' in data) || (data.replacement_for_document_id is string && data.replacement_for_document_id.size() <= 128))
+             && (!('replacement_reason' in data) || (data.replacement_reason is string && data.replacement_reason.size() <= 2000))
+             && (!('replacement_at' in data) || (data.replacement_at is string && data.replacement_at.size() <= 64) || data.replacement_at is timestamp)
+             && (!('replacement_by' in data) || (data.replacement_by is string && data.replacement_by.size() <= 128))
+             && (!('created_by' in data) || (data.created_by is string && data.created_by.size() <= 128))
+             && (!('replacement_approved' in data) || data.replacement_approved is bool)
+             && (!('replacement_approved_by' in data) || (data.replacement_approved_by is string && data.replacement_approved_by.size() <= 128))
+             && (!('replacement_approved_at' in data) || (data.replacement_approved_at is string && data.replacement_approved_at.size() <= 64))
+             && (!('note' in data) || (data.note is string && data.note.size() <= 2000));
+    }
+
+    function allowedParkingCardTransition() {
+      return request.resource.data.status == resource.data.status
+             || (resource.data.status in ['Available', 'ว่าง'] && request.resource.data.status in ['InUse', 'Disabled', 'Suspended', 'Lost', 'VIP'])
+             || (resource.data.status in ['Available', 'ว่าง'] && request.resource.data.status == 'Reserved')
+             || (resource.data.status == 'Reserved' && request.resource.data.status in ['Available', 'InUse'])
+             || (resource.data.status == 'Returned' && request.resource.data.status == 'Available')
+             || (resource.data.status in ['InUse', 'ใช้งานอยู่', 'In Use'] && request.resource.data.status in ['Available', 'Lost'])
+             || (resource.data.status == 'Suspended' && request.resource.data.status == 'Available')
+             || (resource.data.status == 'Disabled' && request.resource.data.status in ['Available', 'Lost'])
+             || (resource.data.status == 'Lost' && request.resource.data.status == 'ReplacementApproved')
+             || (resource.data.status == 'ReplacementApproved' && request.resource.data.status == 'Retired')
+             || (resource.data.status == 'VIP' && request.resource.data.status == 'Available');
+    }
+
+    function validReplacementCreate(documentId) {
+      return (!('replacement_for_document_id' in request.resource.data)
+                && !('replacement_for_card_id' in request.resource.data))
+             || (request.resource.data.replacement_for_document_id is string
+                && existsAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.replacement_for_document_id))
+                && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.replacement_for_document_id)).data.replaced_by_document_id == documentId
+                && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.replacement_for_document_id)).data.replaced_by_card_id == request.resource.data.card_id);
+    }
+
+    function validReplacementUpdate(documentId) {
+      return !('replaced_by_document_id' in request.resource.data)
+             || (request.resource.data.replaced_by_document_id is string
+                && existsAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.replaced_by_document_id))
+                && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.replaced_by_document_id)).data.replacement_for_document_id == documentId
+                && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.replaced_by_document_id)).data.replacement_for_card_id == request.resource.data.card_id);
+    }
+
+    function guardParkingCardTransition() {
+      let activeLogId = ('current_vehicle_log_id' in resource.data && resource.data.current_vehicle_log_id != '')
+        ? resource.data.current_vehicle_log_id
+        : request.resource.data.related_vehicle_log_id;
+      return isActiveUser()
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                  'site_id', 'card_type', 'status', 'status_normalized', 'current_vehicle_plate', 'current_vehicle_log_id', 'last_activity_at', 'updated_at',
+                  'lost_reason', 'lost_at', 'reported_by', 'reported_by_account_uid', 'related_vehicle_log_id'
+                ])
+             && (request.resource.data.site_id == resource.data.site_id
+               || (isAdmin() && !('site_id' in resource.data) && request.resource.data.site_id == activeSiteId()))
+             && (
+               ((resource.data.status in ['Available', 'ว่าง'])
+                 && request.resource.data.status == 'InUse'
+                 && request.resource.data.current_vehicle_log_id is string
+                 && existsAfter(/databases/$(database)/documents/vehicleLogs/$(request.resource.data.current_vehicle_log_id))
+                 && getAfter(/databases/$(database)/documents/vehicleLogs/$(request.resource.data.current_vehicle_log_id)).data.card_number == request.resource.data.card_number
+                 && getAfter(/databases/$(database)/documents/vehicleLogs/$(request.resource.data.current_vehicle_log_id)).data.status == 'กำลังจอด')
+               || ((resource.data.status in ['InUse', 'In Use', 'ใช้งานอยู่'])
+                 && canProcessVehicleExit()
+                 && request.resource.data.status in ['Available', 'Lost']
+                 && activeLogId is string
+                 && activeLogId == request.resource.data.related_vehicle_log_id
+                 && (('current_vehicle_log_id' in resource.data && resource.data.current_vehicle_log_id != '') || isAdmin())
+                 && getAfter(/databases/$(database)/documents/vehicleLogs/$(activeLogId)).data.card_number == request.resource.data.card_number
+                 && getAfter(/databases/$(database)/documents/vehicleLogs/$(activeLogId)).data.status == 'ออกแล้ว'
+                 && (request.resource.data.status == 'Available'
+                   || (request.resource.data.lost_reason is string
+                     && request.resource.data.reported_by_account_uid == request.auth.uid
+                     && request.resource.data.related_vehicle_log_id == activeLogId)))
+             );
+    }
+
+    function vehicleSessionCardTransition() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return canProcessVehicleExit()
+             && request.resource.data.site_id == resource.data.site_id
+             && request.resource.data.site_id == activeSiteId()
+             && (
+               (resource.data.status in ['Available', 'ว่าง']
+                 && request.resource.data.status == 'Reserved'
+                 && changed.hasOnly(['status', 'status_normalized', 'current_vehicle_session_id', 'last_activity_at', 'updated_at'])
+                 && request.resource.data.current_vehicle_session_id is string
+                 && existsAfter(/databases/$(database)/documents/vehicleSessions/$(request.resource.data.current_vehicle_session_id))
+                 && getAfter(/databases/$(database)/documents/vehicleSessions/$(request.resource.data.current_vehicle_session_id)).data.parking_card_id == request.resource.data.firestore_document_id)
+               || (resource.data.status == 'Reserved'
+                 && request.resource.data.status == 'InUse'
+                 && changed.hasOnly(['status', 'status_normalized', 'current_vehicle_plate', 'current_vehicle_log_id', 'current_vehicle_session_id', 'last_activity_at', 'updated_at'])
+                 && resource.data.current_vehicle_session_id is string
+                 && request.resource.data.current_vehicle_session_id == ''
+                 && request.resource.data.current_vehicle_log_id is string
+                 && existsAfter(/databases/$(database)/documents/vehicleLogs/$(request.resource.data.current_vehicle_log_id))
+                 && getAfter(/databases/$(database)/documents/vehicleLogs/$(request.resource.data.current_vehicle_log_id)).data.card_number == request.resource.data.card_number)
+               || (resource.data.status == 'Reserved'
+                 && request.resource.data.status == 'Available'
+                 && changed.hasOnly(['status', 'status_normalized', 'current_vehicle_session_id', 'last_activity_at', 'updated_at'])
+                 && request.resource.data.current_vehicle_session_id == '')
+             );
+    }
+
+    function validVehicleSession(data) {
+      return data.keys().hasOnly([
+               'session_id', 'site_id', 'parking_card_id', 'card_number', 'stage', 'status',
+               'opened_by', 'opened_by_name', 'current_owner', 'last_updated_by', 'assigned_to',
+               'queueStatus', 'priority', 'assignedTo', 'assignedBy', 'assignedAt', 'queuePosition',
+               'queueSchemaVersion', 'queue_migrated_at', 'queue_migrated_by', 'assignmentVersion',
+               'sessionVersion', 'queueMetrics',
+               'last_activity_at', 'editing_by', 'editing_by_name', 'editing_since', 'expires_at',
+               'vehicle_plate', 'vehicle_type', 'visitor_name', 'visitor_phone', 'target_room',
+               'target_unit_id', 'target_building', 'unit_lookup_status', 'purpose', 'note',
+               'entry_plate_photo_url', 'entry_vehicle_photo_url', 'vehicle_log_id',
+               'activity', 'stage_updates', 'created_at', 'updated_at'
+             ])
+             && data.keys().hasAll([
+               'session_id', 'site_id', 'parking_card_id', 'card_number', 'stage', 'status',
+               'opened_by', 'current_owner', 'last_updated_by',
+               'queueStatus', 'priority', 'assignedTo', 'assignedBy', 'queuePosition',
+               'sessionVersion', 'queueMetrics',
+               'last_activity_at', 'activity', 'created_at', 'updated_at'
+             ])
+             && data.session_id is string && data.session_id.size() <= 128
+             && data.site_id == activeSiteId()
+             && data.parking_card_id is string && data.parking_card_id.size() <= 128
+             && data.card_number is string && data.card_number.size() <= 64
+             && data.stage in ['Created', 'CardIssued', 'VehicleEntered', 'PlateCaptured', 'VehicleCaptured', 'VisitorInfo', 'DestinationSelected', 'EvidenceUploaded', 'Ready', 'Active', 'VehicleExited', 'Completed', 'Cancelled']
+             && data.status in ['Draft', 'Pending', 'InProgress', 'WaitingPhoto', 'WaitingVisitor', 'WaitingDestination', 'WaitingEvidence', 'Ready', 'Completed', 'Cancelled']
+             && data.opened_by is string
+             && data.current_owner is string
+             && data.last_updated_by is string
+             && (!('assigned_to' in data) || data.assigned_to is string)
+             && data.queueStatus in ['Waiting', 'Assigned', 'In Progress', 'Waiting Information', 'Ready', 'Completed']
+             && data.priority in ['Emergency', 'High', 'Normal', 'Low']
+             && (data.assignedTo is string || data.assignedTo == null)
+             && (data.assignedBy is string || data.assignedBy == null)
+             && (!('assignedAt' in data) || data.assignedAt is timestamp || data.assignedAt == null)
+             && (data.queuePosition is int || data.queuePosition == null)
+             && (!('queueSchemaVersion' in data) || data.queueSchemaVersion == 1)
+             && (!('queue_migrated_at' in data) || data.queue_migrated_at is timestamp)
+             && (!('queue_migrated_by' in data) || data.queue_migrated_by is string)
+             && (!('assignmentVersion' in data) || data.assignmentVersion is int)
+             && data.sessionVersion is int && data.sessionVersion >= 0
+             && validQueueMetrics(data.queueMetrics)
+             && data.activity is list
+             && data.activity.size() <= 500
+             && (!('stage_updates' in data) || data.stage_updates is map)
+             && (!('opened_by_name' in data) || (data.opened_by_name is string && data.opened_by_name.size() <= 256))
+             && (!('vehicle_plate' in data) || (data.vehicle_plate is string && data.vehicle_plate.size() <= 64))
+             && (!('vehicle_type' in data) || (data.vehicle_type is string && data.vehicle_type.size() <= 64))
+             && (!('visitor_name' in data) || (data.visitor_name is string && data.visitor_name.size() <= 256))
+             && (!('visitor_phone' in data) || (data.visitor_phone is string && data.visitor_phone.size() <= 64))
+             && (!('target_room' in data) || (data.target_room is string && data.target_room.size() <= 128))
+             && (!('target_unit_id' in data) || (data.target_unit_id is string && data.target_unit_id.size() <= 128))
+             && (!('target_building' in data) || (data.target_building is string && data.target_building.size() <= 128))
+             && (!('purpose' in data) || (data.purpose is string && data.purpose.size() <= 1000))
+             && (!('note' in data) || (data.note is string && data.note.size() <= 2000))
+             && (!('entry_plate_photo_url' in data) || (data.entry_plate_photo_url is string && data.entry_plate_photo_url.size() <= 4096))
+             && (!('entry_vehicle_photo_url' in data) || (data.entry_vehicle_photo_url is string && data.entry_vehicle_photo_url.size() <= 4096))
+             && (!('vehicle_log_id' in data) || (data.vehicle_log_id is string && data.vehicle_log_id.size() <= 128))
+             && (!('editing_by' in data) || data.editing_by is string)
+             && (!('editing_by_name' in data) || (data.editing_by_name is string && data.editing_by_name.size() <= 256))
+             && (!('editing_since' in data) || data.editing_since is timestamp || data.editing_since == null)
+             && (!('expires_at' in data) || data.expires_at is timestamp || data.expires_at == null)
+             && data.last_activity_at is timestamp
+             && data.created_at is timestamp
+             && data.updated_at is timestamp;
+    }
+
+    function validQueueMetrics(metrics) {
+      return metrics is map
+             && metrics.keys().hasOnly([
+               'firstQueuedAt', 'firstAssignedAt', 'workStartedAt', 'readyAt', 'completedAt',
+               'waitingSeconds', 'workingSeconds', 'totalCycleSeconds',
+               'transferCount', 'reassignCount', 'releaseCount', 'priorityChangeCount',
+               'lastTransitionAt', 'lastEventId', 'metricsVersion'
+             ])
+             && metrics.keys().hasAll([
+               'firstQueuedAt', 'firstAssignedAt', 'workStartedAt', 'readyAt', 'completedAt',
+               'waitingSeconds', 'workingSeconds', 'totalCycleSeconds',
+               'transferCount', 'reassignCount', 'releaseCount', 'priorityChangeCount',
+               'lastTransitionAt', 'lastEventId', 'metricsVersion'
+             ])
+             && (metrics.firstQueuedAt is timestamp || metrics.firstQueuedAt == null)
+             && (metrics.firstAssignedAt is timestamp || metrics.firstAssignedAt == null)
+             && (metrics.workStartedAt is timestamp || metrics.workStartedAt == null)
+             && (metrics.readyAt is timestamp || metrics.readyAt == null)
+             && (metrics.completedAt is timestamp || metrics.completedAt == null)
+             && (metrics.lastTransitionAt is timestamp || metrics.lastTransitionAt == null)
+             && metrics.waitingSeconds is int && metrics.waitingSeconds >= 0 && metrics.waitingSeconds <= 31536000
+             && metrics.workingSeconds is int && metrics.workingSeconds >= 0 && metrics.workingSeconds <= 31536000
+             && metrics.totalCycleSeconds is int && metrics.totalCycleSeconds >= 0 && metrics.totalCycleSeconds <= 31536000
+             && metrics.transferCount is int && metrics.transferCount >= 0 && metrics.transferCount <= 10000
+             && metrics.reassignCount is int && metrics.reassignCount >= 0 && metrics.reassignCount <= 10000
+             && metrics.releaseCount is int && metrics.releaseCount >= 0 && metrics.releaseCount <= 10000
+             && metrics.priorityChangeCount is int && metrics.priorityChangeCount >= 0 && metrics.priorityChangeCount <= 10000
+             && metrics.lastEventId is string && metrics.lastEventId.size() <= 128
+             && metrics.metricsVersion is int && metrics.metricsVersion >= 1;
+    }
+
+    function validVehicleSessionUpdate() {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      return changed.hasOnly([
+               'stage', 'status', 'current_owner', 'last_updated_by', 'assigned_to',
+               'queueStatus', 'priority', 'assignedTo', 'assignedBy', 'assignedAt',
+               'queuePosition', 'assignmentVersion', 'sessionVersion',
+               'last_activity_at', 'editing_by', 'editing_by_name', 'editing_since',
+               'expires_at', 'vehicle_plate', 'vehicle_type', 'visitor_name',
+               'visitor_phone', 'target_room', 'target_unit_id', 'target_building',
+               'unit_lookup_status', 'purpose', 'note', 'entry_plate_photo_url',
+               'entry_vehicle_photo_url', 'vehicle_log_id', 'stage_updates', 'updated_at'
+             ])
+             && data.stage in ['Created', 'CardIssued', 'VehicleEntered', 'PlateCaptured', 'VehicleCaptured', 'VisitorInfo', 'DestinationSelected', 'EvidenceUploaded', 'Ready', 'Active', 'VehicleExited', 'Completed', 'Cancelled']
+             && data.status in ['Draft', 'Pending', 'InProgress', 'WaitingPhoto', 'WaitingVisitor', 'WaitingDestination', 'WaitingEvidence', 'Ready', 'Completed', 'Cancelled']
+             && data.queueStatus in ['Waiting', 'Assigned', 'In Progress', 'Waiting Information', 'Ready', 'Completed']
+             && data.priority in ['Emergency', 'High', 'Normal', 'Low']
+             && data.current_owner is string
+             && data.last_updated_by is string
+             && (data.assignedTo is string || data.assignedTo == null)
+             && (data.assignedBy is string || data.assignedBy == null)
+             && (!('assignedAt' in data) || data.assignedAt is timestamp || data.assignedAt == null)
+             && (data.queuePosition is int || data.queuePosition == null)
+             && data.assignmentVersion is int && data.assignmentVersion >= 0
+             && data.sessionVersion is int && data.sessionVersion >= 0
+             && data.last_activity_at is timestamp
+             && data.updated_at is timestamp
+             && (!changed.hasAny(['editing_by']) || data.editing_by is string)
+             && (!changed.hasAny(['editing_by_name']) || (data.editing_by_name is string && data.editing_by_name.size() <= 256))
+             && (!changed.hasAny(['editing_since']) || data.editing_since is timestamp || data.editing_since == null)
+             && (!changed.hasAny(['expires_at']) || data.expires_at is timestamp || data.expires_at == null)
+             && (!changed.hasAny(['vehicle_plate']) || (data.vehicle_plate is string && data.vehicle_plate.size() <= 64))
+             && (!changed.hasAny(['vehicle_type']) || (data.vehicle_type is string && data.vehicle_type.size() <= 64))
+             && (!changed.hasAny(['visitor_name']) || (data.visitor_name is string && data.visitor_name.size() <= 256))
+             && (!changed.hasAny(['visitor_phone']) || (data.visitor_phone is string && data.visitor_phone.size() <= 64))
+             && (!changed.hasAny(['target_room']) || (data.target_room is string && data.target_room.size() <= 128))
+             && (!changed.hasAny(['target_unit_id']) || (data.target_unit_id is string && data.target_unit_id.size() <= 128))
+             && (!changed.hasAny(['target_building']) || (data.target_building is string && data.target_building.size() <= 128))
+             && (!changed.hasAny(['unit_lookup_status']) || data.unit_lookup_status in ['matched', 'manual'])
+             && (!changed.hasAny(['purpose']) || (data.purpose is string && data.purpose.size() <= 1000))
+             && (!changed.hasAny(['note']) || (data.note is string && data.note.size() <= 2000))
+             && (!changed.hasAny(['entry_plate_photo_url']) || (data.entry_plate_photo_url is string && data.entry_plate_photo_url.size() <= 4096))
+             && (!changed.hasAny(['entry_vehicle_photo_url']) || (data.entry_vehicle_photo_url is string && data.entry_vehicle_photo_url.size() <= 4096))
+             && (!changed.hasAny(['vehicle_log_id']) || (data.vehicle_log_id is string && data.vehicle_log_id.size() <= 128))
+             && (!changed.hasAny(['stage_updates']) || data.stage_updates is map);
+    }
+
+    function activeOperatorAtSite(uid, siteId) {
+      let profile = get(/databases/$(database)/documents/users/$(uid)).data;
+      return profile.status == 'Active' && profile.site_id == siteId;
+    }
+
+    function canUpdateVehicleSession() {
+      let profile = ownProfile();
+      return signedIn()
+             && profile.status == 'Active'
+             && resource.data.site_id == profile.site_id
+             && (profile.role in ['ShiftHead', 'Manager', 'Admin']
+               || (profile.role == 'Guard' && validGuardQueueUpdate()));
+    }
+
+    function validGuardQueueUpdate() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return request.resource.data.priority == resource.data.priority
+             && request.resource.data.queuePosition == resource.data.queuePosition
+             && (
+               (resource.data.assignedTo == request.auth.uid
+                 && request.resource.data.assignedTo == request.auth.uid
+                 && request.resource.data.assignedBy == resource.data.assignedBy
+                 && request.resource.data.assignedAt == resource.data.assignedAt
+                 && request.resource.data.assignmentVersion == resource.data.assignmentVersion)
+               || (resource.data.assignedTo in ['', null]
+                 && request.resource.data.assignedTo == request.auth.uid
+                 && request.resource.data.assignedBy == request.auth.uid
+                 && request.resource.data.assignmentVersion == resource.data.assignmentVersion + 1
+                 && changed.hasOnly(['assignedTo', 'assigned_to', 'assignedBy', 'assignedAt', 'queueStatus', 'current_owner', 'last_updated_by', 'last_activity_at', 'updated_at', 'assignmentVersion', 'sessionVersion', 'queueMetrics']))
+               || (resource.data.assignedTo == request.auth.uid
+                 && request.resource.data.assignedTo in ['', null]
+                 && request.resource.data.assignedBy == request.auth.uid
+                 && request.resource.data.assignmentVersion == resource.data.assignmentVersion + 1
+                 && changed.hasOnly(['assignedTo', 'assigned_to', 'assignedBy', 'assignedAt', 'queueStatus', 'current_owner', 'last_updated_by', 'last_activity_at', 'updated_at', 'assignmentVersion', 'sessionVersion', 'queueMetrics']))
+             );
+    }
+
+    function validAssignmentVersion() {
+      let assignmentChanged = request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['assignedTo', 'assignedBy', 'assignedAt']);
+      return (assignmentChanged && request.resource.data.assignmentVersion == resource.data.assignmentVersion + 1)
+             || (!assignmentChanged && request.resource.data.assignmentVersion == resource.data.assignmentVersion);
+    }
+
+    function validSessionActivity(data, sessionId, activityId) {
+      return data.keys().hasOnly([
+               'activity_id', 'session_id', 'action', 'from_stage', 'to_stage',
+               'from_status', 'to_status', 'actor_uid', 'actor_operator_id',
+               'actor_name', 'actor_role', 'site_id', 'details', 'created_at',
+               'client_event_id', 'schema_version'
+             ])
+             && data.keys().hasAll([
+               'activity_id', 'session_id', 'action', 'actor_uid', 'actor_operator_id',
+               'actor_name', 'actor_role', 'site_id', 'details', 'created_at',
+               'client_event_id', 'schema_version'
+             ])
+             && data.activity_id == activityId
+             && data.client_event_id == activityId
+             && data.session_id == sessionId
+             && data.actor_uid == request.auth.uid
+             && data.actor_operator_id == request.auth.uid
+             && data.actor_role == ownProfile().role
+             && data.actor_name == ownProfile().operator_name
+             && data.site_id == activeSiteId()
+             && data.action is string && data.action.size() > 0 && data.action.size() <= 100
+             && data.from_stage in ['', 'Created', 'CardIssued', 'VehicleEntered', 'PlateCaptured', 'VehicleCaptured', 'VisitorInfo', 'DestinationSelected', 'EvidenceUploaded', 'Ready', 'Active', 'VehicleExited', 'Completed', 'Cancelled']
+             && data.to_stage in ['', 'Created', 'CardIssued', 'VehicleEntered', 'PlateCaptured', 'VehicleCaptured', 'VisitorInfo', 'DestinationSelected', 'EvidenceUploaded', 'Ready', 'Active', 'VehicleExited', 'Completed', 'Cancelled']
+             && data.from_status in ['', 'Draft', 'Pending', 'InProgress', 'WaitingPhoto', 'WaitingVisitor', 'WaitingDestination', 'WaitingEvidence', 'Ready', 'Completed', 'Cancelled']
+             && data.to_status in ['', 'Draft', 'Pending', 'InProgress', 'WaitingPhoto', 'WaitingVisitor', 'WaitingDestination', 'WaitingEvidence', 'Ready', 'Completed', 'Cancelled']
+             && data.actor_name is string && data.actor_name.size() > 0 && data.actor_name.size() <= 150
+             && data.client_event_id is string && data.client_event_id.size() > 0 && data.client_event_id.size() <= 128
+             && data.schema_version == 1
+             && data.created_at == request.time
+             && data.details is map
+             && data.details.keys().hasOnly(['note', 'reason', 'previous_assignee', 'new_assignee', 'priority', 'queue_status', 'vehicle_log_id'])
+             && (!('note' in data.details) || (data.details.note is string && data.details.note.size() <= 500))
+             && (!('reason' in data.details) || (data.details.reason is string && data.details.reason.size() <= 500))
+             && (!('previous_assignee' in data.details) || (data.details.previous_assignee is string && data.details.previous_assignee.size() <= 128))
+             && (!('new_assignee' in data.details) || (data.details.new_assignee is string && data.details.new_assignee.size() <= 128))
+             && (!('priority' in data.details) || data.details.priority in ['Emergency', 'High', 'Normal', 'Low'])
+             && (!('queue_status' in data.details) || data.details.queue_status in ['Waiting', 'Assigned', 'In Progress', 'Waiting Information', 'Ready', 'Completed'])
+             && (!('vehicle_log_id' in data.details) || (data.details.vehicle_log_id is string && data.details.vehicle_log_id.size() <= 128));
+    }
+
+    function adminQueueMigration() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return isAdmin()
+             && resource.data.site_id == activeSiteId()
+             && request.resource.data.site_id == resource.data.site_id
+             && request.resource.data.session_id == resource.data.session_id
+             && request.resource.data.parking_card_id == resource.data.parking_card_id
+             && request.resource.data.created_at == resource.data.created_at
+             && request.resource.data.queueSchemaVersion == 1
+             && request.resource.data.queue_migrated_by == request.auth.uid
+             && request.resource.data.queue_migrated_at == request.time
+             && changed.hasOnly([
+               'queueStatus', 'priority', 'assignedTo', 'assignedBy', 'assignedAt',
+               'queuePosition', 'queueSchemaVersion', 'queue_migrated_at', 'queue_migrated_by',
+               'assignmentVersion', 'sessionVersion', 'queueMetrics'
+             ])
+             && validVehicleSession(request.resource.data);
+    }
+
+    function adminParkingCardTransition() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return canManageParkingCards() && (
+        (request.resource.data.status == resource.data.status
+          && ((resource.data.status == 'InUse' && changed.hasOnly(['card_type', 'note', 'updated_at']))
+            || (resource.data.status != 'InUse' && changed.hasOnly(['card_number', 'card_number_normalized', 'qr_code_value', 'qr_code_normalized', 'card_type', 'note', 'updated_at']))))
+        || (resource.data.status == 'Available' && request.resource.data.status == 'Suspended'
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'last_activity_at', 'updated_at']))
+        || (resource.data.status == 'Available' && request.resource.data.status == 'Disabled'
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'last_activity_at', 'updated_at']))
+        || (resource.data.status == 'Disabled' && request.resource.data.status == 'Available'
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'current_vehicle_plate', 'last_activity_at', 'updated_at']))
+        || (resource.data.status == 'Suspended' && request.resource.data.status == 'Available'
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'current_vehicle_plate', 'last_activity_at', 'updated_at']))
+        || (resource.data.status in ['Available', 'Disabled'] && request.resource.data.status == 'Lost'
+          && request.resource.data.reported_by_account_uid == request.auth.uid
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'lost_reason', 'lost_at', 'reported_by', 'reported_by_account_uid', 'replaced_by_card_id', 'replaced_by_document_id', 'replacement_card_id', 'replacement_reason', 'replacement_at', 'replacement_by', 'last_activity_at', 'updated_at']))
+        || (resource.data.status in ['Lost', 'Cancelled'] && request.resource.data.status == resource.data.status
+          && request.resource.data.replacement_by == request.auth.uid
+          && changed.hasOnly(['replaced_by_card_id', 'replaced_by_document_id', 'replacement_card_id', 'replacement_reason', 'replacement_at', 'replacement_by', 'updated_at']))
+        || (resource.data.status == 'Lost' && request.resource.data.status == 'ReplacementApproved'
+          && changed.hasOnly(['status', 'status_normalized', 'replacement_card_id', 'replacement_approved', 'replacement_approved_by', 'replacement_approved_at', 'updated_at']))
+        || (resource.data.status == 'ReplacementApproved' && request.resource.data.status == 'Retired'
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'last_activity_at', 'updated_at']))
+        || (resource.data.status == 'Available' && request.resource.data.status == 'VIP'
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'member_id', 'last_activity_at', 'updated_at']))
+        || (resource.data.status == 'VIP' && request.resource.data.status == 'Available'
+          && changed.hasOnly(['card_type', 'status', 'status_normalized', 'member_id', 'last_activity_at', 'updated_at']))
+      );
+    }
+
+    function adminParkingCardMigration(documentId) {
+      return isAdmin()
+             && (!('site_id' in resource.data) || resource.data.site_id == activeSiteId())
+             && request.resource.data.site_id == activeSiteId()
+             && request.resource.data.card_id == resource.data.card_id
+             && request.resource.data.status == resource.data.status
+             && request.resource.data.firestore_document_id == documentId
+             && request.resource.data.card_type in ['Temporary', 'VIP', 'Resident', 'Contractor', 'Staff', 'Other']
+             && (!('firestore_document_id' in resource.data) || request.resource.data.firestore_document_id == resource.data.firestore_document_id)
+             && (!('card_type' in resource.data)
+               || request.resource.data.card_type == resource.data.card_type
+               || !(resource.data.card_type in ['Normal', 'Temporary', 'VIP', 'Resident', 'Contractor', 'Staff', 'Other'])
+               || (resource.data.card_type == 'Normal' && request.resource.data.card_type == 'Temporary'))
+             && request.resource.data.card_number_normalized is string && request.resource.data.card_number_normalized.size() <= 64
+             && request.resource.data.qr_code_normalized is string && request.resource.data.qr_code_normalized.size() <= 256
+             && (('qr_code_value' in resource.data && request.resource.data.qr_code_value == resource.data.qr_code_value)
+               || (!('qr_code_value' in resource.data) && request.resource.data.qr_code_value == request.resource.data.card_number))
+             && request.resource.data.status_normalized in ['Available', 'InUse', 'Disabled', 'Suspended', 'Lost', 'Cancelled', 'Replaced', 'ReplacementApproved', 'Retired', 'VIP']
+             && request.resource.data.updated_at is string && request.resource.data.updated_at.size() <= 64
+             && (!('created_at' in resource.data) || request.resource.data.created_at == resource.data.created_at)
+             && (!('current_vehicle_plate' in resource.data) || request.resource.data.current_vehicle_plate == resource.data.current_vehicle_plate)
+             && (!('current_vehicle_log_id' in resource.data) || request.resource.data.current_vehicle_log_id == resource.data.current_vehicle_log_id)
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                  'firestore_document_id', 'site_id', 'card_type', 'card_number_normalized', 'qr_code_value', 'qr_code_normalized', 'status_normalized', 'created_at', 'updated_at'
+                ]);
+    }
+
+    function validVehicleLog(data) {
+      return data.keys().hasOnly([
+               'log_id', 'vehicle_session_id', 'site_id', 'card_number', 'parking_card_id', 'vehicle_plate', 'vehicle_type', 'visitor_name',
+               'visitor_phone', 'target_room', 'target_unit_id', 'target_building', 'unit_lookup_status',
+               'purpose', 'entry_time', 'exit_time', 'entry_plate_photo_url',
+               'entry_vehicle_photo_url', 'exit_plate_photo_url', 'exit_vehicle_photo_url',
+               'workflow_status', 'exit_recorded_by', 'exit_account_uid', 'exit_operator_id', 'exit_operator_name', 'exit_role', 'exit_site_id', 'exit_note', 'abnormal_note',
+               'status', 'recorded_by', 'note', 'created_at', 'updated_at',
+               'login_email', 'operator_name', 'operator_id', 'account_uid'
+             ])
+             && data.keys().hasAll([
+               'log_id', 'site_id', 'card_number', 'parking_card_id', 'vehicle_plate', 'vehicle_type', 'visitor_name',
+               'visitor_phone', 'target_room', 'purpose', 'entry_time', 'status',
+               'recorded_by', 'created_at', 'updated_at'
+             ])
+             && data.log_id is string
+             && data.log_id.size() > 0 && data.log_id.size() <= 128
+             && (!('vehicle_session_id' in data) || (data.vehicle_session_id is string && data.vehicle_session_id.size() <= 128))
+             && data.site_id is string && data.site_id.size() > 0 && data.site_id.size() <= 64
+             && data.card_number is string && data.card_number.size() > 0 && data.card_number.size() <= 64
+             && data.parking_card_id is string && data.parking_card_id.size() > 0 && data.parking_card_id.size() <= 128
+             && data.vehicle_plate is string && data.vehicle_plate.size() > 0 && data.vehicle_plate.size() <= 64
+             && data.vehicle_type is string && data.vehicle_type.size() <= 64
+             && data.visitor_name is string && data.visitor_name.size() <= 256
+             && data.visitor_phone is string && data.visitor_phone.size() <= 64
+             && data.target_room is string && data.target_room.size() <= 128
+             && (!('target_unit_id' in data) || (data.target_unit_id is string && data.target_unit_id.size() <= 128))
+             && (!('target_building' in data) || (data.target_building is string && data.target_building.size() <= 128))
+             && data.purpose is string && data.purpose.size() <= 1000
+             && data.recorded_by is string && data.recorded_by.size() <= 256
+             && data.status in ['กำลังจอด', 'ออกแล้ว']
+             && data.entry_time is string && data.entry_time.size() <= 64
+             && data.created_at is string && data.created_at.size() <= 64
+             && ((data.updated_at is string && data.updated_at.size() <= 64) || data.updated_at is timestamp)
+             && (!('exit_time' in data) || (data.exit_time is string && data.exit_time.size() <= 64) || data.exit_time is timestamp)
+             && (!('workflow_status' in data) || data.workflow_status in ['active', 'completed'])
+             && (!('exit_recorded_by' in data) || data.exit_recorded_by is string)
+             && (!('exit_account_uid' in data) || data.exit_account_uid is string)
+             && (!('exit_operator_id' in data) || data.exit_operator_id is string)
+             && (!('exit_operator_name' in data) || data.exit_operator_name is string)
+             && (!('exit_role' in data) || data.exit_role in ['Guard', 'ShiftHead', 'Manager', 'Admin'])
+             && (!('exit_site_id' in data) || data.exit_site_id is string)
+             && (!('exit_note' in data) || (data.exit_note is string && data.exit_note.size() <= 2000))
+             && (!('abnormal_note' in data) || (data.abnormal_note is string && data.abnormal_note.size() <= 2000))
+             && (!('note' in data) || (data.note is string && data.note.size() <= 2000));
+    }
+
+    function validVehicleExitTransition() {
+      return canProcessVehicleExit()
+             && resource.data.status == 'กำลังจอด'
+             && request.resource.data.status == 'ออกแล้ว'
+             && request.resource.data.log_id == resource.data.log_id
+             && request.resource.data.card_number == resource.data.card_number
+             && request.resource.data.vehicle_plate == resource.data.vehicle_plate
+             && request.resource.data.entry_time == resource.data.entry_time
+             && (request.resource.data.site_id == resource.data.site_id
+               || (isAdmin() && !('site_id' in resource.data) && request.resource.data.site_id == activeSiteId()))
+             && request.resource.data.parking_card_id is string
+             && request.resource.data.account_uid == resource.data.account_uid
+             && request.resource.data.operator_id == resource.data.operator_id
+             && request.resource.data.exit_account_uid == request.auth.uid
+             && request.resource.data.exit_operator_id == request.auth.uid
+             && request.resource.data.exit_role == ownProfile().role
+             && request.resource.data.exit_site_id == activeSiteId()
+             && request.resource.data.workflow_status == 'completed'
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                  'parking_card_id', 'site_id', 'exit_time', 'exit_plate_photo_url', 'exit_vehicle_photo_url', 'status', 'workflow_status', 'updated_at',
+                  'exit_recorded_by', 'exit_account_uid', 'exit_operator_id', 'exit_operator_name', 'exit_role', 'exit_site_id', 'exit_note', 'abnormal_note'
+                ]);
+    }
+
+    function validParkingAudit(data) {
+      return data.keys().hasAll(['audit_id', 'operator_id', 'account_uid', 'site_id', 'card_number', 'vehicle_log_id', 'action', 'previous_state', 'new_state', 'timestamp'])
+             && data.audit_id is string && data.audit_id.size() <= 128
+             && data.operator_id == request.auth.uid
+             && data.account_uid == request.auth.uid
+             && data.site_id == activeSiteId()
+             && data.card_number is string && data.card_number.size() <= 64
+             && data.vehicle_log_id is string && data.vehicle_log_id.size() <= 128
+             && data.action is string && data.action.size() <= 128
+             && data.previous_state is string && data.previous_state.size() <= 64
+             && data.new_state is string && data.new_state.size() <= 64
+             && data.timestamp is timestamp
+             && (!('reason' in data) || (data.reason is string && data.reason.size() <= 2000));
+    }
+
+    function validUnit(data) {
+      return data.keys().hasOnly([
+               'firestore_document_id', 'unit_id', 'site_id', 'building', 'room_code', 'room_number', 'floor', 'area', 'ratio',
+               'owner_name', 'resident_name', 'phone', 'email', 'occupancy_status', 'status',
+               'searchable_text', 'search_key', 'is_active', 'created_at', 'updated_at',
+               'source_file_name', 'import_batch_id'
+             ])
+             && data.keys().hasAll(['unit_id', 'site_id', 'building', 'room_number', 'floor', 'owner_name', 'resident_name', 'status', 'is_active', 'created_at', 'updated_at'])
+             && data.unit_id is string && data.unit_id.size() > 0 && data.unit_id.size() <= 128
+             && (!('firestore_document_id' in data) || (data.firestore_document_id is string && data.firestore_document_id.size() > 0 && data.firestore_document_id.size() <= 128))
+             && data.site_id is string && data.site_id.size() > 0 && data.site_id.size() <= 64
+             && data.building is string && data.building.size() > 0 && data.building.size() <= 128
+             && data.room_number is string && data.room_number.size() > 0 && data.room_number.size() <= 128
+             && data.floor is string && data.floor.size() > 0 && data.floor.size() <= 64
+             && data.owner_name is string && data.owner_name.size() <= 256
+             && data.resident_name is string && data.resident_name.size() <= 256
+             && data.status in ['Active', 'Inactive']
+             && data.is_active == (data.status == 'Active')
+             && data.created_at is string && data.created_at.size() <= 64
+             && data.updated_at is string && data.updated_at.size() <= 64
+             && (!('room_code' in data) || (data.room_code is string && data.room_code.size() <= 128))
+             && (!('area' in data) || (data.area is string && data.area.size() <= 64))
+             && (!('ratio' in data) || (data.ratio is string && data.ratio.size() <= 64))
+             && (!('phone' in data) || (data.phone is string && data.phone.size() <= 64))
+             && (!('email' in data) || (data.email is string && data.email.size() <= 256))
+             && (!('occupancy_status' in data) || (data.occupancy_status is string && data.occupancy_status.size() <= 64))
+             && (!('searchable_text' in data) || (data.searchable_text is string && data.searchable_text.size() <= 2000))
+             && (!('search_key' in data) || (data.search_key is string && data.search_key.size() <= 256))
+             && (!('source_file_name' in data) || (data.source_file_name is string && data.source_file_name.size() <= 256))
+             && (!('import_batch_id' in data) || (data.import_batch_id is string && data.import_batch_id.size() <= 512));
+    }
+
+    function validUnitAudit(data) {
+      return data.keys().hasAll(['audit_id', 'operator_id', 'account_uid', 'site_id', 'action', 'module_name', 'record_id', 'old_value', 'new_value', 'created_at', 'action_result'])
+             && data.operator_id == request.auth.uid
+             && data.account_uid == request.auth.uid
+             && data.site_id == activeSiteId()
+             && data.module_name == 'units'
+             && data.audit_id is string && data.audit_id.size() <= 128
+             && data.action is string && data.action.size() <= 128
+             && data.record_id is string && data.record_id.size() <= 256
+             && data.old_value is string && data.old_value.size() <= 20000
+             && data.new_value is string && data.new_value.size() <= 20000
+             && data.action_result is string && data.action_result.size() <= 64
+             && data.created_at == request.time;
+    }
+
     match /loginDirectory/{username} {
-      // Required so the login page can convert username -> internal Firebase email.
-      allow get: if true;
+      allow get: if isAdmin();
       allow list: if false;
 
       // One-time first Admin bootstrap.
@@ -73,13 +675,91 @@ service cloud.firestore {
     }
 
     match /parkingCards/{id} {
-      allow read, create, update: if isActiveUser();
-      allow delete: if isAdmin();
+      allow read: if isAdmin() || (canProcessVehicleExit() && resource.data.site_id == activeSiteId());
+      allow create: if canManageParkingCards()
+                    && request.resource.data.firestore_document_id == id
+                    && request.resource.data.site_id == activeSiteId()
+                    && request.resource.data.status in ['Available', 'Suspended']
+                    && !('current_vehicle_plate' in request.resource.data)
+                    && !('current_vehicle_log_id' in request.resource.data)
+                    && request.resource.data.keys().hasAll(['card_number_normalized', 'qr_code_normalized', 'status_normalized'])
+                    && validReplacementCreate(id)
+                    && validParkingCard(request.resource.data);
+      allow update: if (validParkingCard(request.resource.data)
+                        && request.resource.data.card_id == resource.data.card_id
+                        && request.resource.data.site_id == resource.data.site_id
+                        && request.resource.data.site_id == activeSiteId()
+                        && allowedParkingCardTransition()
+                        && validReplacementUpdate(id)
+                        && (adminParkingCardTransition() || guardParkingCardTransition() || vehicleSessionCardTransition()))
+                    || adminParkingCardMigration(id);
+      allow delete: if canManageParkingCards()
+                    && resource.data.site_id == activeSiteId()
+                    && resource.data.status != 'InUse'
+                    && !(resource.data.status in ['Lost', 'Cancelled', 'Retired', 'Replaced'])
+                    && (!('current_vehicle_plate' in resource.data) || resource.data.current_vehicle_plate == '')
+                    && !('replaced_by_card_id' in resource.data)
+                    && !('replaced_by_document_id' in resource.data)
+                    && !('replacement_for_card_id' in resource.data)
+                    && !('replacement_for_document_id' in resource.data);
+    }
+
+    match /vehicleSessions/{id} {
+      allow read: if canProcessVehicleExit() && resource.data.site_id == activeSiteId();
+      allow create: if canProcessVehicleExit()
+                    && request.resource.data.session_id == id
+                    && request.resource.data.opened_by == request.auth.uid
+                    && request.resource.data.last_updated_by == request.auth.uid
+                    && request.resource.data.sessionVersion == 1
+                    && request.resource.data.assignedTo == request.auth.uid
+                    && request.resource.data.assignedBy == request.auth.uid
+                    && validVehicleSession(request.resource.data)
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.status == 'Reserved'
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.current_vehicle_session_id == id;
+      allow update: if (canUpdateVehicleSession()
+                    && request.resource.data.last_updated_by == request.auth.uid
+                    && request.resource.data.sessionVersion == resource.data.sessionVersion + 1
+                    && validAssignmentVersion()
+                    && (request.resource.data.assignedTo == ''
+                      || request.resource.data.assignedTo == null
+                      || request.resource.data.assignedTo == request.auth.uid
+                      || activeOperatorAtSite(request.resource.data.assignedTo, resource.data.site_id))
+                    && validVehicleSessionUpdate())
+                    || (request.resource.data.diff(resource.data).affectedKeys()
+                          .hasAny(['queueSchemaVersion', 'queue_migrated_at', 'queue_migrated_by'])
+                        && adminQueueMigration());
+      allow delete: if canManageParkingCards() && resource.data.site_id == activeSiteId();
+
+      match /activities/{activityId} {
+        allow read: if canProcessVehicleExit()
+                    && get(/databases/$(database)/documents/vehicleSessions/$(id)).data.site_id == activeSiteId();
+        allow create: if canProcessVehicleExit()
+                      && getAfter(/databases/$(database)/documents/vehicleSessions/$(id)).data.site_id == activeSiteId()
+                      && validSessionActivity(request.resource.data, id, activityId);
+        allow update, delete: if false;
+      }
     }
 
     match /vehicleLogs/{id} {
-      allow read, create, update: if isActiveUser();
-      allow delete: if isAdmin();
+      allow read: if isAdmin() || (canProcessVehicleExit() && resource.data.site_id == activeSiteId());
+      allow create: if isActiveUser()
+                    && request.resource.data.log_id == id
+                    && request.resource.data.site_id == activeSiteId()
+                    && request.resource.data.account_uid == request.auth.uid
+                    && request.resource.data.operator_id == request.auth.uid
+                    && request.resource.data.status == 'กำลังจอด'
+                    && validVehicleLog(request.resource.data)
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.status == 'InUse'
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.current_vehicle_log_id == id
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.card_number == request.resource.data.card_number
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.site_id == request.resource.data.site_id;
+      allow update: if validVehicleLog(request.resource.data)
+                    && validVehicleExitTransition()
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.status in ['Available', 'Lost']
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.current_vehicle_log_id == ''
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.related_vehicle_log_id == id
+                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.site_id == request.resource.data.site_id;
+      allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
     }
 
     match /contractorLogs/{id} {
@@ -118,9 +798,29 @@ service cloud.firestore {
     }
 
     match /auditLogs/{id} {
-      allow read: if isAdmin();
-      allow create: if isActiveUser();
+      allow read: if isAdmin()
+                  || (canManageParkingCards() && resource.data.module_name == 'ParkingCards' && resource.data.site_id == activeSiteId())
+                  || (canProcessVehicleExit() && resource.data.module_name == 'VehicleSessions' && resource.data.site_id == activeSiteId());
+      allow create: if isActiveUser()
+                    && request.resource.data.audit_id == id
+                    && ((request.resource.data.module_name == 'ParkingCards' && validParkingAudit(request.resource.data))
+                      || (request.resource.data.module_name == 'units' && validUnitAudit(request.resource.data))
+                      || !(request.resource.data.module_name in ['ParkingCards', 'units']));
       allow update, delete: if false;
+    }
+
+    match /siteAnalyticsDaily/{dailyId} {
+      allow read: if isActiveUser()
+                  && ownProfile().role in ['ShiftHead', 'Manager', 'Admin']
+                  && resource.data.site_id == activeSiteId();
+      allow create, update, delete: if false;
+
+      match /contributions/{contributionId} {
+        allow read: if isActiveUser()
+                    && ownProfile().role in ['Manager', 'Admin']
+                    && get(/databases/$(database)/documents/siteAnalyticsDaily/$(dailyId)).data.site_id == activeSiteId();
+        allow create, update, delete: if false;
+      }
     }
 
     match /keys/{id} {
@@ -129,8 +829,23 @@ service cloud.firestore {
     }
 
     match /units/{id} {
-      allow read: if isActiveUser();
-      allow create, update, delete: if isAdmin();
+      allow read: if isActiveUser()
+                  && resource.data.site_id == activeSiteId()
+                  && (resource.data.status == 'Active' || canManageUnits());
+      allow create: if canManageUnits()
+                    && request.resource.data.firestore_document_id == id
+                    && id.matches('^unit_[0-9a-f]{64}$')
+                    && request.resource.data.site_id == activeSiteId()
+                    && validUnit(request.resource.data);
+      allow update: if canManageUnits()
+                    && request.resource.data.unit_id == resource.data.unit_id
+                    && (!('firestore_document_id' in resource.data) || request.resource.data.firestore_document_id == resource.data.firestore_document_id)
+                    && request.resource.data.firestore_document_id == id
+                    && request.resource.data.site_id == resource.data.site_id
+                    && request.resource.data.site_id == activeSiteId()
+                    && request.resource.data.created_at == resource.data.created_at
+                    && validUnit(request.resource.data);
+      allow delete: if false;
     }
 
     match /units_archive/{id} {
@@ -145,6 +860,14 @@ service cloud.firestore {
     match /operators/{id} {
       allow read: if isActiveUser();
       allow create, update, delete: if isAdmin();
+    }
+
+    match /operatorCredentials/{username} {
+      allow read, write: if false;
+    }
+
+    match /operatorLoginAttempts/{username} {
+      allow read, write: if false;
     }
 
     match /{document=**} {

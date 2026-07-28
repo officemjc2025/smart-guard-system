@@ -1,38 +1,51 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef, type ReactNode } from 'react';
 import type { FormEvent } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
 import {
   Shield, LogOut, Loader2, Home, Car, Users, Key,
   MapPin, AlertTriangle, Search, Settings, RefreshCw
 } from 'lucide-react';
 import {
   auth,
+  AuthStageError,
   bootstrapFirstAdmin,
   db,
   isFirstAdminSetupAvailable,
   normalizeUsername,
   onAuthStateChange,
   prepareAuthPersistence,
+  runtimeConfiguration,
   signInWithUsernamePin,
   signOutSmartGuard,
-  validatePin
+  validateOperatorSessionProfile,
+  validatePin,
+  type AuthSessionState,
 } from './firebase';
-import { readSheet, writeAuditLog } from './googleApi';
+import {
+  firebaseErrorCode,
+  firebaseErrorMessage,
+  recordAuthStage,
+  stagingAuthMessage,
+} from './services/authDiagnostics';
+import { shouldHydrateAuthProfile } from './services/authFlowPolicy';
+import { writeAuditLog } from './services/auditService';
+import { listSystemSettings } from './services/systemSettingsService';
 import ConfirmModal from './components/ConfirmModal';
 
 console.log('[Smart Guard Build] v4.0.1 bootstrap-permission fix loaded');
 
-import Dashboard from './components/Dashboard';
-import VehicleEntryExit from './components/VehicleEntryExit';
-import ContractorLogs from './components/ContractorLogs';
-import KeyLogs from './components/KeyLogs';
-import PatrolLogs from './components/PatrolLogs';
-import IncidentReports from './components/IncidentReports';
-import SearchHistory from './components/SearchHistory';
-import MasterData from './components/MasterData';
-import AdminPanel from './components/AdminPanel';
+const Dashboard = lazy(() => import('./components/Dashboard'));
+const VehicleEntryExit = lazy(() => import('./components/VehicleEntryExit'));
+const ContractorLogs = lazy(() => import('./components/ContractorLogs'));
+const KeyLogs = lazy(() => import('./components/KeyLogs'));
+const PatrolLogs = lazy(() => import('./components/PatrolLogs'));
+const IncidentReports = lazy(() => import('./components/IncidentReports'));
+const SearchHistory = lazy(() => import('./components/SearchHistory'));
+const MasterData = lazy(() => import('./components/MasterData'));
+const AdminPanel = lazy(() => import('./components/AdminPanel'));
 
 export type TabType = 'dashboard' | 'vehicles' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'history' | 'settings' | 'admin';
-type Role = 'Guard' | 'Shift Leader' | 'Manager' | 'Admin';
+type Role = 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
 
 function DebugPage({ name, children }: { name: string; children: ReactNode }) {
   useEffect(() => {
@@ -43,9 +56,21 @@ function DebugPage({ name, children }: { name: string; children: ReactNode }) {
   return <>{children}</>;
 }
 
+function PageFallback() {
+  return <div className="flex min-h-64 items-center justify-center text-slate-500"><Loader2 className="mr-2 h-5 w-5 animate-spin" />กำลังโหลดโมดูล...</div>;
+}
+
+function EnvironmentMarker() {
+  if (runtimeConfiguration.environmentName === 'PRODUCTION') return null;
+  return <div className="fixed right-3 top-3 z-[100] rounded-md bg-amber-400 px-3 py-1 text-xs font-black text-slate-950 shadow">
+    {runtimeConfiguration.environmentName}
+  </div>;
+}
+
 export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authSessionState, setAuthSessionState] = useState<AuthSessionState>('idle');
   const [apiInitializing, setApiInitializing] = useState(false);
   const [apiReady, setApiReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
@@ -64,10 +89,25 @@ export default function App() {
   const [bootstrapPin, setBootstrapPin] = useState('');
   const [bootstrapConfirmPin, setBootstrapConfirmPin] = useState('');
   const bootstrapInProgressRef = useRef(false);
+  const pinLoginInProgressRef = useRef(false);
 
   useEffect(() => {
     console.log('[Smart Guard Debug] activeTab changed:', activeTab);
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!currentProfile || !firebaseUser) return;
+    recordAuthStage({
+      stage: 'AUTH-12',
+      status: authSessionState === 'authenticated' ? 'PASS' : 'FAIL',
+      code: authSessionState === 'authenticated' ? 'ok' : 'auth/session-not-ready',
+      message: authSessionState === 'authenticated'
+        ? 'Protected application route accepted the hydrated session.'
+        : 'Protected application route is waiting for session readiness.',
+      source: 'src/App.tsx protected render guard',
+      path: `users/${firebaseUser.uid}`,
+    });
+  }, [authSessionState, currentProfile, firebaseUser]);
 
   const initFirestoreDatabase = async () => {
     setApiInitializing(true);
@@ -82,12 +122,23 @@ export default function App() {
   };
 
   const applyProfile = async (user: any, profile: any) => {
+    const canonicalProfile = validateOperatorSessionProfile(user.uid, profile);
+    sessionStorage.setItem('selected_site_id', canonicalProfile.site_id);
     setFirebaseUser(user);
-    setCurrentProfile(profile);
-    setGuardName(profile.operator_name || profile.username || 'ผู้ใช้งาน');
-    setUserRole((profile.role || 'Guard') as Role);
+    setCurrentProfile(canonicalProfile);
+    setGuardName(canonicalProfile.operator_name || canonicalProfile.username || 'ผู้ใช้งาน');
+    setUserRole(canonicalProfile.role);
     setActiveTab('dashboard');
     await initFirestoreDatabase();
+    setAuthSessionState('authenticated');
+    recordAuthStage({
+      stage: 'AUTH-11',
+      status: 'PASS',
+      code: 'ok',
+      message: 'Authenticated session committed to application state.',
+      source: 'src/App.tsx applyProfile',
+      path: `users/${user.uid}`,
+    });
   };
 
   useEffect(() => {
@@ -97,14 +148,17 @@ export default function App() {
       if (!mounted) return;
       try {
         if (!user) {
+          if (pinLoginInProgressRef.current) return;
           setFirebaseUser(null);
           setCurrentProfile(null);
           setGuardName('');
           setUserRole('Guard');
+          setAuthSessionState('idle');
           setAuthLoading(false);
           return;
         }
-        const { doc, getDoc } = await import('firebase/firestore');
+        if (!shouldHydrateAuthProfile(pinLoginInProgressRef.current)) return;
+        setAuthSessionState('profile-loading');
         const profileSnap = await getDoc(doc(db, 'users', user.uid));
         if (!profileSnap.exists() || profileSnap.data().status !== 'Active') {
           if (bootstrapInProgressRef.current) return;
@@ -116,7 +170,20 @@ export default function App() {
         await applyProfile(user, { ...profileSnap.data(), user_id: user.uid });
         setAuthLoading(false);
       } catch (err: any) {
-        setInitError(err.message || 'ตรวจสอบสถานะผู้ใช้ไม่สำเร็จ');
+        setAuthSessionState('failed');
+        recordAuthStage({
+          stage: 'AUTH-07',
+          status: 'FAIL',
+          code: firebaseErrorCode(err),
+          message: firebaseErrorMessage(err),
+          source: 'src/App.tsx onAuthStateChange',
+          path: user ? `users/${user.uid}` : undefined,
+        });
+        setInitError(
+          runtimeConfiguration.environmentName === 'STAGING'
+            ? stagingAuthMessage('AUTH-07', err)
+            : err.message || 'ตรวจสอบสถานะผู้ใช้ไม่สำเร็จ',
+        );
         setAuthLoading(false);
       }
     });
@@ -156,8 +223,9 @@ export default function App() {
     if (!normalized) return setLoginError('กรุณากรอก Username');
     if (!validatePin(operatorPin)) return setLoginError('PIN ต้องเป็นตัวเลข 6 หลัก');
     setLoginBusy(true);
+    pinLoginInProgressRef.current = true;
     try {
-      const result = await signInWithUsernamePin(normalized, operatorPin);
+      const result = await signInWithUsernamePin(normalized, operatorPin, setAuthSessionState);
       await applyProfile(result.firebaseUser, result.profile);
       setOperatorPin('');
       try {
@@ -173,15 +241,23 @@ export default function App() {
         console.warn('[Smart Guard Auth] Audit write skipped:', auditError);
       }
     } catch (err: any) {
+      setAuthSessionState('failed');
       const code = String(err?.code || '');
       if (code.includes('invalid-credential') || code.includes('wrong-password')) {
         setLoginError('Username หรือ PIN ไม่ถูกต้อง');
       } else if (code.includes('too-many-requests')) {
         setLoginError('กรอกผิดหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่');
+      } else if (err instanceof AuthStageError) {
+        setLoginError(err.message);
       } else {
-        setLoginError(err.message || 'เข้าสู่ระบบไม่สำเร็จ');
+        setLoginError(
+          runtimeConfiguration.environmentName === 'STAGING'
+            ? stagingAuthMessage('AUTH-11', err)
+            : err.message || 'เข้าสู่ระบบไม่สำเร็จ',
+        );
       }
     } finally {
+      pinLoginInProgressRef.current = false;
       setLoginBusy(false);
     }
   };
@@ -219,6 +295,8 @@ export default function App() {
     setCurrentProfile(null);
     setGuardName('');
     setUserRole('Guard');
+    setAuthSessionState('idle');
+    sessionStorage.removeItem('selected_site_id');
     setUsername('');
     setOperatorPin('');
     setLoginError(null);
@@ -230,7 +308,7 @@ export default function App() {
 
   useEffect(() => {
     if (!apiReady) return;
-    readSheet('SystemSettings')
+    listSystemSettings(sessionStorage.getItem('selected_site_id') || 'site-01')
       .then(() => {
         setApiTestingStatus('success');
         setApiTestDetails('เชื่อมต่อฐานข้อมูล Firestore สำเร็จ');
@@ -244,7 +322,7 @@ export default function App() {
   const handleTestApi = async () => {
     setApiTestingStatus('testing');
     try {
-      await readSheet('SystemSettings');
+      await listSystemSettings(sessionStorage.getItem('selected_site_id') || 'site-01');
       setApiTestingStatus('success');
       setApiTestDetails('ฐานข้อมูล Firestore ตอบสนองปกติ');
     } catch (err: any) {
@@ -256,6 +334,7 @@ export default function App() {
   if (authLoading) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 text-white">
+        <EnvironmentMarker />
         <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
         <span className="text-sm font-bold text-slate-300">กำลังตรวจสอบระบบเข้าสู่ระบบ...</span>
       </div>
@@ -265,6 +344,7 @@ export default function App() {
   if (!currentProfile) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 font-sans">
+        <EnvironmentMarker />
         <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
           <div className="absolute inset-0 bg-[radial-gradient(#2563eb_1px,transparent_1px)] [background-size:16px_16px] opacity-10 pointer-events-none" />
           <div className="relative z-10 flex flex-col gap-6">
@@ -340,6 +420,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800 pb-20 sm:pb-0">
+      <EnvironmentMarker />
       
       {/* Top Application Header */}
       <header className="sticky top-0 bg-slate-900 text-white z-40 border-b border-slate-800 shadow-sm">
@@ -373,7 +454,7 @@ export default function App() {
                 <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
                   userRole === 'Admin' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' :
                   userRole === 'Manager' ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' :
-                  userRole === 'Shift Leader' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
+                  userRole === 'ShiftHead' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
                   'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                 }`}>
                   {userRole}
@@ -536,8 +617,9 @@ export default function App() {
 
         {/* Content View Area */}
         <main className="flex-1 p-4 sm:p-6 overflow-x-hidden">
-          {activeTab === 'dashboard' && <DebugPage name="Dashboard"><Dashboard onNavigate={setActiveTab} activeRole={userRole} /></DebugPage>}
-          {activeTab === 'vehicles' && <DebugPage name="VehicleEntryExit"><VehicleEntryExit guardName={guardName} /></DebugPage>}
+          <Suspense fallback={<PageFallback />}>
+          {activeTab === 'dashboard' && <DebugPage name="Dashboard"><Dashboard onNavigate={setActiveTab} activeRole={userRole} siteId={currentProfile.site_id} /></DebugPage>}
+          {activeTab === 'vehicles' && <DebugPage name="VehicleEntryExit"><VehicleEntryExit guardName={guardName} userRole={userRole} /></DebugPage>}
           {activeTab === 'contractors' && <DebugPage name="ContractorLogs"><ContractorLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} /></DebugPage>}
@@ -551,6 +633,7 @@ export default function App() {
               authorizationResult={currentProfile ? 'Authorized - Active' : 'Unauthorized'}
             /></DebugPage>
           )}
+          </Suspense>
         </main>
 
       </div>
