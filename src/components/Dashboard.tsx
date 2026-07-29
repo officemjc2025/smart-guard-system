@@ -8,16 +8,22 @@ import {
   Car, Users, Key, ShieldCheck, AlertTriangle, 
   ArrowUpRight, ArrowDownLeft, RefreshCw, Clock, Ban
 } from 'lucide-react';
-import { readSheet } from '../googleApi';
-import { VehicleLogRecord, ContractorLogRecord, KeyLogRecord, PatrolLogRecord, IncidentReportRecord } from '../types';
 import type { TabType } from '../App';
+import { getDashboardSummary, type DashboardSummary } from '../services/dashboardService';
+import {
+  firebaseErrorCode,
+  firebaseErrorMessage,
+  recordAuthStage,
+} from '../services/authDiagnostics';
+import { canLoadDashboard } from '../services/authFlowPolicy';
 
 interface DashboardProps {
   onNavigate: (tab: TabType) => void;
   activeRole: string;
+  siteId: string;
 }
 
-export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
+export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardProps) {
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState({
     vehiclesIn: 0,
@@ -29,63 +35,41 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
     patrolPending: 4, // out of 4 total PP
     patrolOverdue: 0,
     incidentsToday: 0,
-    blacklistAlerts: 0
+    blacklistAlerts: 0,
+    availableCards: 0,
+    cardsInUse: 0,
+    suspendedCards: 0,
+    lostCards: 0,
+    vipEntriesToday: 0,
   });
 
-  const [recentIncidents, setRecentIncidents] = useState<IncidentReportRecord[]>([]);
+  const [recentIncidents, setRecentIncidents] = useState<DashboardSummary['recentIncidents']>([]);
 
   const fetchStats = async () => {
+    if (!canLoadDashboard({ role: activeRole, site_id: siteId, status: 'Active' })) return;
     setLoading(true);
     try {
-      const todayStr = new Date().toISOString().split('T')[0];
-
-      // Read logs from Firestore
-      const [vehicles, contractors, keys, patrols, incidents] = await Promise.all([
-        readSheet<VehicleLogRecord>('VehicleLogs'),
-        readSheet<ContractorLogRecord>('ContractorLogs'),
-        readSheet<KeyLogRecord>('KeyLogs'),
-        readSheet<PatrolLogRecord>('PatrolLogs'),
-        readSheet<IncidentReportRecord>('IncidentReports')
-      ]);
-
-      // Calculate stats based on today's logs
-      const vehiclesToday = vehicles.filter(v => v.entry_time.startsWith(todayStr));
-      const vIn = vehiclesToday.length;
-      const vOut = vehiclesToday.filter(v => v.status === 'ออกแล้ว').length;
-      const vCurrent = vehicles.filter(v => v.status === 'กำลังจอด').length;
-
-      const cCurrent = contractors.filter(c => c.status === 'กำลังปฏิบัติงาน').length;
-      const kCheckedOut = keys.filter(k => k.status === 'ถูกเบิก').length;
-
-      // Patrol stats
-      const patrolToday = patrols.filter(p => p.checkin_time.startsWith(todayStr));
-      const uniquePatrolledPoints = new Set(patrolToday.map(p => p.patrol_point_id));
-      const pDone = uniquePatrolledPoints.size;
-      const totalPoints = 4; // Mocked size of master patrol points (Lobby, B1, Electricity M, Roof)
-      const pPending = Math.max(0, totalPoints - pDone);
-
-      // Overdue patrol is mock calculated for realism:
-      const pOverdue = patrolToday.filter(p => p.status === 'ผิดปกติ').length;
-
-      const incToday = incidents.filter(i => i.incident_datetime.startsWith(todayStr)).length;
-      
-      setData({
-        vehiclesIn: vIn,
-        vehiclesOut: vOut,
-        vehiclesCurrent: vCurrent,
-        contractorsCurrent: cCurrent,
-        keysCheckedOut: kCheckedOut,
-        patrolDone: pDone,
-        patrolPending: pPending,
-        patrolOverdue: pOverdue,
-        incidentsToday: incToday,
-        blacklistAlerts: 0 // Mock counter
+      const { recentIncidents: latestIncidents, ...summary } = await getDashboardSummary(
+        siteId,
+      );
+      setData(summary);
+      setRecentIncidents(latestIncidents);
+      recordAuthStage({
+        stage: 'AUTH-13',
+        status: 'PASS',
+        code: 'ok',
+        message: 'Dashboard initial data load completed.',
+        source: 'src/components/Dashboard.tsx fetchStats',
       });
-
-      // Filter and display recent incident reports (last 3)
-      setRecentIncidents(incidents.slice(-3).reverse());
     } catch (error) {
       console.error('Error fetching dashboard stats:', error);
+      recordAuthStage({
+        stage: 'AUTH-13',
+        status: 'FAIL',
+        code: firebaseErrorCode(error),
+        message: firebaseErrorMessage(error),
+        source: 'src/components/Dashboard.tsx fetchStats',
+      });
     } finally {
       setLoading(false);
     }
@@ -93,7 +77,7 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
 
   useEffect(() => {
     fetchStats();
-  }, []);
+  }, [activeRole, siteId]);
 
   // Format date helper
   const formatTime = (isoString: string) => {
@@ -221,6 +205,20 @@ export default function Dashboard({ onNavigate, activeRole }: DashboardProps) {
             {data.patrolOverdue > 0 && <span className="text-red-600 font-bold">⚠️ พบสิ่งผิดปกติ</span>}
           </div>
         </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {[
+          ['Vehicles Inside', data.vehiclesCurrent, 'text-blue-700'],
+          ['Available Cards', data.availableCards, 'text-emerald-700'],
+          ['Cards In Use', data.cardsInUse, 'text-indigo-700'],
+          ['Suspended Cards', data.suspendedCards, 'text-amber-700'],
+          ['Lost Cards', data.lostCards, 'text-red-700'],
+          ['VIP Entries Today', data.vipEntriesToday, 'text-purple-700'],
+        ].map(([label, value, color]) => <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+          <p className={`mt-1 text-2xl font-black ${color}`}>{value}</p>
+        </div>)}
       </div>
 
       {/* Row: Analytics Gauge & Recent Incidents */}

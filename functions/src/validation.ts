@@ -16,7 +16,7 @@ export function sanitizeAndValidateId(id: string, name: string): string {
     throw new HttpsError('invalid-argument', `${name} ต้องเป็นข้อความตัวอักษรและไม่เป็นค่าว่าง`);
   }
   // Allow alphanumeric, dashes, and underscores
-  const safeRegex = /^[a-zA-Z0-9_\-]+$/;
+  const safeRegex = /^[a-zA-Z0-9_-]+$/;
   if (!safeRegex.test(id)) {
     throw new HttpsError('invalid-argument', `${name} มีอักขระที่ไม่ปลอดภัย (อนุญาตเฉพาะ A-Z, a-z, 0-9, - และ _)`);
   }
@@ -38,7 +38,12 @@ export function sanitizeTextInput(input: string, maxLength: number, name: string
   }
   
   // Strip control characters, HTML tags, and trailing/leading space
-  let cleaned = input.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+  let cleaned = Array.from(input)
+    .filter(character => {
+      const code = character.charCodeAt(0);
+      return !((code >= 0 && code <= 31) || (code >= 127 && code <= 159));
+    })
+    .join('');
   cleaned = cleaned.replace(/<[^>]*>/g, '');
   return cleaned.trim();
 }
@@ -156,7 +161,7 @@ export function normalizeRole(role: string): UserRole {
   const r = role ? role.trim() : 'Guard';
   if (r === 'Admin') return 'Admin';
   if (r === 'Manager') return 'Manager';
-  if (r === 'Shift Leader' || r === 'ShiftHead' || r === 'ShiftLeader') return 'ShiftHead';
+  if (r === 'ShiftHead' || r === 'Shift Leader' || r === 'ShiftLeader') return 'ShiftHead';
   return 'Guard';
 }
 
@@ -178,7 +183,7 @@ export function generateSafeFileName(
   // Clean alphanumeric + underscores
   const cleanModule = module.toLowerCase();
   const cleanMediaType = mediaType.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-  const cleanRecordId = recordId.replace(/[^a-zA-Z0-9_\-]/g, '_');
+  const cleanRecordId = recordId.replace(/[^a-zA-Z0-9_-]/g, '_');
   const randomSuffix = Math.random().toString(36).substring(2, 8); // 6 character alphanumeric random
 
   return `${cleanModule}_${cleanRecordId}_${cleanMediaType}_${timestamp}_${randomSuffix}.${extension}`;

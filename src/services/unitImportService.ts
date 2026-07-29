@@ -1,8 +1,9 @@
-import * as XLSX from 'xlsx';
-import { doc, writeBatch } from 'firebase/firestore';
-import { db } from '../firebase';
+import { collection, doc, getDocs, query, serverTimestamp, where, writeBatch } from 'firebase/firestore';
+import { auth, db } from '../firebase';
 import type { UnitRecord } from '../types';
-import { writeAuditLog } from '../googleApi';
+import type { ImportPreview } from './importExport/excelImportService';
+import { createUnitDocumentId, normalizeRoomNumber as roomComparisonKey, normalizeUnitId } from './unitService';
+import { downloadCsv, parseCsvFile } from './importExport/csvSafe';
 
 export type UnitImportAction = 'create' | 'update' | 'unchanged' | 'reject';
 
@@ -25,9 +26,10 @@ export interface UnitImportCommitHooks {
   afterCommit?: (preview: UnitImportPreview) => Promise<void> | void;
 }
 
-type HeaderField = keyof Pick<UnitRecord, 'building' | 'room_code' | 'room_number' | 'floor' | 'area' | 'ratio' | 'owner_name' | 'resident_name' | 'phone' | 'email' | 'occupancy_status' | 'status'>;
+type HeaderField = keyof Pick<UnitRecord, 'unit_id' | 'building' | 'room_code' | 'room_number' | 'floor' | 'area' | 'ratio' | 'owner_name' | 'resident_name' | 'phone' | 'email' | 'occupancy_status' | 'status'>;
 
 const headerAliases: Record<HeaderField, RegExp> = {
+  unit_id: /^(unit_id|unitid|รหัสยูนิต)$/i,
   building: /^(building|อาคาร)$/i,
   room_code: /^(roomid|room_code|รหัสห้อง|รหัสยูนิต)$/i,
   room_number: /^(room_no|roomno|room_number|roomnumber|เลขที่ห้อง|เลขห้อง|ห้อง)$/i,
@@ -44,14 +46,10 @@ const headerAliases: Record<HeaderField, RegExp> = {
 
 const cleanText = (value: unknown) => String(value ?? '').trim();
 const normalize = (value: string) => value.toLowerCase().replace(/[\s/_.-]/g, '');
-const cleanId = (value: string) => value.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-const normalizeRoomNumber = (value: string) => value.trim().replace(/\s+/g, '').toUpperCase();
+const preserveBusinessValue = (value: unknown) => cleanText(value).normalize('NFC');
+const currentSiteId = () => sessionStorage.getItem('selected_site_id') || 'site-01';
 
 const EXPORT_HEADERS = ['Building', 'Floor', 'Room Number', 'Owner Name', 'Resident Name', 'Phone', 'Status'] as const;
-
-function downloadWorkbook(workbook: XLSX.WorkBook, fileName: string) {
-  XLSX.writeFile(workbook, fileName, { compression: true });
-}
 
 function exportRows(units: UnitRecord[]) {
   return units.map(unit => ({
@@ -66,28 +64,20 @@ function exportRows(units: UnitRecord[]) {
 }
 
 export function exportUnitsExcel(units: UnitRecord[], fileName = 'units.xlsx') {
-  const sheet = XLSX.utils.json_to_sheet(exportRows(units), { header: [...EXPORT_HEADERS] });
-  downloadWorkbook({ SheetNames: ['Units'], Sheets: { Units: sheet } }, fileName);
+  void units; void fileName;
+  throw new Error('XLSX ถูกปิดใช้งานชั่วคราวเพื่อความปลอดภัย กรุณาใช้ CSV');
 }
 
 export function exportUnitsCsv(units: UnitRecord[], fileName = 'units.csv') {
-  const sheet = XLSX.utils.json_to_sheet(exportRows(units), { header: [...EXPORT_HEADERS] });
-  const blob = new Blob(['\uFEFF', XLSX.utils.sheet_to_csv(sheet)], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadCsv([[...EXPORT_HEADERS], ...exportRows(units).map(row => EXPORT_HEADERS.map(header => row[header]))], fileName);
 }
 
-export function downloadUnitTemplate(fileName = 'unit-import-template.xlsx') {
-  const sheet = XLSX.utils.aoa_to_sheet([[...EXPORT_HEADERS]]);
-  downloadWorkbook({ SheetNames: ['Units'], Sheets: { Units: sheet } }, fileName);
+export function downloadUnitTemplate(fileName = 'unit-import-template.csv') {
+  downloadCsv([[...EXPORT_HEADERS]], fileName.replace(/\.xlsx$/i, '.csv'));
 }
 
 export function unitIdFor(roomCode: string, roomNumber: string) {
-  return `UNIT_${cleanId(roomCode || roomNumber)}`.toUpperCase();
+  return preserveBusinessValue(roomCode || roomNumber);
 }
 
 function mapHeaders(headers: string[]) {
@@ -101,12 +91,9 @@ function mapHeaders(headers: string[]) {
   return mapping;
 }
 
-/** Parses .xlsx, .xls, and .csv locally; it never writes to Firestore. */
-export async function previewUnitImport(file: File, existingUnits: UnitRecord[], siteId = 'site-01'): Promise<UnitImportPreview> {
-  const bytes = await file.arrayBuffer();
-  const workbook = XLSX.read(bytes, { type: 'array', raw: false, cellText: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '' });
+/** Parses bounded CSV locally; it never writes to Firestore. */
+export async function previewUnitImport(file: File, existingUnits: UnitRecord[], _siteId = currentSiteId()): Promise<UnitImportPreview> {
+  const grid = await parseCsvFile(file);
   const headers = (grid[0] || []).map(cleanText);
   const mapping = mapHeaders(headers);
   const rows: UnitImportRow[] = [];
@@ -120,7 +107,7 @@ export async function previewUnitImport(file: File, existingUnits: UnitRecord[],
     if (!row.some(value => cleanText(value))) continue;
     const value = (field: HeaderField) => cleanText(row[mapping.get(field) ?? -1]);
     const roomCode = value('room_code');
-    const roomNumber = normalizeRoomNumber(value('room_number'));
+    const roomNumber = preserveBusinessValue(value('room_number'));
     const building = value('building');
     const floor = value('floor');
     const ownerName = value('owner_name');
@@ -129,7 +116,7 @@ export async function previewUnitImport(file: File, existingUnits: UnitRecord[],
     if (!roomNumber) reasons.push('missing room_number');
     if (!floor) reasons.push('missing floor');
     if (!ownerName) reasons.push('missing owner_name');
-    const unitId = unitIdFor(roomCode, roomNumber);
+    const unitId = preserveBusinessValue(value('unit_id')) || unitIdFor(roomCode, roomNumber);
     const roomKey = normalize(`${building}|${roomNumber}`);
     if (seenIds.has(unitId)) reasons.push(`duplicate unit_id ${unitId} in file`);
     seenIds.add(unitId);
@@ -141,12 +128,14 @@ export async function previewUnitImport(file: File, existingUnits: UnitRecord[],
 
     const old = existingById.get(unitId);
     const now = new Date().toISOString();
+    const importedStatus: UnitRecord['status'] = value('status') === 'Inactive' || value('occupancy_status') === 'Inactive' ? 'Inactive' : (old?.status || 'Active');
     const unit: UnitRecord = {
-      unit_id: unitId, site_id: old?.site_id || siteId, building, room_code: roomCode || undefined, room_number: roomNumber,
+      firestore_document_id: old?.firestore_document_id || await createUnitDocumentId(currentSiteId(), unitId, roomNumber),
+      unit_id: unitId, site_id: currentSiteId(), building, room_code: roomCode || undefined, room_number: roomNumber,
       floor, area: value('area') || undefined, ratio: value('ratio') || undefined, owner_name: ownerName, resident_name: residentName,
       phone: value('phone') || undefined, email: value('email') || undefined,
       occupancy_status: value('occupancy_status') || old?.occupancy_status || 'ไม่ระบุ',
-      status: value('status') || value('occupancy_status') || old?.status || 'Active',
+      status: importedStatus,
       searchable_text: [roomCode, roomNumber, building, floor, ownerName, residentName, value('phone'), value('email')].join(' ').toLowerCase().trim(),
       search_key: normalize(`${roomNumber}${roomCode}`), is_active: old?.is_active ?? true,
       created_at: old?.created_at || now, updated_at: now, source_file_name: file.name,
@@ -164,16 +153,106 @@ export async function previewUnitImport(file: File, existingUnits: UnitRecord[],
 export async function commitUnitImport(preview: UnitImportPreview, operatorName: string, hooks: UnitImportCommitHooks = {}) {
   await hooks.beforeCommit?.(preview);
   const importBatchId = `UNIT_IMPORT_${Date.now().toString(36)}`;
-  const changes = preview.rows.filter(
-    (row): row is UnitImportRow & { unit: UnitRecord } =>
-      (row.action === 'create' || row.action === 'update') && row.unit !== undefined,
-  );
-  for (let start = 0; start < changes.length; start += 400) {
-    const batch = writeBatch(db);
-    changes.slice(start, start + 400).forEach(row => batch.set(doc(db, 'units', row.unit.unit_id), { ...row.unit, import_batch_id: importBatchId }));
-    await batch.commit();
-  }
-  await writeAuditLog(operatorName, 'นำเข้าข้อมูลห้องชุดแบบไม่ทำลายข้อมูล', 'Units', importBatchId, '', JSON.stringify(preview.summary));
+  const frameworkPreview: ImportPreview = {
+    fileName: preview.sourceFileName,
+    totalRows: preview.rows.length,
+    detectedHeaders: preview.headers,
+    headerMappings: preview.headers.map(header => ({ source: header, canonical: header })),
+    emptyRows: 0,
+    issues: preview.rows.filter(row => row.action === 'reject').flatMap(row => row.reasons.map(message => ({ rowNumber: row.rowNumber, message }))),
+    validRows: preview.rows.filter((row): row is UnitImportRow & { unit: UnitRecord } => (row.action === 'create' || row.action === 'update') && Boolean(row.unit)).map(row => ({ rowNumber: row.rowNumber, id: row.unit.unit_id, action: row.action === 'create' ? 'create' : 'update', data: { ...row.unit } })),
+  };
+  await commitUnitFrameworkImport(frameworkPreview, operatorName);
   await hooks.afterCommit?.(preview);
   return { importBatchId, ...preview.summary };
+}
+
+/** Commits the shared framework preview while generating protected site/audit fields. */
+export async function commitUnitFrameworkImport(preview: ImportPreview, operatorName: string) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error('Authenticated account is required for Unit import.');
+  const siteId = currentSiteId();
+  const now = new Date().toISOString();
+  const existingSnapshot = await getDocs(query(collection(db, 'units'), where('site_id', '==', siteId)));
+  const existingUnits = existingSnapshot.docs.map(snapshot => ({
+    documentId: snapshot.id,
+    unitId: cleanText(snapshot.data().unit_id),
+    roomNumber: cleanText(snapshot.data().room_number),
+  }));
+  const existingByUnitId = new Map(existingUnits.map(unit => [normalizeUnitId(unit.unitId), unit]));
+  const existingByRoom = new Map(existingUnits.map(unit => [roomComparisonKey(unit.roomNumber), unit]));
+  const prepared = await Promise.all(preview.validRows.map(async row => {
+    const importedUnitId = preserveBusinessValue(row.data.unit_id ?? row.id);
+    const importedRoomNumber = preserveBusinessValue(row.data.room_number);
+    const existing = existingByUnitId.get(normalizeUnitId(importedUnitId))
+      || existingByRoom.get(roomComparisonKey(importedRoomNumber));
+    const documentId = existing?.documentId || await createUnitDocumentId(siteId, importedUnitId, importedRoomNumber);
+    const unitId = existing?.unitId || importedUnitId;
+    const status = row.data.status === 'Inactive' ? 'Inactive' : 'Active';
+    const unit = {
+      firestore_document_id: documentId,
+      unit_id: unitId,
+      site_id: siteId,
+      room_number: importedRoomNumber,
+      building: preserveBusinessValue(row.data.building),
+      floor: preserveBusinessValue(row.data.floor),
+      owner_name: preserveBusinessValue(row.data.owner_name),
+      resident_name: preserveBusinessValue(row.data.resident_name),
+      phone: preserveBusinessValue(row.data.phone),
+      status,
+      occupancy_status: status,
+      searchable_text: [importedRoomNumber, row.data.building, row.data.floor, row.data.owner_name, row.data.resident_name, row.data.phone].map(cleanText).join(' ').toLowerCase(),
+      search_key: roomComparisonKey(importedRoomNumber),
+      is_active: status === 'Active',
+      ...(!existing ? { created_at: now } : {}),
+      updated_at: now,
+      import_batch_id: `UNIT_IMPORT_${preview.fileName}_${now}`,
+    };
+    return { row, existing, documentId, unit };
+  }));
+  let committed = 0;
+  const failures: string[] = [];
+
+  const commitRows = async (items: typeof prepared) => {
+    const batch = writeBatch(db);
+    items.forEach(({ row, existing, documentId, unit }) => {
+      const auditId = `AUD_${crypto.randomUUID()}`;
+      batch.set(doc(db, 'units', documentId), unit, { merge: Boolean(existing) });
+      batch.set(doc(db, 'auditLogs', auditId), {
+        audit_id: auditId, operator_id: uid, account_uid: uid, operator_name: operatorName,
+        user_name: operatorName, site_id: siteId, action: existing ? 'UnitImportedUpdated' : 'UnitImportedCreated',
+        module_name: 'units', record_id: unit.unit_id, old_value: existing ? 'update' : 'create', new_value: JSON.stringify(unit),
+        created_at: serverTimestamp(), action_result: 'Success',
+      });
+    });
+    await batch.commit();
+  };
+
+  for (let start = 0; start < prepared.length; start += 190) {
+    const chunk = prepared.slice(start, start + 190);
+    try {
+      await commitRows(chunk);
+      committed += chunk.length;
+    } catch (chunkError) {
+      console.error('Unit import batch failed; retrying rows individually.', chunkError);
+      for (const item of chunk) {
+        try { await commitRows([item]); committed += 1; }
+        catch (reason) {
+          console.error('Unit import row failed.', { rowNumber: item.row.rowNumber, unitId: item.unit.unit_id, roomNumber: item.unit.room_number, reason });
+          failures.push(`แถว ${item.row.rowNumber} ห้อง ${item.unit.room_number || '-'} (Unit ID ${item.unit.unit_id || '-'}): ไม่สามารถบันทึกข้อมูลได้`);
+        }
+      }
+    }
+  }
+  const summaryId = `AUD_${crypto.randomUUID()}`;
+  const summaryBatch = writeBatch(db);
+  summaryBatch.set(doc(db, 'auditLogs', summaryId), {
+    audit_id: summaryId, operator_id: uid, account_uid: uid, operator_name: operatorName,
+    user_name: operatorName, site_id: siteId, action: 'UnitBulkImportCompleted', module_name: 'units',
+    record_id: preview.fileName, old_value: '', new_value: JSON.stringify({ committed, invalid: preview.issues.length, empty: preview.emptyRows }),
+    created_at: serverTimestamp(), action_result: 'Success',
+  });
+  await summaryBatch.commit();
+  if (failures.length) throw new Error(`บันทึกสำเร็จ ${committed} รายการ แต่พบข้อผิดพลาด ${failures.length} รายการ\n${failures.slice(0, 20).join('\n')}`);
+  return committed;
 }

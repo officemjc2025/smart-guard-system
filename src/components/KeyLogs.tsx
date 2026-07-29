@@ -7,8 +7,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   Key, Search, Check, Camera, RefreshCw, AlertTriangle
 } from 'lucide-react';
-import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '../googleApi';
 import { KeyLogRecord } from '../types';
+import { checkoutKey, listCheckedOutKeys, returnKey } from '../services/keyService';
+import { createAuditLog } from '../services/auditService';
+import { uploadImageToDrive } from '../services/mediaUploadService';
 import SignaturePad from './SignaturePad';
 import ConfirmModal from './ConfirmModal';
 import UnitSearchSelect from './UnitSearchSelect';
@@ -18,6 +20,7 @@ interface KeyLogsProps {
 }
 
 export default function KeyLogs({ guardName }: KeyLogsProps) {
+  const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
   const [activeTab, setActiveTab] = useState<'checkout' | 'return'>('checkout');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -52,8 +55,8 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
   const fetchInitialKeys = async () => {
     setLoading(true);
     try {
-      const keys = await readSheet<KeyLogRecord>('KeyLogs');
-      setActiveKeys(keys.filter(k => k.status === 'ถูกเบิก'));
+      const keys = await listCheckedOutKeys(siteId);
+      setActiveKeys(keys);
     } catch (err) {
       console.error('Failed to load key data:', err);
     } finally {
@@ -105,7 +108,7 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
       const nowStr = new Date().toISOString();
 
       // 3. Write row to KeyLogs
-      const newKeyLog: KeyLogRecord = {
+      const newKeyLog = {
         key_log_id: keyLogId,
         room_number: checkoutForm.room_number,
         target_unit_id: checkoutForm.target_unit_id || undefined,
@@ -119,24 +122,21 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
         issued_by: guardName,
         signature_image_url: sigUrl,
         borrower_photo_url: bPhotoUrl,
-        status: 'ถูกเบิก',
-        note: checkoutForm.note,
-        created_at: nowStr,
-        updated_at: nowStr
+        status: 'ถูกเบิก' as const,
+        note: checkoutForm.note
       };
 
-      await appendSheetRow('KeyLogs', newKeyLog);
+      await checkoutKey(siteId, newKeyLog);
 
       // Write Audit log
-      await appendSheetRow('AuditLogs', {
+      await createAuditLog(siteId, {
         audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
         user_name: guardName,
         action: 'เบิกจ่ายกุญแจ',
         module_name: 'KeyLogs',
         record_id: keyLogId,
         old_value: '',
-        new_value: checkoutForm.room_number,
-        created_at: nowStr
+        new_value: checkoutForm.room_number
       });
 
       setStatusMessage({ type: 'success', text: `บันทึกเบิกกุญแจห้อง ${checkoutForm.room_number} เรียบร้อยแล้ว!` });
@@ -181,23 +181,17 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
       const nowStr = new Date().toISOString();
 
       // Update KeyLog to Returned
-      await updateSheetRow<KeyLogRecord>('KeyLogs', 'key_log_id', keyLog.key_log_id, {
-        return_time: nowStr,
-        returned_by: guardName,
-        status: 'คืนแล้ว',
-        updated_at: nowStr
-      });
+      await returnKey(siteId, keyLog.key_log_id, guardName, nowStr);
 
       // Write Audit log
-      await appendSheetRow('AuditLogs', {
+      await createAuditLog(siteId, {
         audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
         user_name: guardName,
         action: 'รับคืนกุญแจ',
         module_name: 'KeyLogs',
         record_id: keyLog.key_log_id,
         old_value: 'ถูกเบิก',
-        new_value: 'คืนแล้ว',
-        created_at: nowStr
+        new_value: 'คืนแล้ว'
       });
 
       setStatusMessage({ type: 'success', text: `รับคืนกุญแจห้อง ${keyLog.room_number} เข้าตู้เรียบร้อย!` });

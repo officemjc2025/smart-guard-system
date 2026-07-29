@@ -8,8 +8,11 @@ import {
   Users, Search, Check, AlertTriangle, ShieldAlert,
   ArrowUpRight, ArrowDownLeft, Camera, ShieldX, Clock
 } from 'lucide-react';
-import { readSheet, appendSheetRow, updateSheetRow, uploadImageToDrive } from '../googleApi';
 import { ContractorLogRecord, BlacklistRecord } from '../types';
+import { completeContractor, createContractor, listActiveContractors } from '../services/contractorService';
+import { listActiveBlacklist } from '../services/blacklistService';
+import { createAuditLog } from '../services/auditService';
+import { uploadImageToDrive } from '../services/mediaUploadService';
 import ConfirmModal from './ConfirmModal';
 import UnitSearchSelect from './UnitSearchSelect';
 
@@ -18,6 +21,7 @@ interface ContractorLogsProps {
 }
 
 export default function ContractorLogs({ guardName }: ContractorLogsProps) {
+  const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
   const [activeTab, setActiveTab] = useState<'entry' | 'exit'>('entry');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -58,11 +62,11 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
     setLoading(true);
     try {
       const [blList, allLogs] = await Promise.all([
-        readSheet<BlacklistRecord>('Blacklist'),
-        readSheet<ContractorLogRecord>('ContractorLogs')
+        listActiveBlacklist(siteId),
+        listActiveContractors(siteId)
       ]);
-      setBlacklist(blList.filter(b => b.status === 'Active'));
-      setWorkingContractors(allLogs.filter(c => c.status === 'กำลังปฏิบัติงาน'));
+      setBlacklist(blList);
+      setWorkingContractors(allLogs);
     } catch (err) {
       console.error('Failed to load contractor data:', err);
     } finally {
@@ -127,7 +131,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
       const nowStr = new Date().toISOString();
 
       // Append Contractor Log
-      const newLog: ContractorLogRecord = {
+      const newLog = {
         contractor_log_id: contractorLogId,
         contractor_name: entryForm.contractor_name,
         id_card_number: entryForm.id_card_number,
@@ -141,25 +145,22 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         entry_time: nowStr,
         id_card_photo_url: idPhotoUrl,
         face_photo_url: facePhotoUrl,
-        status: 'กำลังปฏิบัติงาน',
+        status: 'กำลังปฏิบัติงาน' as const,
         recorded_by: guardName,
-        note: entryForm.note,
-        created_at: nowStr,
-        updated_at: nowStr
+        note: entryForm.note
       };
 
-      await appendSheetRow('ContractorLogs', newLog);
+      await createContractor(siteId, newLog);
 
       // Write Audit log
-      await appendSheetRow('AuditLogs', {
+      await createAuditLog(siteId, {
         audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
         user_name: guardName,
         action: 'ลงทะเบียนผู้รับเหมาเข้าทำงาน',
         module_name: 'ContractorLogs',
         record_id: contractorLogId,
         old_value: '',
-        new_value: entryForm.contractor_name,
-        created_at: nowStr
+        new_value: entryForm.contractor_name
       });
 
       setStatusMessage({ type: 'success', text: `ลงทะเบียนผู้รับเหมา "${entryForm.contractor_name}" สำเร็จ!` });
@@ -205,22 +206,17 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
     try {
       const nowStr = new Date().toISOString();
 
-      await updateSheetRow<ContractorLogRecord>('ContractorLogs', 'contractor_log_id', contractor.contractor_log_id, {
-        exit_time: nowStr,
-        status: 'ออกแล้ว',
-        updated_at: nowStr
-      });
+      await completeContractor(siteId, contractor.contractor_log_id, nowStr);
 
       // Write Audit log
-      await appendSheetRow('AuditLogs', {
+      await createAuditLog(siteId, {
         audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
         user_name: guardName,
         action: 'บันทึกผู้รับเหมาออกจากอาคาร',
         module_name: 'ContractorLogs',
         record_id: contractor.contractor_log_id,
         old_value: 'กำลังปฏิบัติงาน',
-        new_value: 'ออกแล้ว',
-        created_at: nowStr
+        new_value: 'ออกแล้ว'
       });
 
       setStatusMessage({ type: 'success', text: `บันทึกผู้รับเหมา "${contractor.contractor_name}" ออกจากพื้นที่เรียบร้อย` });

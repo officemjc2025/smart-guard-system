@@ -8,7 +8,16 @@ import {
   Search, Calendar, Filter, Clock, Eye, Download, X,
   Car, Users, Key, ShieldCheck, AlertTriangle, RefreshCw
 } from 'lucide-react';
-import { readSheet, fetchDriveImageAsUrl } from '../googleApi';
+import { listVehicleHistory } from '../services/vehicleSessionService';
+import { listContractors } from '../services/contractorService';
+import { listKeyLogs } from '../services/keyService';
+import { listPatrolLogs } from '../services/patrolService';
+import { listIncidents } from '../services/incidentService';
+
+const resolveHistoryImageUrl = (fileId: string): string =>
+  fileId.startsWith('http://') || fileId.startsWith('https://')
+    ? fileId
+    : 'https://images.unsplash.com/photo-1557683316-973673baf926?w=400&h=300&fit=crop&q=80';
 
 export default function SearchHistory() {
   const [activeModule, setActiveModule] = useState<'vehicles' | 'contractors' | 'keys' | 'patrols' | 'incidents'>('vehicles');
@@ -46,12 +55,13 @@ export default function SearchHistory() {
   const fetchAllHistory = async () => {
     setLoading(true);
     try {
+      const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
       const [v, c, k, p, i] = await Promise.all([
-        readSheet('VehicleLogs'),
-        readSheet('ContractorLogs'),
-        readSheet('KeyLogs'),
-        readSheet('PatrolLogs'),
-        readSheet('IncidentReports')
+        listVehicleHistory(siteId),
+        listContractors(siteId),
+        listKeyLogs(siteId),
+        listPatrolLogs(siteId),
+        listIncidents(siteId)
       ]);
 
       // Sort chronological descending (latest first)
@@ -86,7 +96,7 @@ export default function SearchHistory() {
       if (fileId) {
         resolved[field] = 'loading';
         try {
-          const url = await fetchDriveImageAsUrl(fileId);
+          const url = resolveHistoryImageUrl(fileId);
           resolved[field] = url;
         } catch (error) {
           console.error('Failed to resolve history image URL:', error);

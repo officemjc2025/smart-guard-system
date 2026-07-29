@@ -8,8 +8,11 @@ import {
   ShieldCheck, ShieldAlert, Camera, MapPin, Check, 
   Clock, AlertTriangle, RefreshCw, Eye
 } from 'lucide-react';
-import { readSheet, appendSheetRow, uploadImageToDrive } from '../googleApi';
 import { PatrolLogRecord, PatrolPointRecord } from '../types';
+import { createPatrolLog, listPatrolLogs, listPatrolPoints } from '../services/patrolService';
+import { createIncident } from '../services/incidentService';
+import { createAuditLog } from '../services/auditService';
+import { uploadImageToDrive } from '../services/mediaUploadService';
 import QRScanner from './QRScanner';
 
 interface PatrolLogsProps {
@@ -17,6 +20,7 @@ interface PatrolLogsProps {
 }
 
 export default function PatrolLogs({ guardName }: PatrolLogsProps) {
+  const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
   const [activeTab, setActiveTab] = useState<'scan' | 'dashboard'>('scan');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -44,8 +48,8 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
     setLoading(true);
     try {
       const [points, logs] = await Promise.all([
-        readSheet<PatrolPointRecord>('PatrolPoints'),
-        readSheet<PatrolLogRecord>('PatrolLogs')
+        listPatrolPoints(siteId),
+        listPatrolLogs(siteId)
       ]);
       setPatrolPoints(points.length > 0 ? points : [
         { patrol_point_id: 'PP001', point_name: 'จุดตรวจ Lobby ชั้น 1', location_detail: 'เสาด้านหน้าทางเข้าหลักหน้าเคาน์เตอร์นิติ', qr_code_value: 'PP001_QR', required_interval_minutes: 60, status: 'Active', created_at: '', updated_at: '' },
@@ -104,7 +108,7 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
 
       const nowStr = new Date().toISOString();
 
-      const newLog: PatrolLogRecord = {
+      const newLog = {
         patrol_log_id: patrolLogId,
         patrol_point_id: scannedPoint.patrol_point_id,
         point_name: scannedPoint.point_name,
@@ -114,28 +118,26 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
         photo_url: mainPhotoUrl,
         status: patrolStatus,
         abnormal_detail: patrolStatus !== 'ปกติ' ? abnormalDetail : '',
-        incident_photo_url: patrolStatus !== 'ปกติ' ? incidentPhotoUrl : '',
-        created_at: nowStr
+        incident_photo_url: patrolStatus !== 'ปกติ' ? incidentPhotoUrl : ''
       };
 
-      await appendSheetRow('PatrolLogs', newLog);
+      await createPatrolLog(siteId, newLog);
 
       // Audit Log
-      await appendSheetRow('AuditLogs', {
+      await createAuditLog(siteId, {
         audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
         user_name: guardName,
         action: 'สแกนตรวจจุดอาคาร',
         module_name: 'PatrolLogs',
         record_id: patrolLogId,
         old_value: '',
-        new_value: `${scannedPoint.point_name} [${patrolStatus}]`,
-        created_at: nowStr
+        new_value: `${scannedPoint.point_name} [${patrolStatus}]`
       });
 
       // If abnormal, we can automatically trigger an Incident Report!
       if (patrolStatus !== 'ปกติ') {
         const incidentId = 'INC' + Math.floor(Math.random() * 1000000);
-        await appendSheetRow('IncidentReports', {
+        await createIncident(siteId, {
           incident_id: incidentId,
           incident_datetime: nowStr,
           location: scannedPoint.point_name,
@@ -144,9 +146,7 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
           photo_url: incidentPhotoUrl || mainPhotoUrl,
           reported_by: guardName,
           shift_leader: guardName,
-          status: 'แจ้งแล้ว',
-          created_at: nowStr,
-          updated_at: nowStr
+          status: 'แจ้งแล้ว'
         });
       }
 

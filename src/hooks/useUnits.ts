@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { UnitRecord } from '../types';
 
-let cachedUnits: UnitRecord[] | null = null;
-let pendingRequest: Promise<UnitRecord[]> | null = null;
+const cache = new Map<string, UnitRecord[]>();
+const pendingRequests = new Map<string, Promise<UnitRecord[]>>();
 
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 
@@ -21,8 +21,9 @@ function unitFromFirestore(id: string, value: unknown): UnitRecord | null {
   const residentName = text(data.resident_name);
   const phone = text(data.phone);
   const roomCode = text(data.room_code);
-  const status = text(data.status) || text(data.occupancy_status) || 'Active';
+  const status = text(data.status) === 'Inactive' || data.is_active === false ? 'Inactive' : 'Active';
   return {
+    firestore_document_id: id,
     unit_id: text(data.unit_id) || id,
     site_id: text(data.site_id),
     building: text(data.building),
@@ -37,7 +38,7 @@ function unitFromFirestore(id: string, value: unknown): UnitRecord | null {
     email: text(data.email) || undefined,
     occupancy_status: text(data.occupancy_status) || status,
     status,
-    searchable_text: [roomNumber, roomCode, ownerName, residentName, phone].join(' ').toLowerCase(),
+    searchable_text: [roomNumber, roomCode, text(data.building), text(data.floor), ownerName, residentName, phone].join(' ').toLowerCase(),
     search_key: text(data.search_key),
     is_active: data.is_active !== false,
     created_at: text(data.created_at),
@@ -51,10 +52,17 @@ function currentSiteId() {
   return sessionStorage.getItem('selected_site_id') || 'site-01';
 }
 
-async function loadUnits(): Promise<UnitRecord[]> {
+async function loadUnits(includeInactive: boolean): Promise<UnitRecord[]> {
+  const siteId = currentSiteId();
+  const cacheKey = `${siteId}:${includeInactive ? 'all' : 'active'}`;
+  const cachedUnits = cache.get(cacheKey);
   if (cachedUnits) return cachedUnits;
+  const pendingRequest = pendingRequests.get(cacheKey);
   if (pendingRequest) return pendingRequest;
-  pendingRequest = getDocs(collection(db, 'units'))
+  const unitQuery = includeInactive
+    ? query(collection(db, 'units'), where('site_id', '==', siteId))
+    : query(collection(db, 'units'), where('site_id', '==', siteId), where('status', '==', 'Active'));
+  const request = getDocs(unitQuery)
     .then(snapshot => snapshot.docs
       .map(docSnap => unitFromFirestore(docSnap.id, docSnap.data()))
       .filter((unit): unit is UnitRecord => unit !== null)
@@ -62,37 +70,39 @@ async function loadUnits(): Promise<UnitRecord[]> {
         || naturalCompare(a.floor, b.floor)
         || naturalCompare(a.room_number, b.room_number)))
     .then(units => {
-      cachedUnits = units;
+      cache.set(cacheKey, units);
       return units;
     })
-    .finally(() => { pendingRequest = null; });
-  return pendingRequest;
+    .finally(() => { pendingRequests.delete(cacheKey); });
+  pendingRequests.set(cacheKey, request);
+  return request;
 }
 
 export function clearUnitCache() {
-  cachedUnits = null;
+  cache.clear();
 }
 
 /** Reads existing Units without mutating Firestore. */
-export function useUnits() {
+export function useUnits(options: { includeInactive?: boolean } = {}) {
   const visibleUnits = (units: UnitRecord[]) => units.filter(unit =>
-    unit.is_active && (!unit.site_id || unit.site_id === currentSiteId()));
-  const [units, setUnits] = useState<UnitRecord[]>(visibleUnits(cachedUnits || []));
-  const [loading, setLoading] = useState(cachedUnits === null);
+    (options.includeInactive || (unit.is_active && unit.status === 'Active')) && unit.site_id === currentSiteId());
+  const initial = cache.get(`${currentSiteId()}:${options.includeInactive ? 'all' : 'active'}`) || [];
+  const [units, setUnits] = useState<UnitRecord[]>(visibleUnits(initial));
+  const [loading, setLoading] = useState(initial.length === 0);
   const [error, setError] = useState<Error | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const loaded = await loadUnits();
+      const loaded = await loadUnits(Boolean(options.includeInactive));
       setUnits(visibleUnits(loaded));
     } catch (reason) {
       setError(reason instanceof Error ? reason : new Error(String(reason)));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [options.includeInactive]);
 
   useEffect(() => { void refresh(); }, [refresh]);
   return { units, loading, error, refresh };

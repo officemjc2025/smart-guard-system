@@ -6,14 +6,18 @@
 import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, RefreshCw, Plus, Trash2, Ban, Car, MapPin, Check,
-  UserCheck, CreditCard, ShieldAlert, AlertTriangle
+  UserCheck, CreditCard, ShieldAlert, AlertTriangle, Building2
 } from 'lucide-react';
-import { readSheet, appendSheetRow, updateSheetRow, deleteSheetRow } from '../googleApi';
 import { UserRecord, ParkingCardRecord, PatrolPointRecord, BlacklistRecord } from '../types';
 import ConfirmModal from './ConfirmModal';
+import { createParkingCard, listParkingCards } from '../services/parkingCardService';
+import { createPatrolPoint, listActivePatrolPoints } from '../services/patrolService';
+import { createBlacklistEntry, deleteBlacklistEntry, listActiveBlacklist } from '../services/blacklistService';
+import { createSystemUser, deleteSystemUser, listSystemUsers } from '../services/systemInitializationService';
+import UnitManagementPanel from './UnitManagementPanel';
 
 export default function MasterData() {
-  const [activeTab, setActiveTab] = useState<'guards' | 'cards' | 'points' | 'blacklist'>('guards');
+  const [activeTab, setActiveTab] = useState<'units' | 'guards' | 'cards' | 'points' | 'blacklist'>('units');
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
@@ -44,17 +48,17 @@ export default function MasterData() {
     setLoading(true);
     try {
       if (activeTab === 'guards') {
-        const u = await readSheet<UserRecord>('Users');
+        const u = await listSystemUsers();
         setGuards(u.filter(user => user.status === 'Active'));
       } else if (activeTab === 'cards') {
-        const c = await readSheet<ParkingCardRecord>('ParkingCards');
+        const c = await listParkingCards();
         setCards(c);
       } else if (activeTab === 'points') {
-        const p = await readSheet<PatrolPointRecord>('PatrolPoints');
-        setPoints(p.filter(pt => pt.status === 'Active'));
+        const p = await listActivePatrolPoints(sessionStorage.getItem('selected_site_id') || 'site-01');
+        setPoints(p);
       } else if (activeTab === 'blacklist') {
-        const b = await readSheet<BlacklistRecord>('Blacklist');
-        setBlacklist(b.filter(bl => bl.status === 'Active'));
+        const b = await listActiveBlacklist(sessionStorage.getItem('selected_site_id') || 'site-01');
+        setBlacklist(b);
       }
     } catch (err) {
       console.error('Failed to load master config:', err);
@@ -86,7 +90,7 @@ export default function MasterData() {
         updated_at: nowStr
       };
 
-      await appendSheetRow('Users', newGuard);
+      await createSystemUser(newGuard);
       setStatusMessage({ type: 'success', text: `เพิ่มพนักงาน "${guardForm.name}" สำเร็จ!` });
       setGuardForm({ name: '', login_email: '', role: 'Guard', shift: 'กะเช้า (06:00 - 18:00)', phone: '' });
       fetchMasterData();
@@ -110,7 +114,7 @@ export default function MasterData() {
 
     setLoading(true);
     try {
-      await deleteSheetRow('Users', 'user_id', userId);
+      await deleteSystemUser(userId);
       setStatusMessage({ type: 'success', text: `นำรายชื่อพนักงาน "${name}" ออกจากสารบบเรียบร้อย` });
       fetchMasterData();
     } catch (err: any) {
@@ -131,16 +135,22 @@ export default function MasterData() {
       const cardId = 'C' + Math.floor(Math.random() * 10000);
 
       const newCard: ParkingCardRecord = {
+        firestore_document_id: '',
         card_id: cardId,
+        site_id: sessionStorage.getItem('selected_site_id') || 'site-01',
         card_number: cardForm.card_number,
+        card_number_normalized: '',
         qr_code_value: `${cardForm.card_number}_QR`,
-        status: 'ว่าง',
+        qr_code_normalized: '',
+        card_type: 'Temporary',
+        status: 'Available',
+        status_normalized: 'Available',
         note: cardForm.note,
         created_at: nowStr,
         updated_at: nowStr
       };
 
-      await appendSheetRow('ParkingCards', newCard);
+      await createParkingCard(newCard, sessionStorage.getItem('selected_operator_name') || 'Admin');
       setStatusMessage({ type: 'success', text: `เพิ่มบัตรจอดรถหมายเลข "${cardForm.card_number}" สำเร็จ!` });
       setCardForm({ card_number: '', note: '' });
       fetchMasterData();
@@ -173,7 +183,7 @@ export default function MasterData() {
         updated_at: nowStr
       };
 
-      await appendSheetRow('PatrolPoints', newPoint);
+      await createPatrolPoint(sessionStorage.getItem('selected_site_id') || 'site-01', newPoint);
       setStatusMessage({ type: 'success', text: `สร้างจุดตรวจใหม่ "${pointForm.point_name}" สำเร็จ!` });
       setPointForm({ point_name: '', location_detail: '', required_interval_minutes: 60 });
       fetchMasterData();
@@ -208,7 +218,7 @@ export default function MasterData() {
         updated_at: nowStr
       };
 
-      await appendSheetRow('Blacklist', newBl);
+      await createBlacklistEntry(sessionStorage.getItem('selected_site_id') || 'site-01', newBl);
       setStatusMessage({ type: 'success', text: `ขึ้นบัญชีดำแบล็กลิสต์เรียบร้อย!` });
       setBlacklistForm({ type: 'ทะเบียนรถ', vehicle_plate: '', id_card_number: '', name: '', reason: '', severity: 'ห้ามเข้าเด็ดขาด' });
       fetchMasterData();
@@ -232,7 +242,7 @@ export default function MasterData() {
 
     setLoading(true);
     try {
-      await deleteSheetRow('Blacklist', 'blacklist_id', id);
+      await deleteBlacklistEntry(sessionStorage.getItem('selected_site_id') || 'site-01', id);
       setStatusMessage({ type: 'success', text: `นำออกจากบัญชีดำสำเร็จ` });
       fetchMasterData();
     } catch (err: any) {
@@ -256,6 +266,13 @@ export default function MasterData() {
 
       {/* Tabs */}
       <div className="flex border-b border-slate-200 text-xs font-bold bg-white p-2 rounded-xl border">
+        <button
+          onClick={() => { setActiveTab('units'); setStatusMessage(null); }}
+          className={`flex-1 py-3 px-2 text-center rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${activeTab === 'units' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+        >
+          <Building2 className="w-4 h-4" />
+          ทะเบียนห้องพัก
+        </button>
         <button
           onClick={() => { setActiveTab('guards'); setStatusMessage(null); }}
           className={`flex-1 py-3 px-2 text-center rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
@@ -306,9 +323,10 @@ export default function MasterData() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {activeTab === 'units' && <UnitManagementPanel operatorName={sessionStorage.getItem('selected_operator_name') || 'Manager'} canImport />}
         
         {/* Left Column: Form Section */}
-        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+        <div className={`${activeTab === 'units' ? 'hidden' : ''} lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm`}>
           <h2 className="text-sm font-black text-slate-800 mb-4 flex items-center gap-1.5 uppercase">
             <Plus className="w-4.5 h-4.5 text-indigo-600" />
             เขียนบันทึกตั้งค่าชิ้นใหม่
@@ -348,7 +366,7 @@ export default function MasterData() {
                   className="p-3 border border-slate-300 bg-white rounded-xl text-xs font-bold"
                 >
                   <option value="Guard">รปภ. ประจำจุด (Guard)</option>
-                  <option value="Shift Leader">หัวหน้าชุดสายตรวจ (Shift Leader)</option>
+                  <option value="ShiftHead">หัวหน้าชุดสายตรวจ (Shift Leader)</option>
                   <option value="Manager">ผู้จัดการ / นิติบุคคล (Manager)</option>
                   <option value="Admin">แอดมินระบบหลัก (Admin)</option>
                 </select>
@@ -564,7 +582,7 @@ export default function MasterData() {
         </div>
 
         {/* Right Column: Tabular View Section */}
-        <div className="lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm overflow-hidden flex flex-col gap-4">
+        <div className={`${activeTab === 'units' ? 'hidden' : ''} lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm overflow-hidden flex flex-col gap-4`}>
           <div className="flex justify-between items-center">
             <h2 className="text-sm font-black text-slate-800 uppercase flex items-center gap-1.5">
               📋 รายละเอียดสารบบทั้งหมด
@@ -623,7 +641,7 @@ export default function MasterData() {
                         </div>
                       </div>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                        card.status === 'ว่าง' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        card.status === 'Available' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                       }`}>
                         {card.status}
                       </span>

@@ -10,10 +10,12 @@ import {
   onAuthStateChanged,
   setPersistence,
   browserLocalPersistence,
+  signInAnonymously,
   signInWithEmailAndPassword,
   signOut,
   type User
 } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import {
   doc,
   getDoc,
@@ -23,8 +25,30 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import firebaseConfig from '../firebase-applet-config.json';
+import { validateRuntimeConfiguration } from './config/runtimeValidation';
+import { FUNCTIONS_REGION } from './config/firebaseFunctions';
+import {
+  firebaseErrorCode,
+  firebaseErrorMessage,
+  recordAuthStage,
+  stagingAuthMessage,
+  type AuthStage,
+} from './services/authDiagnostics';
 
+const hasEnvironmentFirebaseConfig = Boolean(import.meta.env.VITE_FIREBASE_PROJECT_ID);
+const firebaseConfig = hasEnvironmentFirebaseConfig
+  ? {
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+      appId: import.meta.env.VITE_FIREBASE_APP_ID,
+      measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+    }
+  : __FIREBASE_FALLBACK_CONFIG__;
+
+export const runtimeConfiguration = validateRuntimeConfiguration(firebaseConfig);
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
@@ -34,7 +58,15 @@ const storageBucket = String(firebaseConfig.storageBucket || '').trim();
 if (!storageBucket) throw new Error('Firebase storageBucket is missing');
 export const storage = getStorage(app, `gs://${storageBucket}`);
 
-export type SmartGuardRole = 'Guard' | 'Shift Leader' | 'Manager' | 'Admin';
+recordAuthStage({
+  stage: 'AUTH-01',
+  status: 'PASS',
+  code: 'ok',
+  message: `Firebase initialized for ${runtimeConfiguration.projectId}.`,
+  source: 'src/firebase.ts module initialization',
+});
+
+export type SmartGuardRole = 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
 
 export interface StaffProfileInput {
   username: string;
@@ -53,6 +85,82 @@ export const validateUsername = (value: string) =>
 
 export const validatePin = (value: string) => /^\d{6}$/.test(value);
 
+export type AuthSessionState =
+  | 'idle'
+  | 'anonymous-authenticating'
+  | 'pin-verifying'
+  | 'profile-loading'
+  | 'authenticated'
+  | 'failed';
+
+export interface OperatorSessionProfile {
+  user_id: string;
+  auth_uid: string;
+  account_id: string;
+  operator_id: string;
+  username: string;
+  operator_name: string;
+  auth_email?: string;
+  role: SmartGuardRole;
+  site_id: string;
+  status: 'Active' | 'Inactive';
+  shift?: string;
+  phone?: string;
+  auth_provider?: string;
+  created_at?: unknown;
+  updated_at?: unknown;
+  last_login_at?: unknown;
+}
+
+export class AuthStageError extends Error {
+  constructor(
+    public readonly stage: AuthStage,
+    public readonly firebaseCode: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AuthStageError';
+  }
+}
+
+const failAuthStage = (stage: AuthStage, error: unknown, source: string, path?: string): never => {
+  const code = firebaseErrorCode(error);
+  recordAuthStage({
+    stage,
+    status: 'FAIL',
+    code,
+    message: firebaseErrorMessage(error),
+    source,
+    path,
+  });
+  throw new AuthStageError(stage, code, stagingAuthMessage(stage, error));
+};
+
+export function validateOperatorSessionProfile(
+  uid: string,
+  data: Record<string, unknown>,
+): OperatorSessionProfile {
+  if (data.auth_uid !== uid || data.user_id !== uid || !data.account_id || !data.operator_id) {
+    throw new AuthStageError('AUTH-08', 'auth/profile-contract-mismatch', stagingAuthMessage('AUTH-08', {
+      code: 'auth/profile-contract-mismatch',
+    }));
+  }
+  if (!['Guard', 'ShiftHead', 'Manager', 'Admin'].includes(String(data.role || ''))) {
+    throw new AuthStageError('AUTH-09', 'auth/invalid-role', stagingAuthMessage('AUTH-09', {
+      code: 'auth/invalid-role',
+    }));
+  }
+  if (!String(data.site_id || '').trim()) {
+    throw new AuthStageError('AUTH-10', 'auth/missing-site', stagingAuthMessage('AUTH-10', {
+      code: 'auth/missing-site',
+    }));
+  }
+  if (data.status !== 'Active') {
+    throw new AuthStageError('AUTH-08', 'auth/inactive-profile', 'บัญชีนี้ถูกปิดใช้งาน');
+  }
+  return { ...data, user_id: uid } as unknown as OperatorSessionProfile;
+}
+
 const internalEmailFor = (username: string, version?: string) => {
   const normalized = normalizeUsername(username);
   const suffix = version ? `.${version}` : '';
@@ -63,7 +171,11 @@ export async function prepareAuthPersistence(): Promise<void> {
   await setPersistence(auth, browserLocalPersistence);
 }
 
-export async function signInWithUsernamePin(username: string, pin: string) {
+export async function signInWithUsernamePin(
+  username: string,
+  pin: string,
+  onStateChange?: (state: AuthSessionState) => void,
+) {
   const normalized = normalizeUsername(username);
 
   if (!validateUsername(normalized)) {
@@ -74,36 +186,122 @@ export async function signInWithUsernamePin(username: string, pin: string) {
     throw new Error('PIN ต้องเป็นตัวเลข 6 หลัก');
   }
 
-  // Username ถูกแปลงเป็นอีเมลภายในโดยตรง
-  // ไม่อ่าน Firestore ก่อน Firebase Authentication
-  const authEmail = internalEmailFor(normalized);
+  try {
+    await prepareAuthPersistence();
+  } catch (error) {
+    failAuthStage('AUTH-01', error, 'src/firebase.ts prepareAuthPersistence');
+  }
 
-  await prepareAuthPersistence();
+  onStateChange?.('anonymous-authenticating');
+  let credential: { user: User };
+  try {
+    credential = auth.currentUser?.isAnonymous
+      ? { user: auth.currentUser }
+      : await signInAnonymously(auth);
+    recordAuthStage({
+      stage: 'AUTH-02',
+      status: 'PASS',
+      code: 'ok',
+      message: 'Anonymous Firebase authentication completed.',
+      source: 'src/firebase.ts signInWithUsernamePin',
+    });
+  } catch (error) {
+    failAuthStage('AUTH-02', error, 'src/firebase.ts signInWithUsernamePin');
+  }
+  if (!credential.user.uid) {
+    failAuthStage('AUTH-03', { code: 'auth/missing-uid' }, 'src/firebase.ts signInWithUsernamePin');
+  }
+  recordAuthStage({
+    stage: 'AUTH-03',
+    status: 'PASS',
+    code: 'ok',
+    message: 'Anonymous Firebase UID obtained.',
+    source: 'src/firebase.ts signInWithUsernamePin',
+  });
 
-  const credential = await signInWithEmailAndPassword(
-    auth,
-    authEmail,
-    pin
+  onStateChange?.('pin-verifying');
+  const callable = httpsCallable<{ username: string; pin: string }, { profile: any }>(
+    getFunctions(undefined, FUNCTIONS_REGION),
+    'verifyOperatorPin',
   );
+  recordAuthStage({
+    stage: 'AUTH-04',
+    status: 'PASS',
+    code: 'invoked',
+    message: 'verifyOperatorPin callable invoked.',
+    source: 'src/firebase.ts signInWithUsernamePin',
+  });
+  let callableResult;
+  try {
+    callableResult = await callable({ username: normalized, pin });
+    recordAuthStage({
+      stage: 'AUTH-05',
+      status: 'PASS',
+      code: 'ok',
+      message: 'verifyOperatorPin callable returned successfully.',
+      source: 'src/firebase.ts signInWithUsernamePin',
+    });
+  } catch (error) {
+    await signOut(auth).catch(() => undefined);
+    failAuthStage('AUTH-05', error, 'src/firebase.ts signInWithUsernamePin');
+  }
 
-  const profileSnap = await getDoc(
-    doc(db, 'users', credential.user.uid)
-  );
+  if (callableResult.data.profile?.auth_uid !== credential.user.uid) {
+    await signOut(auth).catch(() => undefined);
+    failAuthStage('AUTH-06', { code: 'auth/profile-write-not-confirmed' }, 'src/firebase.ts signInWithUsernamePin', `users/${credential.user.uid}`);
+  }
+  recordAuthStage({
+    stage: 'AUTH-06',
+    status: 'PASS',
+    code: 'ok',
+    message: 'Callable confirmed canonical session profile creation.',
+    source: 'functions/src/operatorAuthService.ts verifyOperatorPinLogin',
+    path: `users/${credential.user.uid}`,
+  });
+
+  onStateChange?.('profile-loading');
+  let profileSnap;
+  try {
+    profileSnap = await getDoc(doc(db, 'users', credential.user.uid));
+  } catch (error) {
+    await signOut(auth).catch(() => undefined);
+    failAuthStage('AUTH-07', error, 'src/firebase.ts signInWithUsernamePin', `users/${credential.user.uid}`);
+  }
 
   if (!profileSnap.exists()) {
     await signOut(auth);
-    throw new Error('ไม่พบข้อมูลผู้ใช้งาน กรุณาติดต่อ Admin');
+    failAuthStage('AUTH-07', { code: 'auth/profile-not-found' }, 'src/firebase.ts signInWithUsernamePin', `users/${credential.user.uid}`);
   }
+  recordAuthStage({
+    stage: 'AUTH-07',
+    status: 'PASS',
+    code: 'ok',
+    message: 'Canonical session profile read completed.',
+    source: 'src/firebase.ts signInWithUsernamePin',
+    path: `users/${credential.user.uid}`,
+  });
 
-  const profile = {
-    ...profileSnap.data(),
-    user_id: credential.user.uid
-  } as any;
-
-  if (profile.status !== 'Active') {
-    await signOut(auth);
-    throw new Error('บัญชีนี้ถูกปิดใช้งาน');
+  let profile: OperatorSessionProfile;
+  try {
+    profile = validateOperatorSessionProfile(credential.user.uid, profileSnap.data());
+  } catch (error) {
+    await signOut(auth).catch(() => undefined);
+    if (error instanceof AuthStageError) {
+      recordAuthStage({
+        stage: error.stage,
+        status: 'FAIL',
+        code: error.firebaseCode,
+        message: error.message,
+        source: 'src/firebase.ts validateOperatorSessionProfile',
+        path: `users/${credential.user.uid}`,
+      });
+      throw error;
+    }
+    failAuthStage('AUTH-08', error, 'src/firebase.ts validateOperatorSessionProfile', `users/${credential.user.uid}`);
   }
+  recordAuthStage({ stage: 'AUTH-08', status: 'PASS', code: 'ok', message: 'Account and operator identity resolved.', source: 'src/firebase.ts validateOperatorSessionProfile', path: `users/${credential.user.uid}` });
+  recordAuthStage({ stage: 'AUTH-09', status: 'PASS', code: 'ok', message: `Role loaded: ${profile.role}.`, source: 'src/firebase.ts validateOperatorSessionProfile', path: `users/${credential.user.uid}` });
+  recordAuthStage({ stage: 'AUTH-10', status: 'PASS', code: 'ok', message: 'Site ID loaded.', source: 'src/firebase.ts validateOperatorSessionProfile', path: `users/${credential.user.uid}` });
 
   return {
     firebaseUser: credential.user,
@@ -191,39 +389,18 @@ export async function createStaffAccount(profile: StaffProfileInput, pin: string
   const username = normalizeUsername(profile.username);
   if (!validateUsername(username)) throw new Error('Username ต้องมี 3–24 ตัว ใช้ a-z, 0-9, จุด, ขีดกลาง หรือขีดล่าง');
   if (!validatePin(pin)) throw new Error('PIN ต้องเป็นตัวเลข 6 หลัก');
-  const existing = await getDoc(doc(db, 'loginDirectory', username));
-  if (existing.exists()) throw new Error('Username นี้ถูกใช้งานแล้ว');
-
-  const secondaryAuth = getSecondaryAuth();
-  const authEmail = internalEmailFor(username);
-  const credential = await createUserWithEmailAndPassword(secondaryAuth, authEmail, pin);
-  await signOut(secondaryAuth);
-
-  const now = new Date().toISOString();
-  const record = {
-    user_id: credential.user.uid,
-    auth_uid: credential.user.uid,
-    auth_email: authEmail,
+  const callable = httpsCallable(getFunctions(undefined, FUNCTIONS_REGION), 'createStaffAccount');
+  const result = await callable({
     username,
-    operator_name: profile.operator_name,
+    pin,
+    operatorName: profile.operator_name,
     role: profile.role,
     shift: profile.shift || 'ทั่วไป',
     phone: profile.phone || '',
+    siteId: sessionStorage.getItem('selected_site_id') || '',
     status: profile.status || 'Active',
-    created_at: now,
-    updated_at: now
-  };
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'users', credential.user.uid), record);
-  batch.set(doc(db, 'loginDirectory', username), {
-    username,
-    uid: credential.user.uid,
-    auth_email: authEmail,
-    status: record.status,
-    updated_at: now
   });
-  await batch.commit();
-  return record;
+  return result.data as any;
 }
 
 /**
@@ -236,49 +413,9 @@ export async function rotateStaffPin(existingUser: any, newPin: string) {
   const username = normalizeUsername(existingUser.username || '');
   if (!validateUsername(username)) throw new Error('ผู้ใช้นี้ยังไม่มี Username ที่ถูกต้อง');
 
-  const version = Date.now().toString(36);
-  const authEmail = internalEmailFor(username, version);
-  const secondaryAuth = getSecondaryAuth();
-  const credential = await createUserWithEmailAndPassword(secondaryAuth, authEmail, newPin);
-  await signOut(secondaryAuth);
-
-  const now = new Date().toISOString();
-  const oldUid = existingUser.auth_uid || existingUser.user_id;
-  const replacement = {
-    ...existingUser,
-    user_id: credential.user.uid,
-    auth_uid: credential.user.uid,
-    auth_email: authEmail,
-    username,
-    status: 'Active',
-    pinUpdatedAt: now,
-    updated_at: now,
-    replaced_auth_uid: oldUid || null
-  };
-  delete replacement.__document_id;
-  delete replacement.pinHash;
-  delete replacement.pinSalt;
-  delete replacement.pinFailedAttempts;
-  delete replacement.pinLockedUntil;
-
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'users', credential.user.uid), replacement);
-  batch.set(doc(db, 'loginDirectory', username), {
-    username,
-    uid: credential.user.uid,
-    auth_email: authEmail,
-    status: 'Active',
-    updated_at: now
-  });
-  if (oldUid && oldUid !== credential.user.uid) {
-    batch.update(doc(db, 'users', oldUid), {
-      status: 'Inactive',
-      replaced_by_uid: credential.user.uid,
-      updated_at: now
-    });
-  }
-  await batch.commit();
-  return replacement;
+  const callable = httpsCallable(getFunctions(undefined, FUNCTIONS_REGION), 'resetStaffPin');
+  await callable({ username, pin: newPin });
+  return { ...existingUser, username };
 }
 
 
@@ -355,17 +492,19 @@ export async function updateStaffProfile(
 }
 
 export async function setStaffStatus(user: any, status: 'Active' | 'Inactive') {
-  const uid = user.auth_uid || user.user_id;
   const username = normalizeUsername(user.username || '');
-  const now = new Date().toISOString();
-  await updateDoc(doc(db, 'users', uid), { status, updated_at: now });
-  if (username) await setDoc(doc(db, 'loginDirectory', username), {
-    username,
-    uid,
-    auth_email: user.auth_email,
-    status,
-    updated_at: now
-  }, { merge: true });
+  if (!validateUsername(username)) throw new Error('ผู้ใช้นี้ยังไม่มี Username ที่ถูกต้อง');
+  const callable = httpsCallable(getFunctions(undefined, FUNCTIONS_REGION), 'setStaffAccountStatus');
+  await callable({ username, status });
+}
+
+export async function listStaffAccounts() {
+  const callable = httpsCallable<Record<string, never>, { staff: any[] }>(
+    getFunctions(undefined, FUNCTIONS_REGION),
+    'listStaffAccounts',
+  );
+  const result = await callable({});
+  return result.data.staff;
 }
 
 export const onAuthStateChange = (callback: (user: User | null) => void): (() => void) =>

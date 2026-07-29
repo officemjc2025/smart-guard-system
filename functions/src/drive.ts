@@ -6,19 +6,47 @@ import { logger } from 'firebase-functions';
 
 let driveClient: drive_v3.Drive | null = null;
 
-/**
- * Initializes and returns the Google Drive Client using Application Default Credentials (ADC).
- */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export interface GoogleDriveOAuthCredentials {
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+}
+
+/** Creates a Drive client owned by the configured human OAuth user. */
+export function createOAuthDriveClient(
+  credentials: GoogleDriveOAuthCredentials,
+): drive_v3.Drive {
+  const oauth2Client = new google.auth.OAuth2(
+    credentials.clientId,
+    credentials.clientSecret,
+  );
+  oauth2Client.setCredentials({ refresh_token: credentials.refreshToken });
+  return google.drive({ version: 'v3', auth: oauth2Client });
+}
+
+/** Initializes the cached Drive client with backend-only OAuth user credentials. */
 export function getDriveClient(): drive_v3.Drive {
   if (!driveClient) {
     try {
-      // Create credential auth using Google Application Default Credentials
-      const auth = new google.auth.GoogleAuth({
-        scopes: ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive'],
+      const credentials = {
+        clientId: process.env.GOOGLE_DRIVE_CLIENT_ID?.trim() ?? '',
+        clientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim() ?? '',
+        refreshToken: process.env.GOOGLE_DRIVE_REFRESH_TOKEN?.trim() ?? '',
+      };
+      if (!credentials.clientId || !credentials.clientSecret || !credentials.refreshToken) {
+        throw new Error('Google Drive OAuth secrets are not configured.');
+      }
+      driveClient = createOAuthDriveClient({
+        clientId: credentials.clientId,
+        clientSecret: credentials.clientSecret,
+        refreshToken: credentials.refreshToken,
       });
-      driveClient = google.drive({ version: 'v3', auth });
-      logger.info('[Google Drive Service] Client initialized successfully via ADC');
-    } catch (err: any) {
+      logger.info('[Google Drive Service] OAuth2 user client initialized.');
+    } catch (err: unknown) {
       logger.error('[Google Drive Service] Initialization failed:', err);
       throw new HttpsError('internal', 'ไม่สามารถเชื่อมต่อระบบคลาวด์สำหรับ Google Drive Media ได้');
     }
@@ -65,9 +93,9 @@ async function getOrCreateSubFolder(
     }
 
     return folder.data.id;
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error(`[Google Drive Service] Error in getOrCreateSubFolder for '${folderName}':`, error);
-    throw new HttpsError('internal', `เกิดข้อผิดพลาดในการสร้างโฟลเดอร์เก็บข้อมูลสื่อ: ${error.message}`);
+    throw new HttpsError('internal', `เกิดข้อผิดพลาดในการสร้างโฟลเดอร์เก็บข้อมูลสื่อ: ${errorMessage(error)}`);
   }
 }
 
@@ -163,9 +191,9 @@ export async function uploadToDrive(
       fileId: res.data.id,
       folderId: folderId
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error('[Google Drive Service] Upload to Drive failed:', error);
-    throw new HttpsError('internal', `ไม่สามารถอัปโหลดไฟล์สื่อไปยังคลาวด์ Google Drive ได้: ${error.message}`);
+    throw new HttpsError('internal', `ไม่สามารถอัปโหลดไฟล์สื่อไปยังคลาวด์ Google Drive ได้: ${errorMessage(error)}`);
   }
 }
 
@@ -177,7 +205,7 @@ export async function deleteFromDrive(fileId: string): Promise<void> {
   try {
     await drive.files.delete({ fileId });
     logger.info(`[Google Drive Service] Rollback delete succeeded for file ID: ${fileId}`);
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error(`[Google Drive Service] Rollback delete failed for file ID ${fileId}:`, error);
     // Do not throw to let the caller handle Firestore orphan log
   }
@@ -196,8 +224,8 @@ export async function downloadFromDriveAsBase64(fileId: string): Promise<string>
 
     const buffer = Buffer.from(response.data as ArrayBuffer);
     return buffer.toString('base64');
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error(`[Google Drive Service] Failed to download file ${fileId}:`, error);
-    throw new HttpsError('internal', `ไม่สามารถดาวน์โหลดไฟล์รูปภาพจาก Google Drive ได้: ${error.message}`);
+    throw new HttpsError('internal', `ไม่สามารถดาวน์โหลดไฟล์รูปภาพจาก Google Drive ได้: ${errorMessage(error)}`);
   }
 }

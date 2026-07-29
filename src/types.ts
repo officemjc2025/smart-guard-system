@@ -2,12 +2,17 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
+import type { Timestamp } from 'firebase/firestore';
 
 export interface UserRecord {
   user_id: string;
+  operator_id?: string;
+  account_id?: string;
+  username?: string;
+  site_id?: string;
   login_email: string;
   operator_name: string;
-  role: 'Guard' | 'Shift Leader' | 'Manager' | 'Admin';
+  role: 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
   shift: string;
   phone: string;
   status: 'Active' | 'Inactive';
@@ -15,19 +20,138 @@ export interface UserRecord {
   updated_at: string;
 }
 
+export type ParkingCardStatus = 'Available' | 'Reserved' | 'InUse' | 'Returned' | 'Disabled' | 'Suspended' | 'Lost' | 'Cancelled' | 'Replaced' | 'ReplacementApproved' | 'Retired' | 'VIP';
+export type ParkingCardType = 'Temporary' | 'VIP' | 'Resident' | 'Contractor' | 'Staff' | 'Other';
+
 export interface ParkingCardRecord {
+  firestore_document_id: string;
   card_id: string;
+  site_id: string;
   card_number: string;
+  card_number_normalized: string;
   qr_code_value: string;
-  status: 'ว่าง' | 'ใช้งานอยู่';
+  qr_code_normalized: string;
+  card_type: ParkingCardType;
+  status: ParkingCardStatus;
+  status_normalized: ParkingCardStatus;
+  status_original?: string;
   current_vehicle_plate?: string;
+  current_vehicle_log_id?: string;
+  current_vehicle_session_id?: string;
+  last_activity_at?: string;
+  member_id?: string;
+  lost_reason?: string;
+  lost_at?: string;
+  reported_by?: string;
+  reported_by_account_uid?: string;
+  related_vehicle_log_id?: string;
+  replacement_card_id?: string;
+  replaced_by_card_id?: string;
+  replaced_by_document_id?: string;
+  replacement_for_card_id?: string;
+  replacement_for_document_id?: string;
+  replacement_reason?: string;
+  replacement_at?: string;
+  replacement_by?: string;
+  created_by?: string;
+  replacement_approved?: boolean;
+  replacement_approved_by?: string;
+  replacement_approved_at?: string;
   note?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type VehicleSessionStage =
+  | 'Created' | 'CardIssued' | 'VehicleEntered' | 'PlateCaptured'
+  | 'VehicleCaptured' | 'VisitorInfo' | 'DestinationSelected'
+  | 'EvidenceUploaded' | 'Ready' | 'Active' | 'VehicleExited'
+  | 'Completed' | 'Cancelled';
+
+export type VehicleSessionStatus =
+  | 'Draft' | 'Pending' | 'InProgress' | 'WaitingPhoto' | 'WaitingVisitor'
+  | 'WaitingDestination' | 'WaitingEvidence' | 'Ready' | 'Completed' | 'Cancelled';
+
+export type VehicleQueueStatus =
+  | 'Waiting' | 'Assigned' | 'In Progress' | 'Waiting Information'
+  | 'Ready' | 'Completed';
+
+export type VehicleQueuePriority = 'Emergency' | 'High' | 'Normal' | 'Low';
+
+export interface VehicleQueueMetrics {
+  firstQueuedAt: Timestamp | null;
+  firstAssignedAt: Timestamp | null;
+  workStartedAt: Timestamp | null;
+  readyAt: Timestamp | null;
+  completedAt: Timestamp | null;
+  waitingSeconds: number;
+  workingSeconds: number;
+  totalCycleSeconds: number;
+  transferCount: number;
+  reassignCount: number;
+  releaseCount: number;
+  priorityChangeCount: number;
+  lastTransitionAt: Timestamp | null;
+  lastEventId: string;
+  metricsVersion: number;
+}
+
+export interface VehicleSessionActivity {
+  action: string;
+  stage: VehicleSessionStage;
+  by: string;
+  byName: string;
+  at: string;
+}
+
+export interface VehicleSessionRecord {
+  session_id: string;
+  site_id: string;
+  parking_card_id: string;
+  card_number: string;
+  stage: VehicleSessionStage;
+  status: VehicleSessionStatus;
+  opened_by: string;
+  opened_by_name: string;
+  current_owner: string;
+  last_updated_by: string;
+  assigned_to?: string;
+  queueStatus: VehicleQueueStatus;
+  priority: VehicleQueuePriority;
+  assignedTo: string | null;
+  assignedBy: string | null;
+  assignedAt?: string;
+  queuePosition: number | null;
+  sessionVersion: number;
+  assignmentVersion: number;
+  queueMetrics: VehicleQueueMetrics;
+  last_activity_at: string;
+  editing_by?: string;
+  editing_by_name?: string;
+  editing_since?: string;
+  expires_at?: string;
+  vehicle_plate?: string;
+  vehicle_type?: VehicleLogRecord['vehicle_type'];
+  visitor_name?: string;
+  visitor_phone?: string;
+  target_room?: string;
+  target_unit_id?: string;
+  target_building?: string;
+  unit_lookup_status?: 'matched' | 'manual';
+  purpose?: string;
+  note?: string;
+  entry_plate_photo_url?: string;
+  entry_vehicle_photo_url?: string;
+  vehicle_log_id?: string;
+  activity: VehicleSessionActivity[];
   created_at: string;
   updated_at: string;
 }
 
 /** Canonical master-data record for an occupiable unit. */
 export interface UnitRecord {
+  /** Firestore path segment; separate from the user-visible business unit_id. */
+  firestore_document_id: string;
   unit_id: string;
   site_id: string;
   building: string;
@@ -41,7 +165,7 @@ export interface UnitRecord {
   phone?: string;
   email?: string;
   occupancy_status: string;
-  status: string;
+  status: 'Active' | 'Inactive';
   searchable_text: string;
   search_key: string;
   is_active: boolean;
@@ -53,7 +177,10 @@ export interface UnitRecord {
 
 export interface VehicleLogRecord {
   log_id: string;
+  vehicle_session_id?: string;
+  site_id: string;
   card_number: string;
+  parking_card_id?: string;
   vehicle_plate: string;
   vehicle_type: 'รถยนต์' | 'จักรยานยนต์' | 'รถส่งของ' | 'อื่นๆ';
   visitor_name: string;
@@ -61,6 +188,7 @@ export interface VehicleLogRecord {
   target_room: string;
   /** Optional reference to Units; target_room remains the historical display field. */
   target_unit_id?: string;
+  target_building?: string;
   unit_lookup_status?: 'matched' | 'manual';
   purpose: string;
   entry_time: string;
@@ -69,6 +197,15 @@ export interface VehicleLogRecord {
   entry_vehicle_photo_url?: string;
   exit_plate_photo_url?: string;
   exit_vehicle_photo_url?: string;
+  workflow_status?: 'active' | 'completed';
+  exit_recorded_by?: string;
+  exit_account_uid?: string;
+  exit_operator_id?: string;
+  exit_operator_name?: string;
+  exit_role?: string;
+  exit_site_id?: string;
+  exit_note?: string;
+  abnormal_note?: string;
   status: 'กำลังจอด' | 'ออกแล้ว';
   recorded_by: string;
   note?: string;
