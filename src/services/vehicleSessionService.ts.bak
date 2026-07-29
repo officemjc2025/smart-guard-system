@@ -147,89 +147,14 @@ export async function listVehicleHistory(siteId: string): Promise<VehicleLogReco
 }
 
 async function findCard(rawValue: string, siteId: string): Promise<ParkingCardRecord> {
-  const raw = rawValue.trim();
-  const normalizedCard = normalizeCardNumber(raw);
-  const normalizedQr = normalizeQrValue(raw);
-
-  const snapshots = await Promise.all([
+  const normalizedCard = normalizeCardNumber(rawValue);
+  const normalizedQr = normalizeQrValue(rawValue);
+  const [byCard, byQr] = await Promise.all([
     getDocs(query(collection(db, 'parkingCards'), where('site_id', '==', siteId), where('card_number_normalized', '==', normalizedCard), limit(2))),
     getDocs(query(collection(db, 'parkingCards'), where('site_id', '==', siteId), where('qr_code_normalized', '==', normalizedQr), limit(2))),
-    getDocs(query(collection(db, 'parkingCards'), where('site_id', '==', siteId), where('card_number', '==', raw), limit(2))),
-    getDocs(query(collection(db, 'parkingCards'), where('site_id', '==', siteId), where('qr_code_value', '==', raw), limit(2))),
   ]);
-
-  const matches = new Map(
-    snapshots.flatMap(snapshot => snapshot.docs).map(item => [item.id, item]),
-  );
-
-  console.info('[Vehicle Session Card Lookup]', {
-    raw,
-    normalizedCard,
-    normalizedQr,
-    siteId,
-    matches: [...matches.keys()],
-  });
-
-  if (matches.size > 1) {
-    throw new Error('พบบัตรซ้ำ กรุณาให้ผู้ดูแลตรวจสอบข้อมูล');
-  }
-
-  if (matches.size === 0) {
-    try {
-      const diagnosticSnapshots = await Promise.all([
-        getDocs(query(
-          collection(db, 'parkingCards'),
-          where('card_number_normalized', '==', normalizedCard),
-          limit(5),
-        )),
-        getDocs(query(
-          collection(db, 'parkingCards'),
-          where('qr_code_normalized', '==', normalizedQr),
-          limit(5),
-        )),
-        getDocs(query(
-          collection(db, 'parkingCards'),
-          where('card_number', '==', raw),
-          limit(5),
-        )),
-        getDocs(query(
-          collection(db, 'parkingCards'),
-          where('qr_code_value', '==', raw),
-          limit(5),
-        )),
-      ]);
-
-      const diagnosticMatches = new Map(
-        diagnosticSnapshots
-          .flatMap(snapshot => snapshot.docs)
-          .map(item => [item.id, {
-            documentId: item.id,
-            siteId: String(item.data().site_id ?? ''),
-            cardNumber: String(item.data().card_number ?? ''),
-            qrCodeValue: String(item.data().qr_code_value ?? ''),
-            status: String(item.data().status ?? ''),
-          }]),
-      );
-
-      console.warn('[Vehicle Session Card Lookup - Unscoped Diagnostic]', {
-        raw,
-        requestedSiteId: siteId,
-        matches: [...diagnosticMatches.values()],
-      });
-    } catch (diagnosticError) {
-      const code = typeof diagnosticError === 'object' && diagnosticError !== null && 'code' in diagnosticError
-        ? String(diagnosticError.code)
-        : 'unknown';
-      console.warn('[Vehicle Session Card Lookup - Unscoped Diagnostic Unavailable]', {
-        raw,
-        requestedSiteId: siteId,
-        code,
-      });
-    }
-
-    throw new Error(`ไม่พบบัตรจอดรถ ${raw} ในพื้นที่ ${siteId}`);
-  }
-
+  const matches = new Map([...byCard.docs, ...byQr.docs].map(item => [item.id, item]));
+  if (matches.size !== 1) throw new Error(matches.size ? 'พบบัตรซ้ำ กรุณาให้ผู้ดูแลตรวจสอบข้อมูล' : 'ไม่พบบัตรจอดรถในพื้นที่นี้');
   const snapshot = [...matches.values()][0];
   return normalizeParkingCardData(snapshot.id, snapshot.data());
 }

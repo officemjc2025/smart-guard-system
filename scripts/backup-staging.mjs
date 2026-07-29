@@ -4,6 +4,7 @@ import {
   STAGING_PROJECT_ID,
   activeFirebaseProject,
   assertStagingProject,
+  command,
   firebase,
   printJson,
 } from './lib/infrastructure.mjs';
@@ -40,17 +41,22 @@ const functions = firebase(['functions:list', '--project', STAGING_PROJECT_ID, '
 const hosting = firebase(['hosting:releases:list', '--project', STAGING_PROJECT_ID, '--json']);
 writeFileSync(`${directory}/functions.json`, functions.stdout || functions.stderr);
 writeFileSync(`${directory}/hosting.json`, hosting.stdout || hosting.stderr);
-const firestoreExport = firebase([
-  'firestore:export',
+const firestoreExport = command('gcloud', [
+  'firestore',
+  'export',
   `${bucket.replace(/\/$/, '')}/${stamp}`,
   '--project',
   STAGING_PROJECT_ID,
+  '--database',
+  '(default)',
+  '--quiet',
 ]);
 printJson({
   event_type: 'staging_backup',
   project_id: STAGING_PROJECT_ID,
   mode: 'apply',
   directory,
+  firestore_export_uri: `${bucket.replace(/\/$/, '')}/${stamp}`,
   firestore_export: firestoreExport.ok ? 'PASS' : 'FAIL',
   success: firestoreExport.ok && functions.ok && hosting.ok,
 });
