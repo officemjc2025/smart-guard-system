@@ -35,6 +35,18 @@ import UnitSearchSelect from './UnitSearchSelect';
 import VehicleSessionTimeline from './VehicleSessionTimeline';
 import { runSingleFlight } from '../utils/singleFlight';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
+import {
+  assertEntrySessionCardIdentity,
+  activateVehicleEntryWorkspace,
+  createEntryFormFromSession,
+  createIdleVehicleEntryWorkspace,
+  createInitialEntryForm,
+  normalizeEntryCardNumber,
+} from '../services/vehicleEntryWorkspace';
+import {
+  beginWorkspaceRelease,
+  failWorkspaceRelease,
+} from '../services/workspaceEngine';
 
 interface VehicleEntryExitProps {
   guardName: string;
@@ -54,29 +66,17 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
   const [blacklistWarning, setBlacklistWarning] = useState<string | null>(null);
 
   // Entry Form State
-  const [entryForm, setEntryForm] = useState({
-    card_number: '',
-    vehicle_plate: '',
-    vehicle_type: 'รถยนต์' as any,
-    visitor_name: '',
-    visitor_phone: '',
-    target_room: '',
-    target_unit_id: '',
-    target_building: '',
-    unit_lookup_status: undefined as 'matched' | 'manual' | undefined,
-    purpose: 'เยี่ยมญาติ',
-    note: ''
-  });
+  const [entryForm, setEntryForm] = useState(createInitialEntryForm);
   const [entryPlatePhoto, setEntryPlatePhoto] = useState<string>('');
   const [entryVehiclePhoto, setEntryVehiclePhoto] = useState<string>('');
   const [showQRScanner, setShowQRScanner] = useState(false);
-  const [activeSessionId, setActiveSessionId] = useState('');
+  const [entryWorkspace, setEntryWorkspace] = useState(createIdleVehicleEntryWorkspace);
   const [pendingSessions, setPendingSessions] = useState<VehicleSessionRecord[]>([]);
   const [insideSessions, setInsideSessions] = useState<VehicleSessionRecord[]>([]);
-  const [selectedSession, setSelectedSession] = useState<VehicleSessionRecord | null>(null);
   const offlineSyncRunning = useRef(false);
   const qrSessionCreationRef = useRef<Promise<string> | null>(null);
   const entrySubmitRunningRef = useRef(false);
+  const cardNumberInputRef = useRef<HTMLInputElement | null>(null);
 
   // Exit Form State
   const [parkedVehicles, setParkedVehicles] = useState<VehicleLogRecord[]>([]);
@@ -230,8 +230,44 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
     reader.readAsDataURL(file);
   };
 
+  const resetEntryWorkspace = (message?: { type: 'success' | 'error'; text: string }) => {
+    setEntryWorkspace(createIdleVehicleEntryWorkspace());
+    setEntryForm(createInitialEntryForm());
+    setEntryPlatePhoto('');
+    setEntryVehiclePhoto('');
+    setBlacklistWarning(null);
+    setShowQRScanner(false);
+    qrSessionCreationRef.current = null;
+    entrySubmitRunningRef.current = false;
+    setStatusMessage(message || null);
+    window.requestAnimationFrame(() => cardNumberInputRef.current?.focus());
+  };
+
+  const assertCurrentEntryIdentity = (formCardNumber = entryForm.card_number) => {
+    assertEntrySessionCardIdentity({
+      activeSessionId: entryWorkspace.resourceId,
+      formCardNumber,
+      sessionCardNumber: entryWorkspace.resourceIdentity,
+    });
+  };
+
+  const handleCardNumberChange = (nextCardNumber: string) => {
+    if (entryWorkspace.resourceId) {
+      try {
+        assertCurrentEntryIdentity(nextCardNumber);
+      } catch (reason) {
+        setStatusMessage({ type: 'error', text: reason instanceof Error ? reason.message : String(reason) });
+        return;
+      }
+    }
+    setEntryForm(previous => ({ ...previous, card_number: nextCardNumber }));
+  };
+
   const getOrCreateVehicleSession = async (cardNumber: string): Promise<string> => {
-    if (activeSessionId) return activeSessionId;
+    if (entryWorkspace.resourceId) {
+      assertCurrentEntryIdentity(cardNumber);
+      return entryWorkspace.resourceId;
+    }
 
     return runSingleFlight(qrSessionCreationRef, async () => {
       const sessionId = await createVehicleSessionFromScan(
@@ -240,9 +276,8 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
         guardName,
         userRole,
       );
-      setActiveSessionId(sessionId);
       const session = await getVehicleSession(sessionId);
-      setSelectedSession(session);
+      setEntryWorkspace(activateVehicleEntryWorkspace(session));
       setEntryPlatePhoto(session.entry_plate_photo_url || '');
       setEntryVehiclePhoto(session.entry_vehicle_photo_url || '');
       return sessionId;
@@ -251,12 +286,13 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
 
   const handleQRScanSuccess = async (code: string) => {
     // QR payload is the canonical parking-card identifier; never rewrite suffixes.
-    const cardNumber = code.trim().replace(/\s+/g, '').toUpperCase();
+    const cardNumber = normalizeEntryCardNumber(code);
     console.info('[QR DEBUG]', { raw: code, parsed: cardNumber, siteId: sessionStorage.getItem('selected_site_id') || 'site-01' });
-    setEntryForm(prev => ({ ...prev, card_number: cardNumber }));
     setShowQRScanner(false);
     setStatusMessage(null);
     try {
+      assertCurrentEntryIdentity(cardNumber);
+      setEntryForm(prev => ({ ...prev, card_number: cardNumber }));
       if (!navigator.onLine) {
         const localId = `OFFLINE_${crypto.randomUUID()}`;
         await queueOfflineVehicleSession({
@@ -264,50 +300,49 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
           siteId: sessionStorage.getItem('selected_site_id') || 'site-01',
           operatorName: guardName, actorRole: userRole, queuedAt: new Date().toISOString(),
         });
-        setActiveSessionId(localId);
-        setStatusMessage({ type: 'success', text: 'บันทึก QR แบบออฟไลน์แล้ว ระบบจะซิงก์อัตโนมัติเมื่อกลับมาออนไลน์' });
+        resetEntryWorkspace({
+          type: 'success',
+          text: `เปิดงานบัตร ${cardNumber} แบบออฟไลน์สำเร็จ พร้อมรับรายการใหม่`,
+        });
         return;
       }
       const existingSession = pendingSessions.find(session =>
         session.card_number.trim().replace(/\s+/g, '').toUpperCase() === cardNumber
         && !['Completed', 'Cancelled'].includes(session.status));
       if (existingSession) {
-        await continueSession(existingSession);
         setStatusMessage({
-          type: 'success',
-          text: `เปิด Vehicle Session เดิมของบัตร ${cardNumber} เพื่อดำเนินการต่อ`,
+          type: 'error',
+          text: `บัตร ${cardNumber} มีรายการค้างอยู่ กรุณาเลือก Session จากคิวเพื่อทำงานต่อ`,
         });
         return;
       }
       await getOrCreateVehicleSession(cardNumber);
-      setStatusMessage({ type: 'success', text: 'สร้าง Vehicle Session แล้ว สามารถบันทึกต่อหรือให้เจ้าหน้าที่ท่านอื่นรับช่วงได้' });
+      resetEntryWorkspace({
+        type: 'success',
+        text: `เปิดงานบัตร ${cardNumber} สำเร็จ รายการถูกส่งเข้าคิวแล้ว`,
+      });
     } catch (reason: unknown) {
       setStatusMessage({ type: 'error', text: reason instanceof Error ? reason.message : String(reason) });
     }
   };
 
   const continueSession = async (session: VehicleSessionRecord) => {
+    if (entryWorkspace.resourceId) {
+      if (entryWorkspace.resourceId === session.session_id) return;
+      setStatusMessage({
+        type: 'error',
+        text: 'มี Workspace อื่นกำลังทำงาน กรุณาพักและปลดล็อกรายการเดิมก่อน',
+      });
+      return;
+    }
     try {
       const latest = await getVehicleSession(session.session_id);
       const locked = await acquireVehicleSessionLock(latest.session_id, guardName, userRole === 'Admin', latest.sessionVersion);
-      setActiveSessionId(locked.session_id);
-      setSelectedSession(locked);
-      setEntryForm({
-        card_number: locked.card_number,
-        vehicle_plate: locked.vehicle_plate || '',
-        vehicle_type: locked.vehicle_type || 'รถยนต์',
-        visitor_name: locked.visitor_name || '',
-        visitor_phone: locked.visitor_phone || '',
-        target_room: locked.target_room || '',
-        target_unit_id: locked.target_unit_id || '',
-        target_building: locked.target_building || '',
-        unit_lookup_status: locked.unit_lookup_status,
-        purpose: locked.purpose || 'เยี่ยมญาติ',
-        note: locked.note || '',
-      });
+      setEntryWorkspace(activateVehicleEntryWorkspace(locked));
+      setEntryForm(createEntryFormFromSession(locked));
       setEntryPlatePhoto(locked.entry_plate_photo_url || '');
       setEntryVehiclePhoto(locked.entry_vehicle_photo_url || '');
-      setStatusMessage({ type: 'success', text: `โหลดข้อมูลล่าสุดของ Session ${locked.card_number} แล้ว` });
+      setStatusMessage({ type: 'success', text: `กำลังทำงานต่อ: บัตร ${locked.card_number}` });
     } catch (reason) {
       setStatusMessage({ type: 'error', text: reason instanceof Error ? reason.message : String(reason) });
     }
@@ -326,6 +361,13 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
   const handleEntrySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (entrySubmitRunningRef.current) return;
+    if (entryWorkspace.lifecycle === 'releasing' || entryWorkspace.lifecycle === 'release-failed') {
+      setStatusMessage({
+        type: 'error',
+        text: 'ข้อมูลถูกบันทึกแล้วและกำลังรอปลดล็อก Session กรุณาใช้ปุ่มปลดล็อกแทนการบันทึกซ้ำ',
+      });
+      return;
+    }
     if (!entryForm.card_number || !entryForm.vehicle_plate || !entryForm.target_room) {
       setStatusMessage({ type: 'error', text: 'กรุณากรอกเลขบัตร ทะเบียนรถ และห้อง/ปลายทาง' });
       return;
@@ -336,6 +378,7 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
     setStatusMessage(null);
 
     try {
+      assertCurrentEntryIdentity();
       const patch = {
         vehicle_plate: entryForm.vehicle_plate, vehicle_type: entryForm.vehicle_type,
         visitor_name: entryForm.visitor_name, visitor_phone: entryForm.visitor_phone,
@@ -344,8 +387,11 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
         unit_lookup_status: entryForm.unit_lookup_status, purpose: entryForm.purpose,
         note: entryForm.note,
       };
-      if (!navigator.onLine || activeSessionId.startsWith('OFFLINE_')) {
-        const localId = activeSessionId || `OFFLINE_${crypto.randomUUID()}`;
+      if (!navigator.onLine && entryWorkspace.resourceId && !entryWorkspace.resourceId.startsWith('OFFLINE_')) {
+        throw new Error('ไม่สามารถบันทึก Session ที่ล็อกอยู่แบบออฟไลน์ได้ กรุณาเชื่อมต่อเครือข่ายเพื่อบันทึกและปลดล็อกอย่างปลอดภัย');
+      }
+      if (!navigator.onLine || entryWorkspace.resourceId.startsWith('OFFLINE_')) {
+        const localId = `OFFLINE_${crypto.randomUUID()}`;
         await queueOfflineVehicleSession({
           localId, cardValue: entryForm.card_number,
           siteId: sessionStorage.getItem('selected_site_id') || 'site-01',
@@ -354,11 +400,20 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
           vehiclePhotoDataUrl: entryVehiclePhoto || undefined,
           queuedAt: new Date().toISOString(),
         });
-        setActiveSessionId(localId);
-        setStatusMessage({ type: 'success', text: 'เก็บ QR รูปภาพ และข้อมูลผู้มาติดต่อไว้ในเครื่องแล้ว จะซิงก์อัตโนมัติเมื่อออนไลน์' });
+        const savedCardNumber = entryForm.card_number;
+        resetEntryWorkspace({
+          type: 'success',
+          text: `บันทึกบัตร ${savedCardNumber} แบบออฟไลน์สำเร็จ พร้อมรับรายการใหม่`,
+        });
         return;
       }
       const sessionId = await getOrCreateVehicleSession(entryForm.card_number);
+      const latest = await getVehicleSession(sessionId);
+      assertEntrySessionCardIdentity({
+        activeSessionId: sessionId,
+        formCardNumber: entryForm.card_number,
+        sessionCardNumber: latest.card_number,
+      });
 
       // Upload all required evidence before the atomic Firestore transaction.
       let platePhotoUrl = entryPlatePhoto && !entryPlatePhoto.startsWith('data:') ? entryPlatePhoto : '';
@@ -371,7 +426,6 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
       if (entryVehiclePhoto.startsWith('data:')) {
         vehiclePhotoUrl = await uploadImageToDrive(entryVehiclePhoto, `vehicle_in_${entryForm.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: sessionId, siteId, uploadedBy: guardName, mediaType: 'entry_vehicle' });
       }
-      const latest = await getVehicleSession(sessionId);
       if (['Completed', 'Cancelled'].includes(latest.stage)) {
         throw new Error('Vehicle Session นี้ปิดแล้ว');
       }
@@ -379,24 +433,43 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
         ...patch, entry_plate_photo_url: platePhotoUrl || undefined,
         entry_vehicle_photo_url: vehiclePhotoUrl || undefined,
       };
-      const nextVersion = latest.stage === 'Active'
-        ? await updateActiveVehicleSession(sessionId, entryPatch, guardName, userRole, latest.sessionVersion)
-        : await updateVehicleSession(sessionId, entryPatch, 'Ready', 'Ready', guardName, userRole, latest.sessionVersion);
-      const saved = await getVehicleSession(sessionId);
-      setSelectedSession({ ...saved, sessionVersion: nextVersion });
-      setStatusMessage({
+      if (latest.stage === 'Active') {
+        await updateActiveVehicleSession(sessionId, entryPatch, guardName, userRole, latest.sessionVersion);
+      } else {
+        await updateVehicleSession(sessionId, entryPatch, 'Ready', 'Ready', guardName, userRole, latest.sessionVersion);
+      }
+      const savedVehiclePlate = entryForm.vehicle_plate;
+      setEntryWorkspace(previous => beginWorkspaceRelease(previous));
+      try {
+        await releaseVehicleSessionLock(sessionId);
+      } catch (releaseReason) {
+        setEntryWorkspace(previous => failWorkspaceRelease(previous, releaseReason));
+        setStatusMessage({
+          type: 'error',
+          text: `บันทึกทะเบียน ${savedVehiclePlate} สำเร็จแล้ว แต่ปลดล็อก Session ไม่สำเร็จ กรุณากด “ลองปลดล็อกอีกครั้ง” และอย่าบันทึกข้อมูลซ้ำ`,
+        });
+        return;
+      }
+      resetEntryWorkspace({
         type: 'success',
         text: latest.stage === 'Active'
-          ? 'อัปเดตข้อมูลรถที่อยู่ในพื้นที่และ Vehicle Log แล้ว'
-          : 'บันทึกข้อมูลแล้ว กรุณาตรวจสอบและกด “รถเข้าพื้นที่แล้ว” เพื่อยืนยัน',
+          ? `อัปเดตข้อมูลรถทะเบียน ${savedVehiclePlate} สำเร็จ พร้อมรับรายการใหม่`
+          : `บันทึกรถทะเบียน ${savedVehiclePlate} สำเร็จ พร้อมรับรายการใหม่`,
       });
     } catch (err: unknown) {
       console.error(err);
       if (err instanceof SessionConflictError) {
         try {
           const latest = await getVehicleSession(err.sessionId);
-          setSelectedSession(latest);
-          setStatusMessage({ type: 'error', text: 'ข้อมูลถูกแก้ไขโดยผู้ใช้อื่นแล้ว โหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบก่อนบันทึกใหม่' });
+          const refreshedWorkspace = activateVehicleEntryWorkspace(latest);
+          setEntryWorkspace(failWorkspaceRelease(refreshedWorkspace, err));
+          setEntryForm(createEntryFormFromSession(latest));
+          setEntryPlatePhoto(latest.entry_plate_photo_url || '');
+          setEntryVehiclePhoto(latest.entry_vehicle_photo_url || '');
+          setStatusMessage({
+            type: 'error',
+            text: `Session บัตร ${latest.card_number} ถูกแก้ไขโดยผู้ใช้อื่นแล้ว Workspace ยังไม่ถูก Reset กรุณาลองปลดล็อกก่อนเลือก Session ใหม่`,
+          });
           return;
         } catch {
           // Preserve the original conflict when the refresh itself fails.
@@ -411,30 +484,77 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
   };
 
   const confirmVehicleInside = async () => {
-    if (entrySubmitRunningRef.current || !activeSessionId) return;
+    if (entrySubmitRunningRef.current || !entryWorkspace.resourceId) return;
     entrySubmitRunningRef.current = true;
     setLoading(true);
     try {
-      const latest = await getVehicleSession(activeSessionId);
+      const latest = await getVehicleSession(entryWorkspace.resourceId);
       if (latest.stage === 'Active' && latest.status === 'InProgress') {
-        setSelectedSession(latest);
-        setStatusMessage({ type: 'success', text: 'รถคันนี้อยู่ในพื้นที่แล้ว' });
+        setEntryWorkspace(previous => beginWorkspaceRelease(previous));
+        try {
+          await releaseVehicleSessionLock(latest.session_id);
+        } catch (releaseReason) {
+          setEntryWorkspace(previous => failWorkspaceRelease(previous, releaseReason));
+          setStatusMessage({
+            type: 'error',
+            text: `ยืนยันสถานะรถแล้ว แต่ปลดล็อก Session ไม่สำเร็จ กรุณากด “ลองปลดล็อกอีกครั้ง”: ${releaseReason instanceof Error ? releaseReason.message : String(releaseReason)}`,
+          });
+          return;
+        }
+        resetEntryWorkspace({ type: 'success', text: 'รถคันนี้อยู่ในพื้นที่แล้ว พร้อมรับรายการใหม่' });
         return;
       }
       const result = await completeVehicleSession(latest.session_id, guardName, userRole, latest.sessionVersion);
-      setStatusMessage({ type: 'success', text: result.alreadyActive ? 'รถคันนี้อยู่ในพื้นที่แล้ว' : `ยืนยันรถเข้าพื้นที่แล้ว: ${latest.vehicle_plate}` });
-      setActiveSessionId('');
-      setSelectedSession(null);
+      resetEntryWorkspace({
+        type: 'success',
+        text: result.alreadyActive
+          ? 'รถคันนี้อยู่ในพื้นที่แล้ว พร้อมรับรายการใหม่'
+          : `ยืนยันรถเข้าพื้นที่แล้ว: ${latest.vehicle_plate} พร้อมรับรายการใหม่`,
+      });
     } catch (reason) {
       if (reason instanceof SessionConflictError) {
         const latest = await getVehicleSession(reason.sessionId);
-        setSelectedSession(latest);
-        setStatusMessage({ type: 'error', text: 'Session มีข้อมูลใหม่กว่า โหลดข้อมูลล่าสุดให้แล้ว กรุณาตรวจสอบก่อนยืนยันอีกครั้ง' });
+        const refreshedWorkspace = activateVehicleEntryWorkspace(latest);
+        setEntryWorkspace(failWorkspaceRelease(refreshedWorkspace, reason));
+        setEntryForm(createEntryFormFromSession(latest));
+        setEntryPlatePhoto(latest.entry_plate_photo_url || '');
+        setEntryVehiclePhoto(latest.entry_vehicle_photo_url || '');
+        setStatusMessage({
+          type: 'error',
+          text: `Session บัตร ${latest.card_number} มีข้อมูลใหม่กว่า Workspace ยังไม่ถูก Reset กรุณาลองปลดล็อกก่อนเลือก Session ใหม่`,
+        });
       } else {
         setStatusMessage({ type: 'error', text: reason instanceof Error ? reason.message : String(reason) });
       }
     } finally {
       entrySubmitRunningRef.current = false;
+      setLoading(false);
+    }
+  };
+
+  const pauseEntryWorkspace = async () => {
+    if (!entryWorkspace.resourceId) {
+      resetEntryWorkspace();
+      return;
+    }
+    const sessionIdToRelease = entryWorkspace.resourceId;
+    setLoading(true);
+    try {
+      if (!sessionIdToRelease.startsWith('OFFLINE_')) {
+        setEntryWorkspace(previous => beginWorkspaceRelease(previous));
+        await releaseVehicleSessionLock(sessionIdToRelease);
+      }
+      resetEntryWorkspace({
+        type: 'success',
+        text: 'พักรายการไว้ในคิวแล้ว พร้อมรับรายการใหม่',
+      });
+    } catch (reason) {
+      setEntryWorkspace(previous => failWorkspaceRelease(previous, reason));
+      setStatusMessage({
+        type: 'error',
+        text: `ไม่สามารถปลดล็อก Session ได้ ข้อมูลยังคงอยู่ใน Workspace กรุณาลองอีกครั้ง: ${reason instanceof Error ? reason.message : String(reason)}`,
+      });
+    } finally {
       setLoading(false);
     }
   };
@@ -485,9 +605,7 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
   const compactSearch = normalizedSearch.replace(/\s+/g, '');
   const filteredParked = parkedVehicles.filter(v => [v.vehicle_plate, v.card_number, v.visitor_name, v.visitor_phone, v.target_room]
     .some(value => value.toLocaleLowerCase().includes(normalizedSearch) || value.toLocaleLowerCase().replace(/\s+/g, '').includes(compactSearch)));
-  const activeSession = selectedSession
-    ?? pendingSessions.find(session => session.session_id === activeSessionId)
-    ?? insideSessions.find(session => session.session_id === activeSessionId);
+  const activeSession = entryWorkspace.context;
 
   return (
     <div className="w-full max-w-4xl mx-auto flex flex-col gap-5 px-1 pb-10">
@@ -556,7 +674,7 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
               {!insideSessions.length && <span className="text-xs text-emerald-700">ยังไม่มีรถอยู่ในพื้นที่</span>}
             </div>
           </section>
-          {activeSessionId && <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs font-bold text-indigo-800">Session กำลังทำงาน: {activeSessionId} <button type="button" className="ml-2 underline" onClick={() => { void releaseVehicleSessionLock(activeSessionId); setActiveSessionId(''); setSelectedSession(null); }}>พักไว้ก่อน</button></div>}
+          {entryWorkspace.resourceId && <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs font-bold text-indigo-800">Session กำลังทำงาน: {entryWorkspace.resourceId} <button type="button" className="ml-2 underline" onClick={() => void pauseEntryWorkspace()}>{entryWorkspace.lifecycle === 'release-failed' ? 'ลองปลดล็อกอีกครั้ง' : 'พักไว้ก่อน'}</button></div>}
           {activeSession && <VehicleSessionTimeline session={activeSession} actorName={guardName} actorRole={userRole} />}
           <div className="flex justify-between items-center">
             <h2 className="text-lg font-black text-slate-800">ข้อมูลผู้มาติดต่อเข้าพื้นที่</h2>
@@ -592,9 +710,10 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-bold text-slate-600">หมายเลขบัตรจอดรถ *</label>
                 <input
+                  ref={cardNumberInputRef}
                   type="text"
                   value={entryForm.card_number}
-                  onChange={(e) => setEntryForm(prev => ({ ...prev, card_number: e.target.value }))}
+                  onChange={(e) => handleCardNumberChange(e.target.value)}
                   placeholder="เช่น P001"
                   className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold font-mono"
                   required
