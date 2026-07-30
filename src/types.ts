@@ -237,6 +237,28 @@ export interface ContractorLogRecord {
   updated_at: string;
   login_email?: string;
   operator_name?: string;
+  activities?: ContractorActivityRecord[];
+  workspace_lock_uid?: string;
+  workspace_lock_name?: string;
+  workspace_lock_expires_at?: string;
+}
+
+export type ContractorActivityType =
+  | 'entered'
+  | 'warning'
+  | 'violation'
+  | 'remark'
+  | 'exit'
+  | 'custom';
+
+export interface ContractorActivityRecord {
+  activity_id: string;
+  activity_type: ContractorActivityType;
+  note: string;
+  created_at: string;
+  created_by: string;
+  site_id: string;
+  contractor_id: string;
 }
 
 export interface KeyLogRecord {

@@ -28,6 +28,7 @@ import {
   parseHttpMediaUpload,
   validateVehicleEvidenceResource,
 } from './vehicleEvidencePolicy';
+import { validateNonVehicleMediaUpload } from './mediaModulePolicy';
 import { extractDriveFileId } from './driveMediaReference';
 import {
   PrivateEvidencePolicyError,
@@ -547,6 +548,15 @@ export const uploadVehicleEvidence = onRequest(
             const evidenceRecord = await firestore.collection(collectionName).doc(data.recordId).get();
             validateVehicleEvidenceResource(data, account, evidenceRecord.data());
           }
+        } else {
+          const collectionName = {
+            Contractor: 'contractorLogs',
+            Key: 'keyLogs',
+            Patrol: 'patrolLogs',
+            Incident: 'incidentReports',
+          }[module];
+          const evidenceRecord = await firestore.collection(collectionName).doc(data.recordId).get();
+          validateNonVehicleMediaUpload(data, account, evidenceRecord.data());
         }
         currentStage = 'Decode Base64 Image';
         fileBuffer = await runUploadStage(currentStage, () => {
@@ -663,6 +673,7 @@ export const uploadVehicleEvidence = onRequest(
               system: 'smart-guard',
               site_id: account.siteId,
               module,
+              module_name: data.moduleName,
               record_id: data.recordId,
               media_type: data.mediaType,
               uploaded_by_uid: account.uid,
@@ -716,6 +727,7 @@ export const uploadVehicleEvidence = onRequest(
         mime_type: urls.mimeType,
         size_bytes: urls.size,
         module,
+        module_name: data.moduleName,
         record_id: data.recordId,
         media_type: data.mediaType,
         site_id: account.siteId,
@@ -856,13 +868,18 @@ export const getVehicleEvidenceImage = onRequest(
             fileId,
             actor,
             metadata,
+            activity.docs.find(document => document.get('site_id') === actor.siteId)?.id || '',
             activity.docs.find(document => document.get('site_id') === actor.siteId)?.data(),
           );
         } else {
-          const collectionName = ['entry_plate', 'entry_vehicle', 'visitor_document'].includes(mediaType)
-            ? 'vehicleSessions' : 'vehicleLogs';
+          const module = String(metadata.module || '');
+          const collectionName = module === 'Contractor'
+            ? 'contractorLogs'
+            : ['entry_plate', 'entry_vehicle', 'visitor_document'].includes(mediaType)
+              ? 'vehicleSessions'
+              : 'vehicleLogs';
           const linkedRecord = await firestore.collection(collectionName).doc(recordId).get();
-          authorizeRegisteredEvidence(fileId, actor, metadata, linkedRecord.data());
+          authorizeRegisteredEvidence(fileId, actor, metadata, linkedRecord.id, linkedRecord.data());
         }
       } else {
         if (typeof mediaReference !== 'string' || /^[A-Za-z0-9_-]{10,128}$/.test(mediaReference)) {
@@ -896,6 +913,9 @@ export const getVehicleEvidenceImage = onRequest(
       if (appProperties.system === 'smart-guard' && (
         appProperties.site_id !== actor.siteId
         || (appProperties.record_id && appProperties.record_id !== recordId)
+        || (appProperties.module && registry.exists && appProperties.module !== registry.get('module'))
+        || (appProperties.module_name && registry.exists && appProperties.module_name !== registry.get('module_name'))
+        || (appProperties.media_type && registry.exists && appProperties.media_type !== registry.get('media_type'))
       )) {
         response.status(403).json({ error: 'Drive evidence metadata does not match the authorized record.' });
         return;
@@ -912,7 +932,7 @@ export const getVehicleEvidenceImage = onRequest(
       response.set('Content-Type', mimeType);
       response.set('Content-Length', String(buffer.length));
       response.status(200).send(buffer);
-      functions.logger.info('private_vehicle_evidence_served', {
+      functions.logger.info('private_evidence_served', {
         firebase_uid: actor.uid,
         site_id: actor.siteId,
         record_id: recordId,

@@ -14,6 +14,7 @@ import { createAuditLog } from '../services/auditService';
 import { uploadImageToDrive } from '../services/mediaUploadService';
 import ConfirmModal from './ConfirmModal';
 import UnitSearchSelect from './UnitSearchSelect';
+import { formatThaiDateTime } from '../utils/dateTime';
 
 interface IncidentReportsProps {
   guardName: string;
@@ -384,7 +385,7 @@ export default function IncidentReports({ guardName }: IncidentReportsProps) {
                       <div className="flex items-center gap-2">
                         <span className="text-base font-black text-slate-800">{inc.incident_type}</span>
                         <span className="text-xs text-slate-400 font-mono flex items-center gap-1">
-                          <Clock className="w-3 h-3" /> {new Date(inc.incident_datetime).toLocaleString('th-TH')}
+                          <Clock className="w-3 h-3" /> {formatThaiDateTime(inc.incident_datetime)}
                         </span>
                       </div>
                       <p className="text-xs text-slate-600 font-medium mt-1 line-clamp-2">📍 สถานที่: {inc.location}</p>

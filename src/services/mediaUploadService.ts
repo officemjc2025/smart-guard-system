@@ -104,8 +104,9 @@ export async function uploadImageToDrive(
   }
   const uploadUrl = validatedMediaUploadUrl();
   const mediaType = mediaContext.mediaType || filename.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-  console.info('[Vehicle Evidence Upload Start]', {
+  console.info('[Media Upload Start]', {
     functionName: 'uploadVehicleEvidence',
+    moduleName: mediaContext.moduleName,
     urlHost: new URL(uploadUrl).host,
     recordId: mediaContext.recordId,
     mediaType,
@@ -131,7 +132,7 @@ export async function uploadImageToDrive(
       }),
     });
   } catch (reason: unknown) {
-    console.error('[Vehicle Evidence Upload Failure]', {
+    console.error('[Media Upload Failure]', {
       code: 'UPLOAD_NETWORK',
       recordId: mediaContext.recordId,
       mediaType,
@@ -167,7 +168,8 @@ export async function uploadImageToDrive(
   if (typeof result.mediaUrl !== 'string' || !result.mediaUrl.startsWith('https://')) {
     throw new Error('Media upload service returned an invalid media URL.');
   }
-  console.info('[Vehicle Evidence Upload Success]', {
+  console.info('[Media Upload Success]', {
+    moduleName: mediaContext.moduleName,
     recordId: mediaContext.recordId,
     mediaType,
     sizeInBytes: typeof result.size === 'number' ? result.size : Math.round(sizeInBytes),

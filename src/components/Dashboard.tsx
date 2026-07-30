@@ -16,6 +16,7 @@ import {
   recordAuthStage,
 } from '../services/authDiagnostics';
 import { canLoadDashboard } from '../services/authFlowPolicy';
+import { formatThaiTime } from '../utils/dateTime';
 
 interface DashboardProps {
   onNavigate: (tab: TabType) => void;
@@ -81,14 +82,7 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
 
   // Format date helper
   const formatTime = (isoString: string) => {
-    if (!isoString) return '';
-    try {
-      const d = new Date(isoString);
-      return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.';
-    } catch (error) {
-      console.error('Failed to format dashboard time:', error);
-      return '';
-    }
+    return isoString ? formatThaiTime(isoString, '') : '';
   };
 
   return (
@@ -327,7 +321,7 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
           <div className="flex justify-between items-center pt-4 border-t border-slate-100 mt-4">
             <span className="text-xs font-semibold text-slate-400 flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5" />
-              เวลาเซิร์ฟเวอร์เรียลไทม์: {new Date().toLocaleTimeString('th-TH')} น.
+              เวลาเซิร์ฟเวอร์เรียลไทม์: {formatThaiTime(new Date())}
             </span>
             <button 
               onClick={() => onNavigate('history')} 

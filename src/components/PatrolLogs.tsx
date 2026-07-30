@@ -14,6 +14,7 @@ import { createIncident } from '../services/incidentService';
 import { createAuditLog } from '../services/auditService';
 import { uploadImageToDrive } from '../services/mediaUploadService';
 import QRScanner from './QRScanner';
+import { formatThaiTime } from '../utils/dateTime';
 
 interface PatrolLogsProps {
   guardName: string;
@@ -436,7 +437,7 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                     </span>
                     {isChecked && lastLog && (
                       <span className="text-[10px] font-mono text-slate-400">
-                        {new Date(lastLog.checkin_time).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                        {formatThaiTime(lastLog.checkin_time)}
                       </span>
                     )}
                   </div>
@@ -482,7 +483,7 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
                       )}
                     </div>
                     <span className="text-[10px] font-mono font-bold text-slate-400">
-                      {new Date(log.checkin_time).toLocaleTimeString('th-TH')}
+                      {formatThaiTime(log.checkin_time)}
                     </span>
                   </div>
                 ))}

@@ -14,6 +14,7 @@ import { uploadImageToDrive } from '../services/mediaUploadService';
 import SignaturePad from './SignaturePad';
 import ConfirmModal from './ConfirmModal';
 import UnitSearchSelect from './UnitSearchSelect';
+import { formatThaiDateTime } from '../utils/dateTime';
 
 interface KeyLogsProps {
   guardName: string;
@@ -442,7 +443,7 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
                   <div className="flex sm:flex-col items-end gap-3 justify-between sm:justify-center border-t sm:border-t-0 border-slate-200 pt-2 sm:pt-0">
                     <div className="text-right">
                       <span className="text-[10px] text-red-600 block font-bold">
-                        เบิกเมื่อ: {new Date(k.checkout_time).toLocaleString('th-TH')}
+                        เบิกเมื่อ: {formatThaiDateTime(k.checkout_time)}
                       </span>
                     </div>
                     <button

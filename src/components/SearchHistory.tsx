@@ -14,6 +14,7 @@ import { listKeyLogs } from '../services/keyService';
 import { listPatrolLogs } from '../services/patrolService';
 import { listIncidents } from '../services/incidentService';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
+import { formatThaiDateTime } from '../utils/dateTime';
 
 const resolveHistoryImageUrl = (fileId: string): string =>
   fileId.startsWith('http://') || fileId.startsWith('https://')
@@ -372,10 +373,7 @@ export default function SearchHistory() {
                   return (
                     <tr key={idx} className="hover:bg-indigo-50/10 transition-colors">
                       <td className="py-3 px-5 font-mono text-slate-500 whitespace-nowrap">
-                        {new Date(timeVal).toLocaleString('th-TH', { 
-                          year: 'numeric', month: '2-digit', day: '2-digit',
-                          hour: '2-digit', minute: '2-digit'
-                        })}
+                        {formatThaiDateTime(timeVal)}
                       </td>
                       <td className="py-3 px-5 whitespace-nowrap">
                         <div className="flex flex-col gap-0.5">
@@ -502,8 +500,8 @@ export default function SearchHistory() {
                     status: '⚙️ สถานะบันทึกในตาราง'
                   };
 
-                  const formattedVal = key.includes('time') && val 
-                    ? new Date(String(val)).toLocaleString('th-TH') 
+                  const formattedVal = (key.includes('time') || key.endsWith('_at')) && val
+                    ? formatThaiDateTime(val)
                     : String(val);
 
                   return (
@@ -540,9 +538,7 @@ export default function SearchHistory() {
                           {url === 'loading' ? (
                             <div className="text-[11px] font-bold text-slate-400 animate-pulse">กำลังดาวน์โหลดภาพจาก Cloud Storage...</div>
                           ) : url ? (
-                            field === 'entry_plate_photo_url' || field === 'entry_vehicle_photo_url'
-                              ? <AuthenticatedEvidenceImage mediaReference={String(selectedRecord[field])} alt={field} className="w-full h-full object-cover" />
-                              : <img src={url} alt={field} className="w-full h-full object-cover" />
+                            <AuthenticatedEvidenceImage mediaReference={String(selectedRecord[field])} alt={field} className="w-full h-full object-cover" />
                           ) : (
                             <span className="text-[10px] text-slate-400">ไม่มีการแนบภาพถ่าย</span>
                           )}

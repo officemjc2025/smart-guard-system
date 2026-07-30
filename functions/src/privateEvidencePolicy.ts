@@ -6,19 +6,61 @@ export class PrivateEvidencePolicyError extends Error {
   }
 }
 
+const EVIDENCE_MEDIA_TYPES = {
+  Vehicle: new Set([
+    'entry_plate',
+    'entry_vehicle',
+    'visitor_document',
+    'exit_plate',
+    'exit_vehicle',
+    'activity_evidence',
+  ]),
+  Contractor: new Set([
+    'contractor_id',
+    'contractor_face',
+    'contractor_activity',
+  ]),
+} as const;
+
+export type PrivateEvidenceModule = keyof typeof EVIDENCE_MEDIA_TYPES;
+
+const MODULE_NAMES: Record<PrivateEvidenceModule, ReadonlySet<string>> = {
+  Vehicle: new Set(['VehicleLogs', 'VehicleSessionActivities']),
+  Contractor: new Set(['ContractorLogs']),
+};
+
 export function authorizeRegisteredEvidence(
   fileId: string,
   actor: CanonicalUploadActor,
   metadata: Record<string, unknown> | undefined,
+  linkedRecordId: string,
   linkedRecord: Record<string, unknown> | undefined,
 ): void {
   if (!metadata || metadata.file_id !== fileId) {
     throw new PrivateEvidencePolicyError('Evidence metadata was not found.', 404);
   }
-  if (metadata.site_id !== actor.siteId || metadata.module !== 'Vehicle') {
+  const module = String(metadata.module || '') as PrivateEvidenceModule;
+  const moduleName = String(metadata.module_name || '');
+  const mediaType = String(metadata.media_type || '');
+  const recordId = String(metadata.record_id || '');
+  if (
+    metadata.site_id !== actor.siteId
+    || !(module in EVIDENCE_MEDIA_TYPES)
+  ) {
     throw new PrivateEvidencePolicyError('Evidence does not belong to the active site.', 403);
   }
-  if (!linkedRecord || linkedRecord.site_id !== actor.siteId) {
+  if (!EVIDENCE_MEDIA_TYPES[module].has(mediaType as never)) {
+    throw new PrivateEvidencePolicyError('Evidence media type does not match its module.', 403);
+  }
+  if (moduleName && !MODULE_NAMES[module].has(moduleName)) {
+    throw new PrivateEvidencePolicyError('Evidence module name does not match its module.', 403);
+  }
+  if (
+    !recordId
+    || recordId !== linkedRecordId
+    || !linkedRecord
+    || linkedRecord.site_id !== actor.siteId
+  ) {
     throw new PrivateEvidencePolicyError('Linked evidence record was not found.', 404);
   }
 }
@@ -41,4 +83,3 @@ export function validatePrivateImageMetadata(
     throw new PrivateEvidencePolicyError('Evidence file exceeds the preview size limit.', 413);
   }
 }
-

@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   runTransaction,
@@ -9,7 +10,12 @@ import {
   where,
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import type { ContractorLogRecord } from '../types';
+import { auth } from '../firebase';
+import type {
+  ContractorActivityRecord,
+  ContractorActivityType,
+  ContractorLogRecord,
+} from '../types';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
 
 export type SiteContractorRecord = ContractorLogRecord & { site_id: string };
@@ -31,6 +37,8 @@ const contractorFromData = (id: string, data: Record<string, unknown>): SiteCont
   ...data,
   contractor_log_id: String(data.contractor_log_id || id),
   site_id: String(data.site_id || ''),
+  entry_time: String(data.entry_time || ''),
+  exit_time: data.exit_time ? String(data.exit_time) : undefined,
   created_at: timestampText(data.created_at),
   updated_at: timestampText(data.updated_at),
 } as SiteContractorRecord);
@@ -83,13 +91,165 @@ export async function updateContractor(
   });
 }
 
+export async function updateContractorWorkspaceRecord(
+  siteId: string,
+  contractorId: string,
+  updates: ContractorUpdate,
+): Promise<void> {
+  const scopedSiteId = requireSiteId(siteId);
+  const uid = requireCurrentUid();
+  const reference = doc(db, 'contractorLogs', contractorId);
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists()) throw new Error('Contractor log not found.');
+    if (snapshot.get('site_id') !== scopedSiteId) throw new Error('Contractor log belongs to another site.');
+    if (snapshot.get('status') !== 'กำลังปฏิบัติงาน') throw new Error('Contractor record is already completed.');
+    if (String(snapshot.get('workspace_lock_uid') || '') !== uid) {
+      throw new Error('Contractor Workspace lock is required.');
+    }
+    transaction.update(reference, sanitizeAndValidateFirestoreData({
+      ...updates,
+      updated_at: serverTimestamp(),
+    }));
+  });
+}
+
+const requireCurrentUid = () => {
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error('Authenticated account is required.');
+  return uid;
+};
+
+export async function getContractor(
+  siteId: string,
+  contractorId: string,
+): Promise<SiteContractorRecord> {
+  const snapshot = await getDoc(doc(db, 'contractorLogs', contractorId));
+  if (!snapshot.exists()) throw new Error('Contractor log not found.');
+  if (snapshot.get('site_id') !== requireSiteId(siteId)) {
+    throw new Error('Contractor log belongs to another site.');
+  }
+  return contractorFromData(snapshot.id, snapshot.data());
+}
+
+export async function acquireContractorWorkspace(
+  siteId: string,
+  contractorId: string,
+  operatorName: string,
+): Promise<SiteContractorRecord> {
+  const scopedSiteId = requireSiteId(siteId);
+  const uid = requireCurrentUid();
+  const reference = doc(db, 'contractorLogs', contractorId);
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists()) throw new Error('Contractor log not found.');
+    if (snapshot.get('site_id') !== scopedSiteId) throw new Error('Contractor log belongs to another site.');
+    const lockUid = String(snapshot.get('workspace_lock_uid') || '');
+    const expiresAt = Date.parse(String(snapshot.get('workspace_lock_expires_at') || ''));
+    if (lockUid && lockUid !== uid && Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+      throw new Error(`รายการนี้กำลังถูกใช้งานโดย ${String(snapshot.get('workspace_lock_name') || 'ผู้ใช้อื่น')}`);
+    }
+    transaction.update(reference, {
+      workspace_lock_uid: uid,
+      workspace_lock_name: operatorName,
+      workspace_lock_expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      updated_at: serverTimestamp(),
+    });
+  });
+  return getContractor(scopedSiteId, contractorId);
+}
+
+export async function releaseContractorWorkspace(
+  siteId: string,
+  contractorId: string,
+): Promise<void> {
+  const scopedSiteId = requireSiteId(siteId);
+  const uid = requireCurrentUid();
+  const reference = doc(db, 'contractorLogs', contractorId);
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists()) throw new Error('Contractor log not found.');
+    if (snapshot.get('site_id') !== scopedSiteId) throw new Error('Contractor log belongs to another site.');
+    const lockUid = String(snapshot.get('workspace_lock_uid') || '');
+    if (lockUid && lockUid !== uid) throw new Error('Contractor Workspace belongs to another operator.');
+    transaction.update(reference, {
+      workspace_lock_uid: '',
+      workspace_lock_name: '',
+      workspace_lock_expires_at: '',
+      updated_at: serverTimestamp(),
+    });
+  });
+}
+
+export async function appendContractorActivity(
+  siteId: string,
+  contractorId: string,
+  activityType: ContractorActivityType,
+  note: string,
+  createdBy: string,
+): Promise<ContractorActivityRecord> {
+  const scopedSiteId = requireSiteId(siteId);
+  const uid = requireCurrentUid();
+  const reference = doc(db, 'contractorLogs', contractorId);
+  const activity: ContractorActivityRecord = {
+    activity_id: `CA_${crypto.randomUUID()}`,
+    activity_type: activityType,
+    note: note.trim(),
+    created_at: new Date().toISOString(),
+    created_by: createdBy,
+    site_id: scopedSiteId,
+    contractor_id: contractorId,
+  };
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists()) throw new Error('Contractor log not found.');
+    if (snapshot.get('site_id') !== scopedSiteId) throw new Error('Contractor log belongs to another site.');
+    if (snapshot.get('status') !== 'กำลังปฏิบัติงาน') throw new Error('Contractor record is already completed.');
+    if (String(snapshot.get('workspace_lock_uid') || '') !== uid) {
+      throw new Error('Contractor Workspace lock is required.');
+    }
+    const activities = Array.isArray(snapshot.get('activities')) ? snapshot.get('activities') : [];
+    transaction.update(reference, {
+      activities: [...activities, activity],
+      updated_at: serverTimestamp(),
+    });
+  });
+  return activity;
+}
+
 export function completeContractor(
   siteId: string,
   contractorId: string,
   exitTime: string,
+  createdBy = '',
 ): Promise<void> {
-  return updateContractor(siteId, contractorId, {
-    exit_time: exitTime,
-    status: 'ออกแล้ว',
+  const scopedSiteId = requireSiteId(siteId);
+  const uid = requireCurrentUid();
+  const reference = doc(db, 'contractorLogs', contractorId);
+  return runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(reference);
+    if (!snapshot.exists()) throw new Error('Contractor log not found.');
+    if (snapshot.get('site_id') !== scopedSiteId) throw new Error('Contractor log belongs to another site.');
+    const lockUid = String(snapshot.get('workspace_lock_uid') || '');
+    if (lockUid && lockUid !== uid) throw new Error('Contractor Workspace belongs to another operator.');
+    const activities = Array.isArray(snapshot.get('activities')) ? snapshot.get('activities') : [];
+    const exitActivity: ContractorActivityRecord = {
+      activity_id: `CA_${crypto.randomUUID()}`,
+      activity_type: 'exit',
+      note: 'ออกจากพื้นที่',
+      created_at: exitTime,
+      created_by: createdBy,
+      site_id: scopedSiteId,
+      contractor_id: contractorId,
+    };
+    transaction.update(reference, {
+      exit_time: exitTime,
+      status: 'ออกแล้ว',
+      activities: [...activities, exitActivity],
+      workspace_lock_uid: '',
+      workspace_lock_name: '',
+      workspace_lock_expires_at: '',
+      updated_at: serverTimestamp(),
+    });
   });
 }
