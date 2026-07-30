@@ -21,6 +21,19 @@ import {
   setCanonicalStaffStatus,
   verifyOperatorPinLogin,
 } from './operatorAuthService';
+import {
+  UploadPolicyError,
+  canonicalUploadActor,
+  corsDecision,
+  parseHttpMediaUpload,
+  validateVehicleEvidenceResource,
+} from './vehicleEvidencePolicy';
+import { extractDriveFileId } from './driveMediaReference';
+import {
+  PrivateEvidencePolicyError,
+  authorizeRegisteredEvidence,
+  validatePrivateImageMetadata,
+} from './privateEvidencePolicy';
 
 const firebaseApp = admin.initializeApp();
 const functionsRegion = defineString('FUNCTIONS_REGION', {
@@ -165,49 +178,14 @@ export const applyVehicleSessionAnalyticsUpdate = onCall(
   },
 );
 
-interface HttpMediaUploadRequest extends UploadMediaToDriveRequest {
-  moduleName: string;
-  recordId: string;
-  siteId: string;
-  uploadedBy: string;
-}
-
-const productionOrigin = 'https://securityprojectv1.web.app';
-const stagingOrigin = 'https://securityprojectv1-staging.web.app';
-const allowedAppOrigins = new Set([
-  runtimeProjectId === 'securityprojectv1-staging'
-    ? stagingOrigin
-    : productionOrigin,
-]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
-}
-
-function requiredString(data: Record<string, unknown>, field: string): string {
-  const value = data[field];
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Missing required field: ${field}`);
-  }
-  return value.trim();
-}
-
-function parseHttpMediaUpload(value: unknown): HttpMediaUploadRequest {
-  if (!isRecord(value)) throw new Error('Request body must be a JSON object.');
-  return {
-    fileName: requiredString(value, 'fileName'),
-    base64Data: requiredString(value, 'base64Data'),
-    mimeType: requiredString(value, 'mimeType'),
-    moduleName: requiredString(value, 'moduleName'),
-    recordId: requiredString(value, 'recordId'),
-    siteId: requiredString(value, 'siteId'),
-    uploadedBy: requiredString(value, 'uploadedBy'),
-  };
 }
 
 function uploadModule(moduleName: string): MediaModule {
   const modules: Record<string, MediaModule> = {
     VehicleLogs: 'Vehicle',
+    VehicleSessionActivities: 'Vehicle',
     ContractorLogs: 'Contractor',
     KeyLogs: 'Key',
     PatrolLogs: 'Patrol',
@@ -476,6 +454,7 @@ export const uploadMediaToDrive = onCall(
 /** Authenticated production media endpoint with explicit CORS and Drive destination handling. */
 export const uploadVehicleEvidence = onRequest(
   {
+    cors: false,
     timeoutSeconds: 60,
     memory: '256MiB',
     secrets: [
@@ -487,8 +466,14 @@ export const uploadVehicleEvidence = onRequest(
   },
   async (request, response) => {
     const requestOrigin = request.get('Origin');
-    if (requestOrigin && allowedAppOrigins.has(requestOrigin)) {
-      response.set('Access-Control-Allow-Origin', requestOrigin);
+    const cors = corsDecision(
+      request.method,
+      requestOrigin,
+      runtimeProjectId,
+      process.env.APP_ALLOWED_ORIGINS || '',
+    );
+    if (cors.allowOrigin) {
+      response.set('Access-Control-Allow-Origin', cors.allowOrigin);
       response.set('Vary', 'Origin');
     }
     response.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -496,7 +481,7 @@ export const uploadVehicleEvidence = onRequest(
     response.set('Access-Control-Max-Age', '3600');
 
     if (request.method === 'OPTIONS') {
-      if (requestOrigin && !allowedAppOrigins.has(requestOrigin)) {
+      if (!cors.allowed) {
         response.status(403).send('Origin not allowed.');
         return;
       }
@@ -507,7 +492,7 @@ export const uploadVehicleEvidence = onRequest(
       response.status(405).json({ error: 'Method not allowed.' });
       return;
     }
-    if (requestOrigin && !allowedAppOrigins.has(requestOrigin)) {
+    if (!cors.allowed) {
       response.status(403).json({ error: 'Origin not allowed.' });
       return;
     }
@@ -526,16 +511,61 @@ export const uploadVehicleEvidence = onRequest(
       currentStage = 'Verify Active Account';
       const account = await runUploadStage(currentStage, async () => {
         const profile = await firestore.collection('users').doc(decodedToken.uid).get();
-        if (!profile.exists || profile.get('status') !== 'Active') {
-          throw new Error('Active user profile is required.');
-        }
-        return profile.data() ?? {};
+        return canonicalUploadActor(decodedToken.uid, profile.data());
       });
       uploadContext = {
         firebase_uid: decodedToken.uid,
-        operator_id: String(account.operator_id || ''),
-        site_id: String(account.site_id || ''),
+        operator_id: account.operatorId,
+        site_id: account.siteId,
       };
+
+      const requestBody = isRecord(request.body) ? request.body : {};
+      const diagnosticRequest = requestBody.diagnostic === true;
+      let data: ReturnType<typeof parseHttpMediaUpload> | null = null;
+      let module: MediaModule | null = null;
+      let fileBuffer: Buffer | null = null;
+      if (!diagnosticRequest) {
+        data = parseHttpMediaUpload(request.body);
+        module = uploadModule(data.moduleName);
+        if (data.siteId !== account.siteId) {
+          throw new UploadPolicyError('UPLOAD_FORBIDDEN', 'Cross-site upload is not allowed.', 403);
+        }
+        if (module === 'Vehicle') {
+          if (data.mediaType === 'activity_evidence') {
+            const activity = await firestore.collectionGroup('activities')
+              .where('activity_id', '==', data.recordId)
+              .limit(5)
+              .get();
+            validateVehicleEvidenceResource(
+              data,
+              account,
+              activity.docs.find(document => document.get('site_id') === account.siteId)?.data(),
+            );
+          } else {
+            const entryEvidence = ['entry_plate', 'entry_vehicle', 'visitor_document'].includes(data.mediaType);
+            const collectionName = entryEvidence ? 'vehicleSessions' : 'vehicleLogs';
+            const evidenceRecord = await firestore.collection(collectionName).doc(data.recordId).get();
+            validateVehicleEvidenceResource(data, account, evidenceRecord.data());
+          }
+        }
+        currentStage = 'Decode Base64 Image';
+        fileBuffer = await runUploadStage(currentStage, () => {
+          if (!/^image\/(jpeg|png|webp)$/.test(data!.mimeType)) {
+            throw new UploadPolicyError('UPLOAD_INVALID_FILE', 'Unsupported image MIME type.', 400);
+          }
+          const validated = validateAndDecodeBase64(
+            data!.base64Data,
+            data!.mimeType as 'image/jpeg' | 'image/png' | 'image/webp',
+            2 * 1024 * 1024,
+          );
+          functions.logger.info('media_upload_payload', {
+            mime_type: data!.mimeType,
+            file_name: data!.fileName,
+            buffer_length: validated.sizeBytes,
+          });
+          return validated.buffer;
+        });
+      }
 
       const drive = createOAuthDriveClient({
         clientId: googleDriveClientId.value(),
@@ -582,8 +612,7 @@ export const uploadVehicleEvidence = onRequest(
         };
       });
 
-      const requestBody = isRecord(request.body) ? request.body : {};
-      if (requestBody.diagnostic === true) {
+      if (diagnosticRequest) {
         if (account.role !== 'Admin') {
           response.status(403).json({ success: false, message: 'Admin role is required.' });
           return;
@@ -598,18 +627,14 @@ export const uploadVehicleEvidence = onRequest(
         });
         return;
       }
-
-      const data = parseHttpMediaUpload(request.body);
-      const module = uploadModule(data.moduleName);
-      if (data.siteId !== uploadContext.site_id) {
-        response.status(403).json({ success: false, stage: 'Verify Active Account', message: 'Cross-site upload is not allowed.' });
-        return;
+      if (!data || !module || !fileBuffer) {
+        throw new UploadPolicyError('UPLOAD_INVALID_FILE', 'Upload request is incomplete.', 400);
       }
 
       currentStage = 'Create Site Folder';
       const siteFolderId = await runUploadStage(
         currentStage,
-        () => findOrCreateDriveFolder(drive, driveConfiguration.rootFolderId, data.siteId),
+        () => findOrCreateDriveFolder(drive, driveConfiguration.rootFolderId, account.siteId),
       );
 
       currentStage = 'Create Date Folder';
@@ -628,22 +653,6 @@ export const uploadVehicleEvidence = onRequest(
         return parentId;
       });
 
-      currentStage = 'Decode Base64 Image';
-      const fileBuffer = await runUploadStage(currentStage, () => {
-        if (!/^image\/(jpeg|png|webp)$/.test(data.mimeType)) throw new Error('Unsupported image MIME type.');
-        const validated = validateAndDecodeBase64(
-          data.base64Data,
-          data.mimeType as 'image/jpeg' | 'image/png' | 'image/webp',
-          2 * 1024 * 1024,
-        );
-        functions.logger.info('media_upload_payload', {
-          mime_type: data.mimeType,
-          file_name: data.fileName,
-          buffer_length: validated.sizeBytes,
-        });
-        return validated.buffer;
-      });
-
       currentStage = 'Upload Image';
       const fileId = await runUploadStage(currentStage, async () => {
         const uploaded = await withTransientDriveRetry(() => drive.files.create({
@@ -652,10 +661,11 @@ export const uploadVehicleEvidence = onRequest(
             parents: [destinationFolderId],
             appProperties: {
               system: 'smart-guard',
-              site_id: data.siteId,
+              site_id: account.siteId,
               module,
               record_id: data.recordId,
-              media_type: data.fileName,
+              media_type: data.mediaType,
+              uploaded_by_uid: account.uid,
             },
           },
           media: { mimeType: data.mimeType, body: Readable.from(fileBuffer) },
@@ -707,9 +717,12 @@ export const uploadVehicleEvidence = onRequest(
         size_bytes: urls.size,
         module,
         record_id: data.recordId,
-        site_id: data.siteId,
-        operator_id: uploadContext.operator_id,
-        auth_uid: uploadContext.firebase_uid,
+        media_type: data.mediaType,
+        site_id: account.siteId,
+        operator_id: account.operatorId,
+        operator_name: account.operatorName,
+        actor_role: account.role,
+        auth_uid: account.uid,
         created_at: admin.firestore.FieldValue.serverTimestamp(),
       }));
 
@@ -737,14 +750,185 @@ export const uploadVehicleEvidence = onRequest(
         exception: errorMessage(error),
       });
       response.status(
+        error instanceof UploadPolicyError ? error.httpStatus :
         currentStage === 'Verify Firebase Token' ? 401 :
           currentStage === 'Verify Active Account' ? 403 :
             error instanceof HttpsError && (error.code === 'invalid-argument' || error.code === 'failed-precondition') ? 400 : 500,
       ).json({
         success: false,
+        code: error instanceof UploadPolicyError ? error.code :
+          currentStage === 'Verify Firebase Token' ? 'UPLOAD_UNAUTHENTICATED' :
+            error instanceof HttpsError
+              && (error.code === 'invalid-argument' || error.code === 'failed-precondition')
+              ? 'UPLOAD_INVALID_FILE' :
+            currentStage === 'Upload Image' || currentStage === 'Set Drive Permission'
+              || currentStage === 'Generate View URL' ? 'UPLOAD_DRIVE_FAILED' : 'UPLOAD_INTERNAL',
         stage: currentStage,
         message: errorMessage(error),
       });
+    }
+  },
+);
+
+const PRIVATE_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
+
+async function legacyEvidenceRecord(
+  reference: string,
+  siteId: string,
+): Promise<{ collection: 'vehicleSessions' | 'vehicleLogs'; recordId: string } | null> {
+  for (const collectionName of ['vehicleSessions', 'vehicleLogs'] as const) {
+    for (const field of ['entry_plate_photo_url', 'entry_vehicle_photo_url']) {
+      const snapshot = await firestore.collection(collectionName)
+        .where('site_id', '==', siteId)
+        .where(field, '==', reference)
+        .limit(1)
+        .get();
+      if (!snapshot.empty) return { collection: collectionName, recordId: snapshot.docs[0].id };
+    }
+  }
+  return null;
+}
+
+/** Authenticated binary proxy for private Google Drive vehicle evidence. */
+export const getVehicleEvidenceImage = onRequest(
+  {
+    cors: false,
+    timeoutSeconds: 60,
+    memory: '256MiB',
+    secrets: [googleDriveClientId, googleDriveClientSecret, googleDriveRefreshToken],
+  },
+  async (request, response) => {
+    const origin = request.get('Origin');
+    const cors = corsDecision(request.method, origin, runtimeProjectId, process.env.APP_ALLOWED_ORIGINS || '');
+    if (cors.allowOrigin) {
+      response.set('Access-Control-Allow-Origin', cors.allowOrigin);
+      response.set('Vary', 'Origin');
+    }
+    response.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    response.set('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+    response.set('Access-Control-Max-Age', '3600');
+    response.set('X-Content-Type-Options', 'nosniff');
+    response.set('Cache-Control', 'private, no-store, max-age=0');
+    if (request.method === 'OPTIONS') {
+      response.status(cors.allowed ? 204 : 403).send('');
+      return;
+    }
+    if (request.method !== 'POST') {
+      response.status(405).json({ error: 'Method not allowed.' });
+      return;
+    }
+    if (!cors.allowed) {
+      response.status(403).json({ error: 'Origin not allowed.' });
+      return;
+    }
+    try {
+      const authorization = request.get('Authorization');
+      if (!authorization?.startsWith('Bearer ')) {
+        response.status(401).json({ error: 'Authentication is required.' });
+        return;
+      }
+      let decoded: admin.auth.DecodedIdToken;
+      try {
+        decoded = await admin.auth().verifyIdToken(authorization.slice(7));
+      } catch {
+        response.status(401).json({ error: 'Firebase authentication token is invalid or expired.' });
+        return;
+      }
+      const profile = await firestore.collection('users').doc(decoded.uid).get();
+      const actor = canonicalUploadActor(decoded.uid, profile.data());
+      const body = isRecord(request.body) ? request.body : {};
+      const mediaReference = typeof body.mediaReference === 'string' ? body.mediaReference.trim() : body.mediaReference;
+      const fileId = extractDriveFileId(mediaReference);
+
+      const registry = await firestore.collection('mediaUploads').doc(fileId).get();
+      let recordId = '';
+      let mediaType = '';
+      if (registry.exists) {
+        const metadata = registry.data() ?? {};
+        recordId = String(metadata.record_id || '');
+        mediaType = String(metadata.media_type || '');
+        if (mediaType === 'activity_evidence') {
+          const activity = await firestore.collectionGroup('activities')
+            .where('activity_id', '==', recordId)
+            .limit(5)
+            .get();
+          authorizeRegisteredEvidence(
+            fileId,
+            actor,
+            metadata,
+            activity.docs.find(document => document.get('site_id') === actor.siteId)?.data(),
+          );
+        } else {
+          const collectionName = ['entry_plate', 'entry_vehicle', 'visitor_document'].includes(mediaType)
+            ? 'vehicleSessions' : 'vehicleLogs';
+          const linkedRecord = await firestore.collection(collectionName).doc(recordId).get();
+          authorizeRegisteredEvidence(fileId, actor, metadata, linkedRecord.data());
+        }
+      } else {
+        if (typeof mediaReference !== 'string' || /^[A-Za-z0-9_-]{10,128}$/.test(mediaReference)) {
+          response.status(404).json({ error: 'Evidence metadata was not found.' });
+          return;
+        }
+        const legacy = await legacyEvidenceRecord(mediaReference, actor.siteId);
+        if (!legacy) {
+          response.status(404).json({ error: 'Evidence is not linked to an authorized vehicle record.' });
+          return;
+        }
+        recordId = legacy.recordId;
+        mediaType = 'legacy_entry_evidence';
+      }
+
+      const drive = createOAuthDriveClient({
+        clientId: googleDriveClientId.value(),
+        clientSecret: googleDriveClientSecret.value(),
+        refreshToken: googleDriveRefreshToken.value(),
+      });
+      const metadata = await drive.files.get({
+        fileId,
+        fields: 'id,mimeType,size,trashed,appProperties',
+        supportsAllDrives: true,
+      });
+      const mimeType = String(metadata.data.mimeType || '');
+      const size = Number(metadata.data.size || 0);
+      if (metadata.data.id !== fileId) throw new PrivateEvidencePolicyError('Evidence file was not found.', 404);
+      validatePrivateImageMetadata(fileId, mimeType, size, metadata.data.trashed === true, PRIVATE_EVIDENCE_MAX_BYTES);
+      const appProperties = metadata.data.appProperties ?? {};
+      if (appProperties.system === 'smart-guard' && (
+        appProperties.site_id !== actor.siteId
+        || (appProperties.record_id && appProperties.record_id !== recordId)
+      )) {
+        response.status(403).json({ error: 'Drive evidence metadata does not match the authorized record.' });
+        return;
+      }
+      const media = await drive.files.get(
+        { fileId, alt: 'media', supportsAllDrives: true },
+        { responseType: 'arraybuffer' },
+      );
+      const buffer = Buffer.from(media.data as ArrayBuffer);
+      if (buffer.length > PRIVATE_EVIDENCE_MAX_BYTES) {
+        response.status(413).json({ error: 'Evidence response exceeds the private preview size limit.' });
+        return;
+      }
+      response.set('Content-Type', mimeType);
+      response.set('Content-Length', String(buffer.length));
+      response.status(200).send(buffer);
+      functions.logger.info('private_vehicle_evidence_served', {
+        firebase_uid: actor.uid,
+        site_id: actor.siteId,
+        record_id: recordId,
+        media_type: mediaType,
+        mime_type: mimeType,
+        size_bytes: buffer.length,
+      });
+    } catch (error: unknown) {
+      const status = error instanceof PrivateEvidencePolicyError ? error.httpStatus
+        : error instanceof UploadPolicyError ? error.httpStatus
+        : error instanceof Error && error.message.includes('Authentication') ? 401 : 404;
+      functions.logger.warn('private_vehicle_evidence_failed', {
+        status,
+        error: errorMessage(error),
+      });
+      response.status(status).json({ error: status === 401 ? 'Authentication is required.' : 'Evidence is unavailable.' });
     }
   },
 );

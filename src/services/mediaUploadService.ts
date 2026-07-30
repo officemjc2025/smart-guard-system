@@ -6,9 +6,25 @@ export interface MediaUploadContext {
   recordId: string;
   siteId: string;
   uploadedBy: string;
+  mediaType?: string;
 }
 
 const MEDIA_UPLOAD_NOT_CONFIGURED = 'Media upload service is not configured.';
+
+export type MediaUploadErrorCode =
+  | 'UPLOAD_CORS'
+  | 'UPLOAD_UNAUTHENTICATED'
+  | 'UPLOAD_FORBIDDEN'
+  | 'UPLOAD_INVALID_FILE'
+  | 'UPLOAD_DRIVE_FAILED'
+  | 'UPLOAD_NETWORK'
+  | 'UPLOAD_INTERNAL';
+
+export class MediaUploadError extends Error {
+  constructor(public readonly code: MediaUploadErrorCode, message: string) {
+    super(message);
+  }
+}
 
 function validatedMediaUploadUrl(): string {
   if (!MEDIA_UPLOAD_URL) throw new Error(MEDIA_UPLOAD_NOT_CONFIGURED);
@@ -86,22 +102,47 @@ export async function uploadImageToDrive(
   if (sizeInBytes > 2 * 1024 * 1024) {
     throw new Error(`ไฟล์ภาพมีขนาดใหญ่เกินกว่าขีดจำกัดสูงสุดหลังบีบอัด (${(sizeInBytes / (1024 * 1024)).toFixed(2)} MB จากสูงสุด 2.00 MB) กรุณาใช้ไฟล์ที่มีขนาดเล็กลง`);
   }
-  const response = await fetch(validatedMediaUploadUrl(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${await user.getIdToken()}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      fileName: filename.replace(/[^a-zA-Z0-9_.-]/g, '_'),
-      base64Data: fileBase64,
-      mimeType,
-      moduleName: mediaContext.moduleName,
-      recordId: mediaContext.recordId,
-      siteId: mediaContext.siteId,
-      uploadedBy: mediaContext.uploadedBy,
-    }),
+  const uploadUrl = validatedMediaUploadUrl();
+  const mediaType = mediaContext.mediaType || filename.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  console.info('[Vehicle Evidence Upload Start]', {
+    functionName: 'uploadVehicleEvidence',
+    urlHost: new URL(uploadUrl).host,
+    recordId: mediaContext.recordId,
+    mediaType,
+    sizeInBytes: Math.round(sizeInBytes),
+    origin: window.location.origin,
   });
+  let response: Response;
+  try {
+    response = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${await user.getIdToken()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        fileName: filename.replace(/[^a-zA-Z0-9_.-]/g, '_'),
+        base64Data: fileBase64,
+        mimeType,
+        moduleName: mediaContext.moduleName,
+        recordId: mediaContext.recordId,
+        siteId: mediaContext.siteId,
+        mediaType,
+      }),
+    });
+  } catch (reason: unknown) {
+    console.error('[Vehicle Evidence Upload Failure]', {
+      code: 'UPLOAD_NETWORK',
+      recordId: mediaContext.recordId,
+      mediaType,
+      origin: window.location.origin,
+      reason: reason instanceof Error ? reason.message : String(reason),
+    });
+    throw new MediaUploadError(
+      'UPLOAD_NETWORK',
+      'ไม่สามารถเชื่อมต่อบริการอัปโหลดหลักฐานได้ กรุณาตรวจสอบเครือข่ายหรือการตั้งค่า CORS แล้วลองใหม่',
+    );
+  }
   const payload: unknown = await response.json().catch(() => null);
   const result = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   if (!response.ok) {
@@ -109,10 +150,27 @@ export async function uploadImageToDrive(
       ? result.message
       : typeof result.error === 'string' ? result.error : `Media upload failed with HTTP ${response.status}.`;
     const stage = typeof result.stage === 'string' ? ` (${result.stage})` : '';
-    throw new Error(`${detail}${stage}`);
+    const backendCode = typeof result.code === 'string' ? result.code : '';
+    const code: MediaUploadErrorCode =
+      response.status === 401 ? 'UPLOAD_UNAUTHENTICATED' :
+        response.status === 403 ? 'UPLOAD_FORBIDDEN' :
+          response.status === 400 || response.status === 404 ? 'UPLOAD_INVALID_FILE' :
+            backendCode === 'UPLOAD_DRIVE_FAILED' ? 'UPLOAD_DRIVE_FAILED' : 'UPLOAD_INTERNAL';
+    const thaiMessage =
+      code === 'UPLOAD_UNAUTHENTICATED' ? 'กรุณาเข้าสู่ระบบใหม่ก่อนอัปโหลดหลักฐาน' :
+        code === 'UPLOAD_FORBIDDEN' ? 'สิทธิ์ของผู้ใช้งานไม่เพียงพอสำหรับหลักฐานรายการนี้' :
+          code === 'UPLOAD_INVALID_FILE' ? 'ไฟล์รูปภาพหรือรายการอ้างอิงไม่ถูกต้อง' :
+            code === 'UPLOAD_DRIVE_FAILED' ? 'ระบบจัดเก็บรูปภาพขัดข้อง กรุณาลองใหม่' :
+              `${detail}${stage}`;
+    throw new MediaUploadError(code, thaiMessage);
   }
   if (typeof result.mediaUrl !== 'string' || !result.mediaUrl.startsWith('https://')) {
     throw new Error('Media upload service returned an invalid media URL.');
   }
+  console.info('[Vehicle Evidence Upload Success]', {
+    recordId: mediaContext.recordId,
+    mediaType,
+    sizeInBytes: typeof result.size === 'number' ? result.size : Math.round(sizeInBytes),
+  });
   return result.mediaUrl;
 }
