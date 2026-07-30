@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   onSnapshot,
@@ -11,6 +12,7 @@ import {
   Timestamp,
   where,
   type DocumentData,
+  type DocumentSnapshot,
   type QueryDocumentSnapshot,
   type Unsubscribe,
 } from 'firebase/firestore';
@@ -34,7 +36,7 @@ import { FUNCTIONS_REGION } from '../config/firebaseFunctions';
 const SESSION_COLLECTION = 'vehicleSessions';
 const LOCK_DURATION_MS = 5 * 60 * 1000;
 const pendingStatuses: VehicleSessionStatus[] = [
-  'Draft', 'Pending', 'InProgress', 'WaitingPhoto', 'WaitingVisitor',
+  'Draft', 'Pending', 'WaitingPhoto', 'WaitingVisitor',
   'WaitingDestination', 'WaitingEvidence', 'Ready',
 ];
 
@@ -48,7 +50,7 @@ const identity = (operatorName: string) => {
   return { uid, operatorName: operatorName.trim() || 'ผู้ปฏิบัติงาน' };
 };
 
-function sessionFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): VehicleSessionRecord {
+function sessionFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData> | DocumentSnapshot<DocumentData>): VehicleSessionRecord {
   const data = snapshot.data();
   const metrics = typeof data.queueMetrics === 'object' && data.queueMetrics !== null
     ? data.queueMetrics as Record<string, unknown> : {};
@@ -121,7 +123,7 @@ function sessionFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): Veh
   };
 }
 
-function vehicleLogFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData>): VehicleLogRecord {
+function vehicleLogFromSnapshot(snapshot: QueryDocumentSnapshot<DocumentData> | DocumentSnapshot<DocumentData>): VehicleLogRecord {
   const data = snapshot.data();
   return {
     ...data,
@@ -247,23 +249,93 @@ async function applyVehicleSessionAnalytics(sessionId: string, siteId: string, w
   await callable({ sessionId, siteId, workflow });
 }
 
-export async function createVehicleSessionFromScan(rawValue: string, siteId: string, operatorName: string, actorRole = 'Guard') {
+export async function createVehicleSessionFromScan(rawValue: string, requestedSiteId: string, operatorName: string, actorRole = 'Guard') {
   const actor = identity(operatorName);
+  const profileReference = doc(db, 'users', actor.uid);
+  const profileSnapshot = await getDoc(profileReference);
+  if (!profileSnapshot.exists()) throw new Error('ไม่พบข้อมูลผู้ใช้งาน กรุณาเข้าสู่ระบบใหม่');
+
+  const profile = profileSnapshot.data();
+  if (profile.status !== 'Active') throw new Error('บัญชีผู้ใช้งานไม่ได้อยู่ในสถานะ Active');
+  if (typeof profile.site_id !== 'string' || !profile.site_id.trim()) {
+    throw new Error('ข้อมูลผู้ใช้งานไม่มีพื้นที่ปฏิบัติงาน กรุณาติดต่อผู้ดูแลระบบ');
+  }
+  if (typeof profile.operator_name !== 'string' || !profile.operator_name.trim()) {
+    throw new Error('ข้อมูลผู้ใช้งานไม่มีชื่อผู้ปฏิบัติงาน กรุณาติดต่อผู้ดูแลระบบ');
+  }
+  if (typeof profile.role !== 'string' || !profile.role.trim()) {
+    throw new Error('ข้อมูลผู้ใช้งานไม่มีสิทธิ์การใช้งาน กรุณาติดต่อผู้ดูแลระบบ');
+  }
+
+  // Preserve the exact Firestore profile values because Security Rules
+  // compare actor identity and site using exact equality.
+  const siteId = profile.site_id;
+  const canonicalOperatorName = profile.operator_name;
+  const canonicalActorRole = profile.role;
+
+  if (requestedSiteId !== siteId) {
+    throw new Error('พื้นที่ที่ร้องขอไม่ตรงกับพื้นที่ของบัญชีผู้ใช้งาน กรุณาเข้าสู่ระบบใหม่');
+  }
+
+  console.info('[Vehicle Session Canonical Identity]', {
+    authUid: actor.uid,
+    requestedSiteId,
+    requestedOperatorName: operatorName,
+    requestedActorRole: actorRole,
+    canonicalSiteId: siteId,
+    canonicalOperatorName,
+    canonicalActorRole,
+  });
+
   const card = await findCard(rawValue, siteId);
+  if (card.status === 'Reserved') {
+    const linkedSessionId = String(card.current_vehicle_session_id || '');
+    if (!linkedSessionId) {
+      throw new Error(`บัตร ${card.card_number} ถูกจอง แต่ไม่มี Vehicle Session อ้างอิง กรุณาติดต่อหัวหน้ากะ`);
+    }
+    const linkedSession = await getDoc(doc(db, SESSION_COLLECTION, linkedSessionId));
+    if (!linkedSession.exists()
+        || linkedSession.get('site_id') !== siteId
+        || linkedSession.get('parking_card_id') !== card.firestore_document_id
+        || ['Completed', 'Cancelled'].includes(String(linkedSession.get('status') || ''))) {
+      throw new Error(`ข้อมูลการจองบัตร ${card.card_number} ไม่สอดคล้องกับ Vehicle Session`);
+    }
+    console.info('[Vehicle Session Existing Reservation Reused]', {
+      timestamp: new Date().toISOString(),
+      cardDocumentId: card.firestore_document_id,
+      sessionId: linkedSessionId,
+    });
+    return linkedSessionId;
+  }
+  if (card.status === 'InUse') {
+    throw new Error(`บัตร ${card.card_number} อยู่ระหว่างใช้งาน กรุณาดำเนินการผ่านขั้นตอนรถออก`);
+  }
+  if (card.status !== 'Available') {
+    throw new Error(`บัตร ${card.card_number} ไม่พร้อมใช้งาน (${card.status})`);
+  }
   const sessionId = `VS_${crypto.randomUUID()}`;
+  const eventId = `SESSION_${crypto.randomUUID()}`;
+  const audit = auditReference();
   const sessionRef = doc(db, SESSION_COLLECTION, sessionId);
   const cardRef = doc(db, 'parkingCards', card.firestore_document_id);
+  console.info('[Vehicle Session Transaction Start]', {
+    timestamp: new Date().toISOString(),
+    rawValue,
+    sessionId,
+    activityId: eventId,
+    auditId: audit.auditId,
+    cardDocumentId: card.firestore_document_id,
+  });
   await runTransaction(db, async transaction => {
     const currentCard = await transaction.get(cardRef);
     if (!currentCard.exists()) throw new Error('ไม่พบบัตรจอดรถ');
     const current = normalizeParkingCardData(currentCard.id, currentCard.data());
     if (current.status !== 'Available') throw new Error(`บัตรนี้ไม่พร้อมใช้งาน (${current.status})`);
-    const eventId = `SESSION_${crypto.randomUUID()}`;
     const occurredAt = Timestamp.now();
     transaction.set(sessionRef, {
       session_id: sessionId, site_id: siteId, parking_card_id: card.firestore_document_id,
       card_number: card.card_number, stage: 'CardIssued', status: 'Pending',
-      opened_by: actor.uid, opened_by_name: actor.operatorName, current_owner: actor.uid,
+      opened_by: actor.uid, opened_by_name: canonicalOperatorName, current_owner: actor.uid,
       last_updated_by: actor.uid, assigned_to: actor.uid, assignedTo: actor.uid, assignedBy: actor.uid,
       assignedAt: serverTimestamp(), queueStatus: 'Assigned', priority: 'Normal', queuePosition: Date.now(),
       last_activity_at: serverTimestamp(),
@@ -276,19 +348,25 @@ export async function createVehicleSessionFromScan(rawValue: string, siteId: str
     });
     appendSessionActivityInTransaction(transaction, {
       sessionId, siteId, action: 'SessionCreatedFromQr', toStage: 'CardIssued',
-      toStatus: 'Pending', actorName: actor.operatorName, actorRole,
+      toStatus: 'Pending', actorName: canonicalOperatorName, actorRole: canonicalActorRole,
       clientEventId: eventId,
     }, actor.uid);
     transaction.update(cardRef, {
       status: 'Reserved', status_normalized: 'Reserved', current_vehicle_session_id: sessionId,
       last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
     });
-    const audit = auditReference();
     transaction.set(audit.reference, {
       audit_id: audit.auditId, module_name: 'VehicleSessions',
       record_id: sessionId, action: 'Created->CardIssued', operator_id: actor.uid,
       account_uid: actor.uid, site_id: siteId, created_at: serverTimestamp(),
     });
+  });
+  console.info('[Vehicle Session Transaction Committed]', {
+    timestamp: new Date().toISOString(),
+    sessionId,
+    activityId: eventId,
+    auditId: audit.auditId,
+    cardDocumentId: card.firestore_document_id,
   });
   await applyVehicleSessionAnalytics(sessionId, siteId, 'Vehicle Entry');
   return sessionId;
@@ -328,10 +406,8 @@ export async function updateVehicleSession(
     const actualVersion = typeof snapshot.get('sessionVersion') === 'number' ? snapshot.get('sessionVersion') as number : 0;
     if (expectedVersion !== undefined) assertExpectedSessionVersion(sessionId, expectedVersion, actualVersion, snapshot.data());
     const eventId = `SESSION_${crypto.randomUUID()}`;
-    const occurredAt = Timestamp.now();
     transaction.update(reference, sanitizeAndValidateFirestoreData({
-      ...patch, stage, status, queueStatus, current_owner: actor.uid, last_updated_by: actor.uid,
-      queueMetrics: firestoreQueueMetricTransition(snapshot.data(), queueStatus, 'QueueStatusChange', eventId, occurredAt),
+      ...patch, stage, status, queueStatus, last_updated_by: actor.uid,
       sessionVersion: actualVersion + 1,
       last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
       [`stage_updates.${stage}`]: { updatedBy: actor.uid, updatedAt: serverTimestamp() },
@@ -355,7 +431,90 @@ export async function updateVehicleSession(
   return result.nextVersion;
 }
 
-export async function acquireVehicleSessionLock(sessionId: string, operatorName: string, adminOverride = false, expectedVersion?: number) {
+export async function updateActiveVehicleSession(
+  sessionId: string,
+  patch: VehicleSessionPatch,
+  operatorName: string,
+  actorRole: string,
+  expectedVersion: number,
+): Promise<number> {
+  const actor = identity(operatorName);
+  return runTransaction(db, async transaction => {
+    const sessionReference = doc(db, SESSION_COLLECTION, sessionId);
+    const sessionSnapshot = await transaction.get(sessionReference);
+    if (!sessionSnapshot.exists()) throw new Error('ไม่พบ Vehicle Session');
+    const data = sessionSnapshot.data();
+    const actualVersion = typeof data.sessionVersion === 'number' ? data.sessionVersion : 0;
+    assertExpectedSessionVersion(sessionId, expectedVersion, actualVersion, data);
+    if (data.stage !== 'Active' || data.status !== 'InProgress' || !data.vehicle_log_id) {
+      throw new Error('แก้ข้อมูลหลังรถเข้าได้เฉพาะ Session ที่รถอยู่ในพื้นที่');
+    }
+    const logReference = doc(db, 'vehicleLogs', String(data.vehicle_log_id));
+    const logSnapshot = await transaction.get(logReference);
+    if (!logSnapshot.exists() || logSnapshot.get('vehicle_session_id') !== sessionId || logSnapshot.get('status') !== 'กำลังจอด') {
+      throw new Error('ข้อมูล Vehicle Log ไม่สอดคล้องกับ Session');
+    }
+    const eventId = `SESSION_${crypto.randomUUID()}`;
+    const mutablePatch = sanitizeAndValidateFirestoreData({ ...patch });
+    transaction.update(sessionReference, {
+      ...mutablePatch,
+      last_updated_by: actor.uid,
+      sessionVersion: actualVersion + 1,
+      last_activity_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    transaction.update(logReference, {
+      ...mutablePatch,
+      updated_at: serverTimestamp(),
+    });
+    appendSessionActivityInTransaction(transaction, {
+      sessionId,
+      siteId: String(data.site_id),
+      action: 'ActiveVehicleDetailsUpdated',
+      fromStage: 'Active',
+      toStage: 'Active',
+      fromStatus: 'InProgress',
+      toStatus: 'InProgress',
+      actorName: actor.operatorName,
+      actorRole,
+      details: { vehicle_log_id: String(data.vehicle_log_id) },
+      clientEventId: eventId,
+    }, actor.uid);
+    const audit = auditReference();
+    transaction.set(audit.reference, {
+      audit_id: audit.auditId,
+      module_name: 'VehicleSessions',
+      record_id: sessionId,
+      vehicle_log_id: String(data.vehicle_log_id),
+      action: 'ActiveDetailsUpdated',
+      operator_id: actor.uid,
+      account_uid: actor.uid,
+      site_id: String(data.site_id),
+      created_at: serverTimestamp(),
+    });
+    return actualVersion + 1;
+  });
+}
+
+export async function getVehicleSession(sessionId: string): Promise<VehicleSessionRecord> {
+  const snapshot = await getDoc(doc(db, SESSION_COLLECTION, sessionId));
+  if (!snapshot.exists()) throw new Error('ไม่พบ Vehicle Session');
+  const session = sessionFromSnapshot(snapshot);
+  if ((!session.entry_plate_photo_url || !session.entry_vehicle_photo_url) && session.vehicle_log_id) {
+    const logSnapshot = await getDoc(doc(db, 'vehicleLogs', session.vehicle_log_id));
+    if (logSnapshot.exists()) {
+      const log = vehicleLogFromSnapshot(logSnapshot);
+      return {
+        ...session,
+        entry_plate_photo_url: session.entry_plate_photo_url || log.entry_plate_photo_url,
+        entry_vehicle_photo_url: session.entry_vehicle_photo_url || log.entry_vehicle_photo_url,
+      };
+    }
+  }
+  return session;
+}
+
+export async function acquireVehicleSessionLock(sessionId: string, operatorName: string, adminOverride = false, expectedVersion?: number): Promise<VehicleSessionRecord> {
   const actor = identity(operatorName);
   await runTransaction(db, async transaction => {
     const reference = doc(db, SESSION_COLLECTION, sessionId);
@@ -370,10 +529,11 @@ export async function acquireVehicleSessionLock(sessionId: string, operatorName:
     transaction.update(reference, {
       editing_by: actor.uid, editing_by_name: actor.operatorName,
       editing_since: serverTimestamp(), expires_at: Timestamp.fromMillis(Date.now() + LOCK_DURATION_MS),
-      current_owner: actor.uid, last_updated_by: actor.uid, last_activity_at: serverTimestamp(),
+      last_updated_by: actor.uid, last_activity_at: serverTimestamp(),
       sessionVersion: actualVersion + 1,
     });
   });
+  return getVehicleSession(sessionId);
 }
 
 export async function releaseVehicleSessionLock(sessionId: string) {
@@ -397,10 +557,14 @@ export async function completeVehicleSession(sessionId: string, operatorName: st
     const data = sessionSnapshot.data();
     const actualVersion = typeof data.sessionVersion === 'number' ? data.sessionVersion : 0;
     if (expectedVersion !== undefined) assertExpectedSessionVersion(sessionId, expectedVersion, actualVersion, data);
-    if (!data.vehicle_plate || !data.target_room || !data.entry_plate_photo_url || !data.entry_vehicle_photo_url) {
-      throw new Error('ข้อมูลทะเบียน ปลายทาง และรูปหลักฐานยังไม่ครบ');
+    if (!data.vehicle_plate || !data.target_room) {
+      throw new Error('กรุณาระบุทะเบียนรถและปลายทาง');
+    }
+    if (data.stage === 'Active' && data.status === 'InProgress' && data.vehicle_log_id) {
+      return { logId: String(data.vehicle_log_id), siteId: String(data.site_id || ''), alreadyActive: true };
     }
     if (data.status === 'Completed' || data.status === 'Cancelled') throw new Error('Vehicle Session นี้ปิดแล้ว');
+    if (data.stage !== 'Ready' || data.status !== 'Ready') throw new Error('Vehicle Session ต้องอยู่ในสถานะพร้อมเข้าพื้นที่ก่อนยืนยัน');
     const cardRef = doc(db, 'parkingCards', String(data.parking_card_id));
     const cardSnapshot = await transaction.get(cardRef);
     if (!cardSnapshot.exists() || cardSnapshot.get('current_vehicle_session_id') !== sessionId || cardSnapshot.get('status') !== 'Reserved') {
@@ -428,10 +592,8 @@ export async function completeVehicleSession(sessionId: string, operatorName: st
       last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
     });
     const eventId = `SESSION_${crypto.randomUUID()}`;
-    const occurredAt = Timestamp.now();
     transaction.update(sessionRef, {
       stage: 'Active', status: 'InProgress', queueStatus: 'In Progress', vehicle_log_id: logId,
-      queueMetrics: firestoreQueueMetricTransition(data, 'In Progress', 'QueueStatusChange', eventId, occurredAt),
       sessionVersion: actualVersion + 1,
       current_owner: actor.uid, last_updated_by: actor.uid, last_activity_at: serverTimestamp(),
       updated_at: serverTimestamp(), editing_by: '', editing_by_name: '', editing_since: null,
@@ -450,10 +612,10 @@ export async function completeVehicleSession(sessionId: string, operatorName: st
       operator_id: actor.uid, account_uid: actor.uid, site_id: data.site_id,
       created_at: serverTimestamp(),
     });
-    return { logId, siteId: String(data.site_id || '') };
+    return { logId, siteId: String(data.site_id || ''), alreadyActive: false };
   });
-  await applyVehicleSessionAnalytics(sessionId, result.siteId, 'Vehicle Entry Completion');
-  return { logId: result.logId };
+  if (!result.alreadyActive) await applyVehicleSessionAnalytics(sessionId, result.siteId, 'Vehicle Entry Completion');
+  return { logId: result.logId, alreadyActive: result.alreadyActive };
 }
 
 export function subscribePendingVehicleSessions(siteId: string, callback: (sessions: VehicleSessionRecord[]) => void): Unsubscribe {
@@ -468,6 +630,19 @@ export function subscribeAssignedVehicleSessions(siteId: string, callback: (sess
   if (!uid) return () => undefined;
   return onSnapshot(
     query(collection(db, SESSION_COLLECTION), where('site_id', '==', siteId), where('assignedTo', '==', uid), where('status', 'in', pendingStatuses), orderBy('last_activity_at', 'desc'), limit(50)),
+    snapshot => callback(snapshot.docs.map(sessionFromSnapshot)),
+  );
+}
+
+export function subscribeActiveVehicleSessions(siteId: string, callback: (sessions: VehicleSessionRecord[]) => void): Unsubscribe {
+  return onSnapshot(
+    query(
+      collection(db, SESSION_COLLECTION),
+      where('site_id', '==', siteId),
+      where('status', '==', 'InProgress'),
+      orderBy('last_activity_at', 'desc'),
+      limit(100),
+    ),
     snapshot => callback(snapshot.docs.map(sessionFromSnapshot)),
   );
 }

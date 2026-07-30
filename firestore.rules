@@ -112,6 +112,40 @@ service cloud.firestore {
              || (resource.data.status == 'VIP' && request.resource.data.status == 'Available');
     }
 
+    // Update validation is intentionally delta-based. Re-running the full create
+    // schema for every document in a multi-document vehicle transaction can exceed
+    // Firestore's 1,000-expression request limit. Every update branch below also
+    // has a strict affectedKeys() allowlist.
+    function validParkingCardUpdateData() {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      return data.keys().hasOnly([
+               'firestore_document_id', 'card_id', 'site_id', 'card_number', 'card_number_normalized', 'qr_code_value', 'qr_code_normalized', 'card_type', 'status', 'status_normalized', 'status_original',
+               'current_vehicle_plate', 'current_vehicle_log_id', 'current_vehicle_session_id', 'last_activity_at', 'member_id', 'lost_reason', 'lost_at', 'reported_by', 'reported_by_account_uid', 'related_vehicle_log_id',
+               'replacement_card_id', 'replaced_by_card_id', 'replaced_by_document_id', 'replacement_for_card_id', 'replacement_for_document_id', 'replacement_reason', 'replacement_at', 'replacement_by', 'created_by', 'replacement_approved', 'replacement_approved_by',
+               'replacement_approved_at', 'note', 'created_at', 'updated_at'
+             ])
+             && (!changed.hasAny(['card_number']) || (data.card_number is string && data.card_number.size() > 0 && data.card_number.size() <= 64 && data.card_number.matches('^[A-Za-z0-9 /_-]+$')))
+             && (!changed.hasAny(['card_number_normalized']) || (data.card_number_normalized is string && data.card_number_normalized.size() <= 64))
+             && (!changed.hasAny(['qr_code_value']) || (data.qr_code_value is string && data.qr_code_value.size() <= 256))
+             && (!changed.hasAny(['qr_code_normalized']) || (data.qr_code_normalized is string && data.qr_code_normalized.size() <= 256))
+             && (!changed.hasAny(['card_type']) || data.card_type in ['Normal', 'Temporary', 'VIP', 'Resident', 'Contractor', 'Staff', 'Other'])
+             && data.status in ['Available', 'Reserved', 'Returned', 'InUse', 'In Use', 'Disabled', 'Suspended', 'Lost', 'Cancelled', 'Replaced', 'ReplacementApproved', 'Retired', 'VIP', 'ว่าง', 'ใช้งานอยู่', 'กำลังใช้งาน', 'VehicleInside', 'ระงับ', 'บัตรหาย']
+             && (!changed.hasAny(['status_normalized']) || data.status_normalized in ['Available', 'Reserved', 'Returned', 'InUse', 'Disabled', 'Suspended', 'Lost', 'Cancelled', 'Replaced', 'ReplacementApproved', 'Retired', 'VIP'])
+             && (!changed.hasAny(['current_vehicle_plate']) || (data.current_vehicle_plate is string && data.current_vehicle_plate.size() <= 64))
+             && (!changed.hasAny(['current_vehicle_log_id']) || (data.current_vehicle_log_id is string && data.current_vehicle_log_id.size() <= 128))
+             && (!changed.hasAny(['current_vehicle_session_id']) || (data.current_vehicle_session_id is string && data.current_vehicle_session_id.size() <= 128))
+             && (!changed.hasAny(['last_activity_at']) || data.last_activity_at is timestamp || (data.last_activity_at is string && data.last_activity_at.size() <= 64))
+             && (!changed.hasAny(['updated_at']) || data.updated_at is timestamp || (data.updated_at is string && data.updated_at.size() <= 64))
+             && (!changed.hasAny(['lost_reason']) || (data.lost_reason is string && data.lost_reason.size() <= 1000))
+             && (!changed.hasAny(['lost_at']) || data.lost_at is timestamp || (data.lost_at is string && data.lost_at.size() <= 64))
+             && (!changed.hasAny(['reported_by']) || (data.reported_by is string && data.reported_by.size() <= 256))
+             && (!changed.hasAny(['reported_by_account_uid']) || (data.reported_by_account_uid is string && data.reported_by_account_uid.size() <= 128))
+             && (!changed.hasAny(['related_vehicle_log_id']) || (data.related_vehicle_log_id is string && data.related_vehicle_log_id.size() <= 128))
+             && (!changed.hasAny(['member_id']) || (data.member_id is string && data.member_id.size() <= 128))
+             && (!changed.hasAny(['note']) || (data.note is string && data.note.size() <= 2000));
+    }
+
     function validReplacementCreate(documentId) {
       return (!('replacement_for_document_id' in request.resource.data)
                 && !('replacement_for_card_id' in request.resource.data))
@@ -336,16 +370,104 @@ service cloud.firestore {
 
     function activeOperatorAtSite(uid, siteId) {
       let profile = get(/databases/$(database)/documents/users/$(uid)).data;
-      return profile.status == 'Active' && profile.site_id == siteId;
+      return profile.status == 'Active'
+             && profile.site_id == siteId
+             && profile.role in ['Guard', 'ShiftHead', 'Manager', 'Admin'];
     }
 
     function canUpdateVehicleSession() {
       let profile = ownProfile();
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let assignmentOrPriorityChanged = changed.hasAny([
+        'assignedTo', 'assigned_to', 'assignedBy', 'assignedAt',
+        'assignmentVersion', 'priority', 'queuePosition'
+      ]);
       return signedIn()
              && profile.status == 'Active'
              && resource.data.site_id == profile.site_id
-             && (profile.role in ['ShiftHead', 'Manager', 'Admin']
+             && request.resource.data.site_id == profile.site_id
+             && profile.role in ['Guard', 'ShiftHead', 'Manager', 'Admin']
+             && validVehicleSessionTransition()
+             && validAssignmentIdentityMutation()
+             && validCurrentOwnerMutation()
+             && validEditLockMutation()
+             && (!assignmentOrPriorityChanged
+               || profile.role in ['ShiftHead', 'Manager', 'Admin']
                || (profile.role == 'Guard' && validGuardQueueUpdate()));
+    }
+
+    function validAssignmentIdentityMutation() {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      let assignmentIdentityChanged = changed.hasAny([
+        'assignedTo', 'assigned_to', 'assignedBy', 'assignedAt'
+      ]);
+      return !assignmentIdentityChanged
+             || (data.assignedBy == request.auth.uid
+               && ((data.assignedTo in ['', null] && data.assigned_to == '')
+                 || (data.assignedTo is string && data.assignedTo != ''
+                   && data.assigned_to == data.assignedTo)));
+    }
+
+    function validCurrentOwnerMutation() {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      let assignmentChanged = changed.hasAny(['assignedTo', 'assigned_to']);
+      let workflowChanged = changed.hasAny(['stage', 'status']);
+      return !changed.hasAny(['current_owner'])
+             || (assignmentChanged
+               && ((data.assignedTo in ['', null] && data.current_owner == '')
+                 || (data.assignedTo is string && data.assignedTo != ''
+                   && data.current_owner == data.assignedTo)))
+             || (workflowChanged && data.current_owner == request.auth.uid);
+    }
+
+    function validEditLockMutation() {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      let lockChanged = changed.hasAny([
+        'editing_by', 'editing_by_name', 'editing_since', 'expires_at'
+      ]);
+      let lockAcquired = data.editing_by == request.auth.uid
+        && data.editing_by_name == ownProfile().operator_name
+        && data.editing_since == request.time
+        && data.expires_at is timestamp
+        && data.expires_at > request.time
+        && data.expires_at <= request.time + duration.value(1, 'h');
+      let lockReleased = (!('editing_by' in resource.data)
+          || resource.data.editing_by in ['', request.auth.uid])
+        && data.editing_by == ''
+        && data.editing_by_name == ''
+        && data.editing_since == null
+        && data.expires_at == null;
+      return !lockChanged || lockAcquired || lockReleased;
+    }
+
+    function validVehicleSessionTransition() {
+      let beforeStage = resource.data.stage;
+      let afterStage = request.resource.data.stage;
+      let beforeStatus = resource.data.status;
+      let afterStatus = request.resource.data.status;
+      let privilegedCancellation = ownProfile().role in ['ShiftHead', 'Manager', 'Admin'];
+      return (beforeStage == afterStage && beforeStatus == afterStatus)
+             || (beforeStage == 'Created' && afterStage == 'CardIssued'
+               && beforeStatus in ['Draft', 'Pending'] && afterStatus == 'Pending')
+             || (beforeStage == 'CardIssued'
+               && afterStage in ['VehicleEntered', 'PlateCaptured', 'VehicleCaptured', 'VisitorInfo', 'DestinationSelected', 'EvidenceUploaded', 'Ready']
+               && beforeStatus == 'Pending'
+               && afterStatus in ['InProgress', 'WaitingPhoto', 'WaitingVisitor', 'WaitingDestination', 'WaitingEvidence', 'Ready'])
+             || (beforeStage in ['VehicleEntered', 'PlateCaptured', 'VehicleCaptured', 'VisitorInfo', 'DestinationSelected', 'EvidenceUploaded']
+               && afterStage in ['VehicleEntered', 'PlateCaptured', 'VehicleCaptured', 'VisitorInfo', 'DestinationSelected', 'EvidenceUploaded', 'Ready']
+               && afterStatus in ['InProgress', 'WaitingPhoto', 'WaitingVisitor', 'WaitingDestination', 'WaitingEvidence', 'Ready'])
+             || (beforeStage == 'Ready' && afterStage == 'Active'
+               && beforeStatus == 'Ready' && afterStatus == 'InProgress')
+             || (beforeStage == 'Active' && afterStage in ['VehicleExited', 'Completed']
+               && beforeStatus == 'InProgress' && afterStatus == 'Completed')
+             || (beforeStage == 'VehicleExited' && afterStage == 'Completed'
+               && afterStatus == 'Completed')
+             || (privilegedCancellation
+               && !(beforeStage in ['Active', 'VehicleExited', 'Completed', 'Cancelled'])
+               && afterStage == 'Cancelled' && afterStatus == 'Cancelled');
     }
 
     function validGuardQueueUpdate() {
@@ -383,7 +505,9 @@ service cloud.firestore {
                'activity_id', 'session_id', 'action', 'from_stage', 'to_stage',
                'from_status', 'to_status', 'actor_uid', 'actor_operator_id',
                'actor_name', 'actor_role', 'site_id', 'details', 'created_at',
-               'client_event_id', 'schema_version'
+               'client_event_id', 'schema_version', 'vehicle_session_id',
+               'vehicle_log_id', 'activity_type', 'title', 'description',
+               'location', 'severity', 'status', 'photo_urls', 'updated_at'
              ])
              && data.keys().hasAll([
                'activity_id', 'session_id', 'action', 'actor_uid', 'actor_operator_id',
@@ -415,7 +539,33 @@ service cloud.firestore {
              && (!('new_assignee' in data.details) || (data.details.new_assignee is string && data.details.new_assignee.size() <= 128))
              && (!('priority' in data.details) || data.details.priority in ['Emergency', 'High', 'Normal', 'Low'])
              && (!('queue_status' in data.details) || data.details.queue_status in ['Waiting', 'Assigned', 'In Progress', 'Waiting Information', 'Ready', 'Completed'])
-             && (!('vehicle_log_id' in data.details) || (data.details.vehicle_log_id is string && data.details.vehicle_log_id.size() <= 128));
+             && (!('vehicle_log_id' in data.details) || (data.details.vehicle_log_id is string && data.details.vehicle_log_id.size() <= 128))
+             && validOperationalActivityFields(data, sessionId);
+    }
+
+    function validOperationalActivityFields(data, sessionId) {
+      let operational = 'activity_type' in data;
+      return !operational || (
+        data.vehicle_session_id == sessionId
+        && data.vehicle_log_id is string && data.vehicle_log_id.size() <= 128
+        && data.activity_type in [
+          'ParkingIssue', 'WrongParking', 'Obstruction', 'Accident', 'Damage',
+          'Evidence', 'Remark', 'Warning', 'Violation', 'ContactResident',
+          'ContactVehicleOwner', 'VehicleMoved', 'FollowUp', 'Custom'
+        ]
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 150
+        && data.description is string && data.description.size() <= 2000
+        && data.location is string && data.location.size() <= 256
+        && data.severity in ['Low', 'Normal', 'High', 'Critical']
+        && data.status in ['Open', 'Monitoring', 'Resolved', 'Recorded']
+        && data.photo_urls is list && data.photo_urls.size() <= 5
+        && (data.photo_urls.size() < 1 || (data.photo_urls[0] is string && data.photo_urls[0].size() <= 4096))
+        && (data.photo_urls.size() < 2 || (data.photo_urls[1] is string && data.photo_urls[1].size() <= 4096))
+        && (data.photo_urls.size() < 3 || (data.photo_urls[2] is string && data.photo_urls[2].size() <= 4096))
+        && (data.photo_urls.size() < 4 || (data.photo_urls[3] is string && data.photo_urls[3].size() <= 4096))
+        && (data.photo_urls.size() < 5 || (data.photo_urls[4] is string && data.photo_urls[4].size() <= 4096))
+        && data.updated_at == request.time
+      );
     }
 
     function adminQueueMigration() {
@@ -563,7 +713,47 @@ service cloud.firestore {
              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                   'parking_card_id', 'site_id', 'exit_time', 'exit_plate_photo_url', 'exit_vehicle_photo_url', 'status', 'workflow_status', 'updated_at',
                   'exit_recorded_by', 'exit_account_uid', 'exit_operator_id', 'exit_operator_name', 'exit_role', 'exit_site_id', 'exit_note', 'abnormal_note'
-                ]);
+                ])
+             && request.resource.data.exit_time is timestamp
+             && request.resource.data.updated_at is timestamp
+             && request.resource.data.exit_recorded_by is string
+             && request.resource.data.exit_operator_name is string
+             && request.resource.data.exit_note is string && request.resource.data.exit_note.size() <= 2000
+             && request.resource.data.abnormal_note is string && request.resource.data.abnormal_note.size() <= 2000
+             && request.resource.data.exit_plate_photo_url is string && request.resource.data.exit_plate_photo_url.size() <= 4096
+             && request.resource.data.exit_vehicle_photo_url is string && request.resource.data.exit_vehicle_photo_url.size() <= 4096;
+    }
+
+    function validActiveVehicleLogDetailUpdate(id) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return canProcessVehicleExit()
+             && resource.data.site_id == activeSiteId()
+             && request.resource.data.site_id == resource.data.site_id
+             && resource.data.status == 'กำลังจอด'
+             && request.resource.data.status == resource.data.status
+             && resource.data.workflow_status == 'active'
+             && request.resource.data.workflow_status == resource.data.workflow_status
+             && request.resource.data.log_id == id
+             && request.resource.data.log_id == resource.data.log_id
+             && request.resource.data.vehicle_session_id == resource.data.vehicle_session_id
+             && request.resource.data.parking_card_id == resource.data.parking_card_id
+             && request.resource.data.card_number == resource.data.card_number
+             && request.resource.data.entry_time == resource.data.entry_time
+             && request.resource.data.created_at == resource.data.created_at
+             && request.resource.data.account_uid == resource.data.account_uid
+             && request.resource.data.operator_id == resource.data.operator_id
+             && changed.hasOnly([
+               'vehicle_plate', 'vehicle_type', 'visitor_name', 'visitor_phone',
+               'target_room', 'target_unit_id', 'target_building', 'unit_lookup_status',
+               'purpose', 'note', 'entry_plate_photo_url', 'entry_vehicle_photo_url',
+               'updated_at'
+             ])
+             && getAfter(/databases/$(database)/documents/vehicleSessions/$(resource.data.vehicle_session_id)).data.site_id == activeSiteId()
+             && getAfter(/databases/$(database)/documents/vehicleSessions/$(resource.data.vehicle_session_id)).data.stage == 'Active'
+             && getAfter(/databases/$(database)/documents/vehicleSessions/$(resource.data.vehicle_session_id)).data.status == 'InProgress'
+             && getAfter(/databases/$(database)/documents/vehicleSessions/$(resource.data.vehicle_session_id)).data.vehicle_log_id == id
+             && getAfter(/databases/$(database)/documents/vehicleSessions/$(resource.data.vehicle_session_id)).data.vehicle_plate == request.resource.data.vehicle_plate
+             && getAfter(/databases/$(database)/documents/vehicleSessions/$(resource.data.vehicle_session_id)).data.target_room == request.resource.data.target_room;
     }
 
     function validParkingAudit(data) {
@@ -716,13 +906,19 @@ service cloud.firestore {
                     && request.resource.data.keys().hasAll(['card_number_normalized', 'qr_code_normalized', 'status_normalized'])
                     && validReplacementCreate(id)
                     && validParkingCard(request.resource.data);
-      allow update: if (validParkingCard(request.resource.data)
-                        && request.resource.data.card_id == resource.data.card_id
+      allow update: if (request.resource.data.card_id == resource.data.card_id
                         && request.resource.data.site_id == resource.data.site_id
                         && request.resource.data.site_id == activeSiteId()
                         && allowedParkingCardTransition()
                         && validReplacementUpdate(id)
-                        && (adminParkingCardTransition() || guardParkingCardTransition() || vehicleSessionCardTransition()))
+                        && (
+                          (resource.data.status in ['InUse', 'In Use', 'ใช้งานอยู่']
+                            && request.resource.data.status in ['Available', 'Lost']
+                            && validParkingCardUpdateData()
+                            && guardParkingCardTransition())
+                          || (validParkingCard(request.resource.data)
+                            && (vehicleSessionCardTransition() || guardParkingCardTransition() || adminParkingCardTransition()))
+                        ))
                     || adminParkingCardMigration(id);
       allow delete: if canManageParkingCards()
                     && resource.data.site_id == activeSiteId()
@@ -759,13 +955,21 @@ service cloud.firestore {
                     || (request.resource.data.diff(resource.data).affectedKeys()
                           .hasAny(['queueSchemaVersion', 'queue_migrated_at', 'queue_migrated_by'])
                         && adminQueueMigration());
-      allow delete: if canManageParkingCards() && resource.data.site_id == activeSiteId();
+      allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
 
       match /activities/{activityId} {
         allow read: if canProcessVehicleExit()
                     && get(/databases/$(database)/documents/vehicleSessions/$(id)).data.site_id == activeSiteId();
         allow create: if canProcessVehicleExit()
                       && getAfter(/databases/$(database)/documents/vehicleSessions/$(id)).data.site_id == activeSiteId()
+                      && (
+                        !(getAfter(/databases/$(database)/documents/vehicleSessions/$(id)).data.status in ['Completed', 'Cancelled'])
+                        || (
+                          request.resource.data.action == 'VehicleExitCompleted'
+                          && get(/databases/$(database)/documents/vehicleSessions/$(id)).data.status == 'InProgress'
+                          && getAfter(/databases/$(database)/documents/vehicleSessions/$(id)).data.status == 'Completed'
+                        )
+                      )
                       && validSessionActivity(request.resource.data, id, activityId);
         allow update, delete: if false;
       }
@@ -784,12 +988,16 @@ service cloud.firestore {
                     && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.current_vehicle_log_id == id
                     && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.card_number == request.resource.data.card_number
                     && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.site_id == request.resource.data.site_id;
-      allow update: if validVehicleLog(request.resource.data)
-                    && validVehicleExitTransition()
-                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.status in ['Available', 'Lost']
-                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.current_vehicle_log_id == ''
-                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.related_vehicle_log_id == id
-                    && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.site_id == request.resource.data.site_id;
+      allow update: if (
+                      validActiveVehicleLogDetailUpdate(id)
+                      || (
+                        validVehicleExitTransition()
+                        && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.status in ['Available', 'Lost']
+                        && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.current_vehicle_log_id == ''
+                        && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.related_vehicle_log_id == id
+                        && getAfter(/databases/$(database)/documents/parkingCards/$(request.resource.data.parking_card_id)).data.site_id == request.resource.data.site_id
+                      )
+                    );
       allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
     }
 

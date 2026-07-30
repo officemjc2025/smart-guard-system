@@ -20,7 +20,6 @@ import type { ParkingCardRecord, ParkingCardStatus, VehicleLogRecord } from '../
 import { canonicalParkingCardStatus, normalizeParkingCardStatus } from './parkingCardStatus';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
 import { appendSessionActivityInTransaction } from './vehicleSessionActivityService';
-import { firestoreQueueMetricTransition } from './vehicleSessionMetricsFirestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { FUNCTIONS_REGION } from '../config/firebaseFunctions';
 import {
@@ -512,10 +511,8 @@ export async function completeVehicleExit(log: VehicleLogRecord, input: VehicleE
       const sessionData = sessionSnapshot.data();
       const sessionVersion = typeof sessionData.sessionVersion === 'number' ? sessionData.sessionVersion : 0;
       const eventId = `SESSION_${crypto.randomUUID()}`;
-      const occurredAt = Timestamp.now();
       transaction.update(sessionReference, {
         stage: 'Completed', status: 'Completed', queueStatus: 'Completed', current_owner: identity.accountUid,
-        queueMetrics: firestoreQueueMetricTransition(sessionData, 'Completed', 'SessionCompletion', eventId, occurredAt),
         sessionVersion: sessionVersion + 1,
         last_updated_by: identity.accountUid, last_activity_at: serverTimestamp(),
         updated_at: serverTimestamp(), 'stage_updates.Completed': {

@@ -33,7 +33,22 @@ export interface SessionActivityInput {
   actorRole: string;
   details?: Record<string, string>;
   clientEventId: string;
+  vehicleLogId?: string;
+  activityType?: VehicleActivityType;
+  title?: string;
+  description?: string;
+  location?: string;
+  severity?: VehicleActivitySeverity;
+  activityStatus?: VehicleActivityStatus;
+  photoUrls?: string[];
 }
+
+export type VehicleActivityType =
+  | 'ParkingIssue' | 'WrongParking' | 'Obstruction' | 'Accident' | 'Damage'
+  | 'Evidence' | 'Remark' | 'Warning' | 'Violation' | 'ContactResident'
+  | 'ContactVehicleOwner' | 'VehicleMoved' | 'FollowUp' | 'Custom';
+export type VehicleActivitySeverity = 'Low' | 'Normal' | 'High' | 'Critical';
+export type VehicleActivityStatus = 'Open' | 'Monitoring' | 'Resolved' | 'Recorded';
 
 export interface SessionActivityRecord {
   activity_id: string;
@@ -52,6 +67,16 @@ export interface SessionActivityRecord {
   created_at: unknown;
   client_event_id: string;
   schema_version: 1;
+  vehicle_session_id?: string;
+  vehicle_log_id?: string;
+  activity_type?: VehicleActivityType;
+  title?: string;
+  description?: string;
+  location?: string;
+  severity?: VehicleActivitySeverity;
+  status?: VehicleActivityStatus;
+  photo_urls?: string[];
+  updated_at?: unknown;
 }
 
 const safeEventId = (value: string) => {
@@ -80,13 +105,27 @@ export function buildSessionActivityWrite(
     to_status: input.toStatus || '',
     actor_uid: actorUid,
     actor_operator_id: actorUid,
-    actor_name: input.actorName.trim(),
+    // Firestore Rules compare this canonical profile value with exact equality.
+    // Validate whitespace separately, but never normalize the value written.
+    actor_name: input.actorName,
     actor_role: input.actorRole,
     site_id: input.siteId,
     details: input.details || {},
     created_at: serverTimestamp(),
     client_event_id: eventId,
     schema_version: 1,
+    ...(input.activityType ? {
+      vehicle_session_id: input.sessionId,
+      vehicle_log_id: input.vehicleLogId || '',
+      activity_type: input.activityType,
+      title: input.title?.trim() || input.activityType,
+      description: input.description?.trim() || '',
+      location: input.location?.trim() || '',
+      severity: input.severity || 'Normal',
+      status: input.activityStatus || 'Recorded',
+      photo_urls: input.photoUrls || [],
+      updated_at: serverTimestamp(),
+    } : {}),
   });
   return { reference, data };
 }

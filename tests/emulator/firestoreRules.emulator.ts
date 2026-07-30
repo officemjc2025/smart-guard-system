@@ -4,9 +4,25 @@ import {
   assertFails,
   assertSucceeds,
   initializeTestEnvironment,
+  type RulesTestContext,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  runTransaction,
+  serverTimestamp,
+  setDoc,
+  Timestamp,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
 
 const projectId = 'securityprojectv1-staging';
 let environment: RulesTestEnvironment;
@@ -29,10 +45,244 @@ const session = (id: string, assignedTo = 'guard-a') => ({
   activity: [], created_at: Timestamp.now(), updated_at: Timestamp.now(),
 });
 
+const seedAvailableCard = async (documentId: string, cardNumber: string, siteId = 'site-a') => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), `parkingCards/${documentId}`), {
+      firestore_document_id: documentId, card_id: documentId, site_id: siteId,
+      card_number: cardNumber, card_number_normalized: cardNumber,
+      qr_code_value: cardNumber, qr_code_normalized: cardNumber,
+      card_type: 'Temporary', status: 'Available', status_normalized: 'Available',
+      created_at: Timestamp.now(), updated_at: Timestamp.now(),
+    });
+  });
+};
+
+const createVehicleSessionTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  input: { uid: string; operatorName: string; role: string; siteId: string; suffix: string },
+) => runTransaction(database, async transaction => {
+  const cardId = `card-${input.suffix}`;
+  const cardNumber = `CARD-${input.suffix.toUpperCase()}`;
+  const sessionId = `session-${input.suffix}`;
+  const eventId = `event-${input.suffix}`;
+  const cardReference = doc(database, `parkingCards/${cardId}`);
+  await transaction.get(cardReference);
+  transaction.set(doc(database, `vehicleSessions/${sessionId}`), {
+    session_id: sessionId, site_id: input.siteId, parking_card_id: cardId,
+    card_number: cardNumber, stage: 'CardIssued', status: 'Pending',
+    opened_by: input.uid, opened_by_name: input.operatorName, current_owner: input.uid,
+    last_updated_by: input.uid, assigned_to: input.uid, assignedTo: input.uid,
+    assignedBy: input.uid, assignedAt: serverTimestamp(), queueStatus: 'Assigned',
+    priority: 'Normal', queuePosition: 1, assignmentVersion: 0,
+    queueSchemaVersion: 1, sessionVersion: 1,
+    queueMetrics: {
+      ...emptyMetrics, firstQueuedAt: Timestamp.now(), firstAssignedAt: Timestamp.now(),
+      lastTransitionAt: Timestamp.now(), lastEventId: eventId, metricsVersion: 2,
+    },
+    last_activity_at: serverTimestamp(), activity: [],
+    stage_updates: { CardIssued: { updatedBy: input.uid, updatedAt: serverTimestamp() } },
+    created_at: serverTimestamp(), updated_at: serverTimestamp(),
+  });
+  transaction.set(doc(database, `vehicleSessions/${sessionId}/activities/${eventId}`), {
+    activity_id: eventId, client_event_id: eventId, session_id: sessionId,
+    action: 'SessionCreatedFromQr', from_stage: '', to_stage: 'CardIssued',
+    from_status: '', to_status: 'Pending', actor_uid: input.uid,
+    actor_operator_id: input.uid, actor_name: input.operatorName, actor_role: input.role,
+    site_id: input.siteId, details: {}, created_at: serverTimestamp(), schema_version: 1,
+  });
+  transaction.update(cardReference, {
+    status: 'Reserved', status_normalized: 'Reserved',
+    current_vehicle_session_id: sessionId,
+    last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
+  });
+  transaction.set(doc(database, `auditLogs/audit-${input.suffix}`), {
+    audit_id: `audit-${input.suffix}`, module_name: 'VehicleSessions', record_id: sessionId,
+    action: 'Created->CardIssued', operator_id: input.uid, account_uid: input.uid,
+    site_id: input.siteId, created_at: serverTimestamp(),
+  });
+});
+
+const saveVehicleEntryEvidenceTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  input: { uid: string; operatorName: string; role: string; sessionId?: string },
+) => runTransaction(database, async transaction => {
+  const sessionId = input.sessionId ?? 'session-a';
+  const sessionReference = doc(database, `vehicleSessions/${sessionId}`);
+  const snapshot = await transaction.get(sessionReference);
+  const eventId = `ready-${input.uid}`;
+  transaction.update(sessionReference, {
+    vehicle_plate: '1กข1234',
+    vehicle_type: 'รถยนต์',
+    visitor_name: 'Visitor',
+    visitor_phone: '',
+    target_room: 'A-101',
+    purpose: 'Visit',
+    note: '',
+    entry_plate_photo_url: 'https://storage.example.test/plate.jpg',
+    entry_vehicle_photo_url: 'https://storage.example.test/vehicle.jpg',
+    stage: 'Ready',
+    status: 'Ready',
+    queueStatus: 'Ready',
+    last_updated_by: input.uid,
+    sessionVersion: snapshot.get('sessionVersion') + 1,
+    last_activity_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+    'stage_updates.Ready': { updatedBy: input.uid, updatedAt: serverTimestamp() },
+  });
+  transaction.set(doc(database, `vehicleSessions/${sessionId}/activities/${eventId}`), {
+    activity_id: eventId,
+    client_event_id: eventId,
+    session_id: sessionId,
+    action: 'QueueStatusChange',
+    from_stage: 'CardIssued',
+    to_stage: 'Ready',
+    from_status: 'Pending',
+    to_status: 'Ready',
+    actor_uid: input.uid,
+    actor_operator_id: input.uid,
+    actor_name: input.operatorName,
+    actor_role: input.role,
+    site_id: 'site-a',
+    details: { queue_status: 'Ready' },
+    created_at: serverTimestamp(),
+    schema_version: 1,
+  });
+  transaction.set(doc(database, `auditLogs/audit-ready-${input.uid}`), {
+    audit_id: `audit-ready-${input.uid}`,
+    module_name: 'VehicleSessions',
+    record_id: sessionId,
+    action: 'Stage:Ready',
+    operator_id: input.uid,
+    account_uid: input.uid,
+    site_id: 'site-a',
+    created_at: serverTimestamp(),
+  });
+});
+
+const completeVehicleExitTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  input: {
+    uid: string;
+    operatorName: string;
+    role: string;
+    suffix: string;
+    lostCard?: boolean;
+  },
+) => runTransaction(database, async transaction => {
+  const sessionId = `exit-session-${input.suffix}`;
+  const logId = `exit-log-${input.suffix}`;
+  const cardId = `exit-card-${input.suffix}`;
+  const cardNumber = `EXIT-${input.suffix.toUpperCase()}`;
+  const eventId = `exit-event-${input.suffix}`;
+  const nextCardStatus = input.lostCard ? 'Lost' : 'Available';
+  const sessionReference = doc(database, `vehicleSessions/${sessionId}`);
+  const logReference = doc(database, `vehicleLogs/${logId}`);
+  const cardReference = doc(database, `parkingCards/${cardId}`);
+  const [sessionSnapshot] = await Promise.all([
+    transaction.get(sessionReference),
+    transaction.get(logReference),
+    transaction.get(cardReference),
+  ]);
+
+  transaction.update(logReference, {
+    status: 'ออกแล้ว', workflow_status: 'completed',
+    exit_time: serverTimestamp(), updated_at: serverTimestamp(),
+    exit_recorded_by: input.operatorName, exit_account_uid: input.uid,
+    exit_operator_id: input.uid, exit_operator_name: input.operatorName,
+    exit_role: input.role, exit_site_id: 'site-a', exit_note: '',
+    abnormal_note: '', exit_plate_photo_url: '', exit_vehicle_photo_url: '',
+  });
+  transaction.update(cardReference, {
+    status: nextCardStatus, status_normalized: nextCardStatus,
+    current_vehicle_plate: '', current_vehicle_log_id: '',
+    related_vehicle_log_id: logId, last_activity_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+    ...(input.lostCard ? {
+      lost_at: serverTimestamp(), lost_reason: 'Card not returned',
+      reported_by: input.operatorName, reported_by_account_uid: input.uid,
+    } : {}),
+  });
+  transaction.set(doc(database, `auditLogs/exit-audit-${input.suffix}`), {
+    audit_id: `exit-audit-${input.suffix}`, operator_id: input.uid,
+    account_uid: input.uid, operator_name: input.operatorName,
+    user_name: input.operatorName, site_id: 'site-a', card_number: cardNumber,
+    vehicle_log_id: logId,
+    action: input.lostCard ? 'VehicleExitCardLost' : 'VehicleExitCompleted',
+    module_name: 'ParkingCards', record_id: cardId, previous_state: 'InUse',
+    new_state: nextCardStatus, old_value: 'InUse', new_value: nextCardStatus,
+    reason: input.lostCard ? 'Card not returned' : '', action_result: 'Success',
+    timestamp: serverTimestamp(), created_at: '2026-07-30T00:00:00.000Z',
+  });
+  transaction.set(doc(database, `parkingCardHistory/exit-history-${input.suffix}`), {
+    history_id: `exit-history-${input.suffix}`,
+    event_type: input.lostCard ? 'LOST' : 'EXIT', parking_card_id: cardId,
+    card_number: cardNumber, site_id: 'site-a', vehicle_log_id: logId,
+    operator_id: input.uid, operator_name: input.operatorName,
+    previous_state: 'InUse', new_state: nextCardStatus,
+    reason: input.lostCard ? 'Card not returned' : '', action_result: 'Success',
+    occurred_at: serverTimestamp(), created_at: serverTimestamp(),
+  });
+  transaction.update(sessionReference, {
+    stage: 'Completed', status: 'Completed', queueStatus: 'Completed',
+    current_owner: input.uid, sessionVersion: sessionSnapshot.get('sessionVersion') + 1,
+    last_updated_by: input.uid, last_activity_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+    'stage_updates.Completed': { updatedBy: input.uid, updatedAt: serverTimestamp() },
+  });
+  transaction.set(doc(database, `vehicleSessions/${sessionId}/activities/${eventId}`), {
+    activity_id: eventId, client_event_id: eventId, session_id: sessionId,
+    action: 'VehicleExitCompleted', from_stage: 'Active', to_stage: 'Completed',
+    from_status: 'InProgress', to_status: 'Completed', actor_uid: input.uid,
+    actor_operator_id: input.uid, actor_name: input.operatorName,
+    actor_role: input.role, site_id: 'site-a', details: { vehicle_log_id: logId },
+    created_at: serverTimestamp(), schema_version: 1,
+  });
+});
+
+const seedActiveVehicleExit = async (suffix: string) => {
+  const sessionId = `exit-session-${suffix}`;
+  const logId = `exit-log-${suffix}`;
+  const cardId = `exit-card-${suffix}`;
+  const cardNumber = `EXIT-${suffix.toUpperCase()}`;
+  await environment.withSecurityRulesDisabled(async context => {
+    const database = context.firestore();
+    await Promise.all([
+      setDoc(doc(database, `vehicleSessions/${sessionId}`), {
+        ...session(sessionId),
+        parking_card_id: cardId, card_number: cardNumber,
+        stage: 'Active', status: 'InProgress', queueStatus: 'In Progress',
+        vehicle_plate: '1กข1234', target_room: 'A-101', vehicle_log_id: logId,
+      }),
+      setDoc(doc(database, `vehicleLogs/${logId}`), {
+        log_id: logId, vehicle_session_id: sessionId, site_id: 'site-a',
+        parking_card_id: cardId, card_number: cardNumber, vehicle_plate: '1กข1234',
+        vehicle_type: 'รถยนต์', visitor_name: '', visitor_phone: '',
+        target_room: 'A-101', purpose: '',
+        entry_time: '2026-07-30T00:00:00.000Z', status: 'กำลังจอด',
+        workflow_status: 'active', recorded_by: 'Guard A',
+        operator_name: 'Guard A', operator_id: 'guard-a', account_uid: 'guard-a',
+        created_at: '2026-07-30T00:00:00.000Z',
+        updated_at: '2026-07-30T00:00:00.000Z',
+      }),
+      setDoc(doc(database, `parkingCards/${cardId}`), {
+        firestore_document_id: cardId, card_id: cardId, site_id: 'site-a',
+        card_number: cardNumber, card_number_normalized: cardNumber,
+        qr_code_value: cardNumber, qr_code_normalized: cardNumber,
+        card_type: 'Temporary', status: 'InUse', status_normalized: 'InUse',
+        current_vehicle_plate: '1กข1234', current_vehicle_log_id: logId,
+        current_vehicle_session_id: '',
+        created_at: Timestamp.now(), updated_at: Timestamp.now(),
+      }),
+    ]);
+  });
+};
+
 before(async () => {
   environment = await initializeTestEnvironment({
     projectId,
-    firestore: { rules: await readFile('firestore.rules', 'utf8') },
+    firestore: {
+      rules: await readFile(process.env.FIRESTORE_RULES_FILE || 'firestore.rules', 'utf8'),
+    },
   });
 });
 
@@ -58,11 +308,23 @@ beforeEach(async () => {
       setDoc(doc(database, 'users/shift-a'), {
         status: 'Active', role: 'ShiftHead', site_id: 'site-a', operator_name: 'Shift A',
       }),
+      setDoc(doc(database, 'users/shift-head-a'), {
+        status: 'Active', role: 'ShiftHead', site_id: 'site-01', operator_name: 'JK-Secure',
+      }),
       setDoc(doc(database, 'users/inactive-a'), {
         status: 'Inactive', role: 'Guard', site_id: 'site-a', operator_name: 'Inactive A',
       }),
       setDoc(doc(database, 'users/admin-b'), {
         status: 'Active', role: 'Admin', site_id: 'site-b', operator_name: 'Admin B',
+      }),
+      setDoc(doc(database, 'users/unknown-a'), {
+        status: 'Active', role: 'Supervisor', site_id: 'site-a', operator_name: 'Unknown A',
+      }),
+      setDoc(doc(database, 'users/legacy-a'), {
+        status: 'Active', role: 'ShiftLeader', site_id: 'site-a', operator_name: 'Legacy A',
+      }),
+      setDoc(doc(database, 'accounts/account-shift-a'), {
+        status: 'Active', role: 'Guard', site_id: 'site-b',
       }),
       setDoc(doc(database, 'vehicleSessions/session-a'), session('session-a')),
       setDoc(doc(database, 'siteAnalyticsDaily/site-a_2026-07-24'), {
@@ -114,6 +376,57 @@ test('cross-site session and analytics reads are denied', async () => {
   const database = environment.authenticatedContext('admin-b').firestore();
   await assertFails(getDoc(doc(database, 'vehicleSessions/session-a')));
   await assertFails(getDoc(doc(database, 'siteAnalyticsDaily/site-a_2026-07-24')));
+});
+
+[
+  { uid: 'guard-a', role: 'Guard' },
+  { uid: 'shift-a', role: 'ShiftHead' },
+  { uid: 'manager-a', role: 'Manager' },
+  { uid: 'admin-a', role: 'Admin' },
+].forEach(actor => {
+  test(`${actor.role} can read the same-site operational queue`, async () => {
+    const database = environment.authenticatedContext(actor.uid).firestore();
+    await assertSucceeds(getDocs(query(
+      collection(database, 'vehicleSessions'),
+      where('site_id', '==', 'site-a'),
+      where('queueStatus', 'in', ['Waiting', 'Assigned', 'In Progress', 'Waiting Information', 'Ready']),
+      orderBy('queuePosition', 'asc'),
+      limit(100),
+    )));
+  });
+});
+
+test('ShiftHead, Manager and Admin can read same-site daily analytics', async () => {
+  for (const uid of ['shift-a', 'manager-a', 'admin-a']) {
+    const database = environment.authenticatedContext(uid).firestore();
+    await assertSucceeds(getDoc(doc(database, 'siteAnalyticsDaily/site-a_2026-07-24')));
+  }
+});
+
+test('Guard cannot read daily analytics', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(getDoc(doc(database, 'siteAnalyticsDaily/site-a_2026-07-24')));
+});
+
+test('operational queue queries without the site filter are denied', async () => {
+  const database = environment.authenticatedContext('admin-a').firestore();
+  await assertFails(getDocs(query(
+    collection(database, 'vehicleSessions'),
+    where('queueStatus', 'in', ['Waiting', 'Assigned', 'In Progress', 'Waiting Information', 'Ready']),
+    orderBy('queuePosition', 'asc'),
+    limit(100),
+  )));
+});
+
+test('cross-site operational queue query is denied', async () => {
+  const database = environment.authenticatedContext('admin-b').firestore();
+  await assertFails(getDocs(query(
+    collection(database, 'vehicleSessions'),
+    where('site_id', '==', 'site-a'),
+    where('queueStatus', 'in', ['Waiting', 'Assigned', 'In Progress', 'Waiting Information', 'Ready']),
+    orderBy('queuePosition', 'asc'),
+    limit(100),
+  )));
 });
 
 test('exact sessionVersion increment by one succeeds', async () => {
@@ -175,10 +488,18 @@ test('cross-site and inactive accounts cannot update a vehicle session', async (
   }));
 });
 
-test('guard may complete an owned exit transition', async () => {
+test('guard may complete an active same-site session', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'vehicleSessions/session-a'), {
+      ...session('session-a'),
+      stage: 'Active',
+      status: 'InProgress',
+      queueStatus: 'In Progress',
+    });
+  });
   const database = environment.authenticatedContext('guard-a').firestore();
   await assertSucceeds(updateDoc(doc(database, 'vehicleSessions/session-a'), {
-    stage: 'VehicleExited', status: 'Completed', queueStatus: 'Completed',
+    stage: 'Completed', status: 'Completed', queueStatus: 'Completed',
     sessionVersion: 2, last_updated_by: 'guard-a',
     last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
   }));
@@ -252,12 +573,220 @@ test('created timestamp remains immutable', async () => {
   }));
 });
 
-test('a guard cannot mutate a session owned by another guard', async () => {
+test('vehicle-session deletion is Admin-only and same-site', async () => {
+  await assertFails(deleteDoc(doc(
+    environment.authenticatedContext('manager-a').firestore(),
+    'vehicleSessions/session-a',
+  )));
+  await assertFails(deleteDoc(doc(
+    environment.authenticatedContext('admin-b').firestore(),
+    'vehicleSessions/session-a',
+  )));
+  await assertSucceeds(deleteDoc(doc(
+    environment.authenticatedContext('admin-a').firestore(),
+    'vehicleSessions/session-a',
+  )));
+});
+
+test('Guard B can continue a same-site session opened and assigned to Guard A', async () => {
   const database = environment.authenticatedContext('guard-b').firestore();
-  await assertFails(updateDoc(doc(database, 'vehicleSessions/session-a'), {
-    note: 'ownership bypass', sessionVersion: 2, last_updated_by: 'guard-b',
+  await assertSucceeds(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+    vehicle_plate: '1กข1234', visitor_name: 'Visitor B', target_room: 'A-101',
+    note: 'continued by Guard B', stage: 'Ready', status: 'Ready', queueStatus: 'Ready',
+    sessionVersion: 2, last_updated_by: 'guard-b',
     last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
   }));
+  const updated = await getDoc(doc(database, 'vehicleSessions/session-a'));
+  if (updated.get('opened_by') !== 'guard-a' || updated.get('assignedTo') !== 'guard-a') {
+    throw new Error('Collaborative edit changed origin or assignment metadata.');
+  }
+  await assertSucceeds(setDoc(doc(database, 'vehicleSessions/session-a/activities/guard-b-details'), {
+    activity_id: 'guard-b-details', client_event_id: 'guard-b-details', session_id: 'session-a',
+    action: 'VehicleDetailsUpdated', from_stage: 'CardIssued', to_stage: 'Ready',
+    from_status: 'Pending', to_status: 'Ready', actor_uid: 'guard-b',
+    actor_operator_id: 'guard-b', actor_name: 'Guard B', actor_role: 'Guard',
+    site_id: 'site-a', details: {}, created_at: serverTimestamp(), schema_version: 1,
+  }));
+});
+
+test('ShiftHead can admit a ready session prepared by another same-site guard', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'vehicleSessions/session-a'), {
+      ...session('session-a'),
+      stage: 'Ready',
+      status: 'Ready',
+      queueStatus: 'Ready',
+      vehicle_plate: '1กข1234',
+      target_room: 'A-101',
+      entry_plate_photo_url: 'https://example.test/plate.jpg',
+      entry_vehicle_photo_url: 'https://example.test/vehicle.jpg',
+      sessionVersion: 2,
+    });
+  });
+  const database = environment.authenticatedContext('shift-a').firestore();
+  await assertSucceeds(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+    stage: 'Active', status: 'InProgress', queueStatus: 'In Progress',
+    sessionVersion: 3, last_updated_by: 'shift-a',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  }));
+});
+
+test('Guard cannot assign a session to another operator', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+    assignedTo: 'guard-b', assigned_to: 'guard-b', assignedBy: 'guard-a',
+    assignedAt: Timestamp.now(), current_owner: 'guard-b',
+    assignmentVersion: 1, sessionVersion: 2, last_updated_by: 'guard-a',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  }));
+});
+
+test('Guard cannot tamper with assignment identity or legacy mirrors', async () => {
+  const database = environment.authenticatedContext('guard-b').firestore();
+  const reference = doc(database, 'vehicleSessions/session-a');
+  const metadata = {
+    sessionVersion: 2, last_updated_by: 'guard-b',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  };
+  await assertFails(updateDoc(reference, {
+    assignedTo: 'guard-b', assigned_to: 'guard-b', assignmentVersion: 1,
+    assignedBy: 'guard-b', assignedAt: Timestamp.now(), ...metadata,
+  }));
+  await assertFails(updateDoc(reference, {
+    assignedBy: 'guard-b', assignmentVersion: 1, ...metadata,
+  }));
+  await assertFails(updateDoc(reference, {
+    assigned_by: 'guard-b', ...metadata,
+  }));
+  await assertFails(updateDoc(reference, {
+    assigned_to: 'guard-b', ...metadata,
+  }));
+});
+
+test('Guard cannot overwrite current owner through an operational update', async () => {
+  const database = environment.authenticatedContext('guard-b').firestore();
+  await assertFails(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+    current_owner: 'guard-b', note: 'forged owner',
+    sessionVersion: 2, last_updated_by: 'guard-b',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  }));
+});
+
+test('Guard cannot tamper with priority or queue assignment metadata', async () => {
+  const database = environment.authenticatedContext('guard-b').firestore();
+  const reference = doc(database, 'vehicleSessions/session-a');
+  const metadata = {
+    sessionVersion: 2, last_updated_by: 'guard-b',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  };
+  await assertFails(updateDoc(reference, { priority: 'Emergency', ...metadata }));
+  await assertFails(updateDoc(reference, { queuePosition: 999, ...metadata }));
+  await assertFails(updateDoc(reference, { assignmentVersion: 1, ...metadata }));
+  await assertFails(updateDoc(reference, {
+    assignedAt: Timestamp.now(), assignmentVersion: 1, ...metadata,
+  }));
+});
+
+test('Guard cannot forge edit-lock identity or canonical operator name', async () => {
+  const database = environment.authenticatedContext('guard-b').firestore();
+  const reference = doc(database, 'vehicleSessions/session-a');
+  const metadata = {
+    sessionVersion: 2, last_updated_by: 'guard-b',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  };
+  await assertFails(updateDoc(reference, {
+    editing_by: 'guard-a', editing_by_name: 'Guard A',
+    editing_since: serverTimestamp(), expires_at: Timestamp.fromMillis(Date.now() + 300_000),
+    ...metadata,
+  }));
+  await assertFails(updateDoc(reference, {
+    editing_by: 'guard-b', editing_by_name: 'Forged Name',
+    editing_since: serverTimestamp(), expires_at: Timestamp.fromMillis(Date.now() + 300_000),
+    ...metadata,
+  }));
+});
+
+test('Guard can acquire and release only their own edit lock', async () => {
+  const database = environment.authenticatedContext('guard-b').firestore();
+  const reference = doc(database, 'vehicleSessions/session-a');
+  await assertSucceeds(updateDoc(reference, {
+    editing_by: 'guard-b', editing_by_name: 'Guard B',
+    editing_since: serverTimestamp(), expires_at: Timestamp.fromMillis(Date.now() + 300_000),
+    sessionVersion: 2, last_updated_by: 'guard-b',
+    last_activity_at: serverTimestamp(),
+  }));
+  await assertSucceeds(updateDoc(reference, {
+    editing_by: '', editing_by_name: '', editing_since: null, expires_at: null,
+    sessionVersion: 3, last_updated_by: 'guard-b', updated_at: serverTimestamp(),
+  }));
+});
+
+test('ShiftHead can assign a session to an active same-site Guard', async () => {
+  const database = environment.authenticatedContext('shift-a').firestore();
+  await assertSucceeds(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+    assignedTo: 'guard-b', assigned_to: 'guard-b', assignedBy: 'shift-a',
+    assignedAt: Timestamp.now(), current_owner: 'guard-b',
+    assignmentVersion: 1, sessionVersion: 2, last_updated_by: 'shift-a',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  }));
+});
+
+test('ShiftHead cannot forge assignment actor or mismatch the legacy mirror', async () => {
+  const database = environment.authenticatedContext('shift-a').firestore();
+  const reference = doc(database, 'vehicleSessions/session-a');
+  const metadata = {
+    assignedTo: 'guard-b', assignedAt: Timestamp.now(), current_owner: 'guard-b',
+    assignmentVersion: 1, sessionVersion: 2, last_updated_by: 'shift-a',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  };
+  await assertFails(updateDoc(reference, {
+    ...metadata, assigned_to: 'guard-b', assignedBy: 'manager-a',
+  }));
+  await assertFails(updateDoc(reference, {
+    ...metadata, assigned_to: 'guard-a', assignedBy: 'shift-a',
+  }));
+});
+
+test('Manager cannot assign a session to an unknown or legacy role', async () => {
+  for (const targetUid of ['unknown-a', 'legacy-a']) {
+    const database = environment.authenticatedContext('manager-a').firestore();
+    await assertFails(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+      assignedTo: targetUid, assigned_to: targetUid, assignedBy: 'manager-a',
+      assignedAt: Timestamp.now(), current_owner: targetUid,
+      assignmentVersion: 1, sessionVersion: 2, last_updated_by: 'manager-a',
+      last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+    }));
+  }
+});
+
+test('illegal vehicle-session stage jumps are denied', async () => {
+  const database = environment.authenticatedContext('manager-a').firestore();
+  await assertFails(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+    stage: 'Completed', status: 'Completed', queueStatus: 'Completed',
+    sessionVersion: 2, last_updated_by: 'manager-a',
+    last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  }));
+});
+
+test('session activity actor identity cannot be falsified', async () => {
+  const database = environment.authenticatedContext('guard-b').firestore();
+  await assertFails(setDoc(doc(database, 'vehicleSessions/session-a/activities/forged-actor'), {
+    activity_id: 'forged-actor', client_event_id: 'forged-actor', session_id: 'session-a',
+    action: 'VehicleDetailsUpdated', from_stage: 'CardIssued', to_stage: 'Ready',
+    from_status: 'Pending', to_status: 'Ready', actor_uid: 'guard-a',
+    actor_operator_id: 'guard-a', actor_name: 'Guard A', actor_role: 'ShiftHead',
+    site_id: 'site-a', details: {}, created_at: serverTimestamp(), schema_version: 1,
+  }));
+});
+
+test('unknown and legacy roles cannot collaboratively update a session', async () => {
+  for (const uid of ['unknown-a', 'legacy-a']) {
+    const database = environment.authenticatedContext(uid).firestore();
+    await assertFails(updateDoc(doc(database, 'vehicleSessions/session-a'), {
+      note: 'unauthorized collaboration', sessionVersion: 2, last_updated_by: uid,
+      last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+    }));
+  }
 });
 
 test('clients cannot modify trusted queue metrics', async () => {
@@ -266,6 +795,84 @@ test('clients cannot modify trusted queue metrics', async () => {
     sessionVersion: 2, last_updated_by: 'manager-a',
     queueMetrics: { ...emptyMetrics, waitingSeconds: 999999 },
     last_activity_at: Timestamp.now(), updated_at: Timestamp.now(),
+  }));
+});
+
+test('pre-fix Vehicle Entry payload is rejected specifically because it writes queueMetrics', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(runTransaction(database, async transaction => {
+    const reference = doc(database, 'vehicleSessions/session-a');
+    transaction.update(reference, {
+      vehicle_plate: '1กข1234',
+      target_room: 'A-101',
+      entry_plate_photo_url: 'https://storage.example.test/plate.jpg',
+      entry_vehicle_photo_url: 'https://storage.example.test/vehicle.jpg',
+      stage: 'Ready',
+      status: 'Ready',
+      queueStatus: 'Ready',
+      queueMetrics: {
+        ...emptyMetrics,
+        readyAt: Timestamp.now(),
+        lastTransitionAt: Timestamp.now(),
+        lastEventId: 'ready-pre-fix',
+        metricsVersion: 2,
+      },
+      last_updated_by: 'guard-a',
+      sessionVersion: 2,
+      last_activity_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+      'stage_updates.Ready': { updatedBy: 'guard-a', updatedAt: serverTimestamp() },
+    });
+  }));
+});
+
+[
+  { uid: 'guard-a', operatorName: 'Guard A', role: 'Guard' },
+  { uid: 'shift-a', operatorName: 'Shift A', role: 'ShiftHead' },
+  { uid: 'manager-a', operatorName: 'Manager A', role: 'Manager' },
+  { uid: 'admin-a', operatorName: 'Admin A', role: 'Admin' },
+].forEach(actor => {
+  test(`${actor.role} can atomically save same-site Vehicle Entry evidence as Ready`, async () => {
+    const database = environment.authenticatedContext(actor.uid).firestore();
+    await assertSucceeds(saveVehicleEntryEvidenceTransaction(database, actor));
+  });
+});
+
+test('cross-site, inactive, and legacy roles cannot save Vehicle Entry evidence as Ready', async () => {
+  for (const actor of [
+    { uid: 'admin-b', operatorName: 'Admin B', role: 'Admin' },
+    { uid: 'inactive-a', operatorName: 'Inactive A', role: 'Guard' },
+    { uid: 'legacy-a', operatorName: 'Legacy A', role: 'ShiftLeader' },
+  ]) {
+    const database = environment.authenticatedContext(actor.uid).firestore();
+    await assertFails(saveVehicleEntryEvidenceTransaction(database, actor));
+  }
+});
+
+test('Vehicle Entry Ready transaction rejects an unauthorized identity mutation', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(runTransaction(database, async transaction => {
+    const reference = doc(database, 'vehicleSessions/session-a');
+    transaction.update(reference, {
+      stage: 'Ready',
+      status: 'Ready',
+      queueStatus: 'Ready',
+      opened_by: 'guard-b',
+      last_updated_by: 'guard-a',
+      sessionVersion: 2,
+      last_activity_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
+    transaction.set(doc(database, 'auditLogs/audit-ready-tamper'), {
+      audit_id: 'audit-ready-tamper',
+      module_name: 'VehicleSessions',
+      record_id: 'session-a',
+      action: 'Stage:Ready',
+      operator_id: 'guard-a',
+      account_uid: 'guard-a',
+      site_id: 'site-a',
+      created_at: serverTimestamp(),
+    });
   }));
 });
 
@@ -296,6 +903,395 @@ test('session activity is append-only', async () => {
   await assertFails(updateDoc(reference, { action: 'Tampered' }));
   await assertFails(deleteDoc(reference));
 });
+
+const operationalActivity = (id: string, uid = 'guard-a', role = 'Guard', siteId = 'site-a') => ({
+  activity_id: id,
+  client_event_id: id,
+  session_id: 'session-a',
+  vehicle_session_id: 'session-a',
+  vehicle_log_id: 'log-a',
+  action: 'VehicleActivityAdded',
+  activity_type: 'Obstruction',
+  title: 'Obstruction',
+  description: 'รถจอดกีดขวางทางเข้า',
+  location: 'อาคาร A',
+  severity: 'High',
+  status: 'Recorded',
+  photo_urls: [],
+  from_stage: 'Active',
+  to_stage: 'Active',
+  from_status: 'InProgress',
+  to_status: 'InProgress',
+  actor_uid: uid,
+  actor_operator_id: uid,
+  actor_name: uid === 'guard-a' ? 'Guard A' : 'Admin B',
+  actor_role: role,
+  site_id: siteId,
+  details: {},
+  created_at: serverTimestamp(),
+  updated_at: serverTimestamp(),
+  schema_version: 1,
+});
+
+test('same-site Guard can append concurrent activities while vehicle is inside', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'vehicleSessions/session-a'), {
+      ...session('session-a'),
+      stage: 'Active',
+      status: 'InProgress',
+      queueStatus: 'In Progress',
+      vehicle_log_id: 'log-a',
+    });
+  });
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await Promise.all([
+    assertSucceeds(setDoc(doc(database, 'vehicleSessions/session-a/activities/activity-v2-a'), operationalActivity('activity-v2-a'))),
+    assertSucceeds(setDoc(doc(database, 'vehicleSessions/session-a/activities/activity-v2-b'), operationalActivity('activity-v2-b'))),
+  ]);
+});
+
+test('cross-site activity and activity after Completed are denied', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'vehicleSessions/session-a'), {
+      ...session('session-a'),
+      stage: 'Active',
+      status: 'InProgress',
+      queueStatus: 'In Progress',
+      vehicle_log_id: 'log-a',
+    });
+  });
+  const crossSite = environment.authenticatedContext('admin-b').firestore();
+  await assertFails(setDoc(
+    doc(crossSite, 'vehicleSessions/session-a/activities/activity-cross-site'),
+    operationalActivity('activity-cross-site', 'admin-b', 'Admin', 'site-b'),
+  ));
+  await environment.withSecurityRulesDisabled(async context => {
+    await updateDoc(doc(context.firestore(), 'vehicleSessions/session-a'), {
+      stage: 'Completed',
+      status: 'Completed',
+      queueStatus: 'Completed',
+    });
+  });
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(setDoc(
+    doc(database, 'vehicleSessions/session-a/activities/activity-after-completed'),
+    operationalActivity('activity-after-completed'),
+  ));
+});
+
+test('operational activity rejects oversized or forged fields', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'vehicleSessions/session-a'), {
+      ...session('session-a'),
+      stage: 'Active',
+      status: 'InProgress',
+      queueStatus: 'In Progress',
+      vehicle_log_id: 'log-a',
+    });
+  });
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(setDoc(
+    doc(database, 'vehicleSessions/session-a/activities/activity-forged-v2'),
+    { ...operationalActivity('activity-forged-v2'), actor_role: 'Admin' },
+  ));
+  await assertFails(setDoc(
+    doc(database, 'vehicleSessions/session-a/activities/activity-too-large'),
+    { ...operationalActivity('activity-too-large'), description: 'x'.repeat(2001) },
+  ));
+});
+
+for (const actor of [
+  { uid: 'guard-a', name: 'Guard A', role: 'Guard' },
+  { uid: 'shift-a', name: 'Shift A', role: 'ShiftHead' },
+]) {
+  test(`${actor.role} can atomically edit an active session and its vehicle log`, async () => {
+    await environment.withSecurityRulesDisabled(async context => {
+      const database = context.firestore();
+      await Promise.all([
+        setDoc(doc(database, 'vehicleSessions/session-a'), {
+          ...session('session-a'),
+          stage: 'Active',
+          status: 'InProgress',
+          queueStatus: 'In Progress',
+          vehicle_plate: 'OLD-1',
+          target_room: 'A-101',
+          vehicle_log_id: 'log-a',
+        }),
+        setDoc(doc(database, 'vehicleLogs/log-a'), {
+          log_id: 'log-a', vehicle_session_id: 'session-a', site_id: 'site-a',
+          card_number: 'CARD-A', parking_card_id: 'card-a', vehicle_plate: 'OLD-1',
+          vehicle_type: 'รถยนต์', visitor_name: '', visitor_phone: '',
+          target_room: 'A-101', purpose: '', entry_time: '2026-07-30T00:00:00.000Z',
+          status: 'กำลังจอด', workflow_status: 'active', recorded_by: 'Guard A',
+          account_uid: 'guard-a', operator_id: 'guard-a',
+          created_at: '2026-07-30T00:00:00.000Z', updated_at: '2026-07-30T00:00:00.000Z',
+        }),
+      ]);
+    });
+    const database = environment.authenticatedContext(actor.uid).firestore();
+    await assertSucceeds(runTransaction(database, async transaction => {
+      transaction.update(doc(database, 'vehicleSessions/session-a'), {
+        vehicle_plate: 'NEW-2', target_room: 'B-202',
+        sessionVersion: 2, last_updated_by: actor.uid,
+        last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
+      });
+      transaction.update(doc(database, 'vehicleLogs/log-a'), {
+        vehicle_plate: 'NEW-2', target_room: 'B-202', updated_at: serverTimestamp(),
+      });
+      transaction.set(doc(database, `vehicleSessions/session-a/activities/edit-${actor.uid}`), {
+        activity_id: `edit-${actor.uid}`, client_event_id: `edit-${actor.uid}`,
+        session_id: 'session-a', action: 'ActiveVehicleDetailsUpdated',
+        from_stage: 'Active', to_stage: 'Active', from_status: 'InProgress', to_status: 'InProgress',
+        actor_uid: actor.uid, actor_operator_id: actor.uid, actor_name: actor.name,
+        actor_role: actor.role, site_id: 'site-a', details: { vehicle_log_id: 'log-a' },
+        created_at: serverTimestamp(), schema_version: 1,
+      });
+      transaction.set(doc(database, `auditLogs/audit-edit-${actor.uid}`), {
+        audit_id: `audit-edit-${actor.uid}`, module_name: 'VehicleSessions',
+        record_id: 'session-a', vehicle_log_id: 'log-a', action: 'ActiveDetailsUpdated',
+        operator_id: actor.uid, account_uid: actor.uid, site_id: 'site-a',
+        created_at: serverTimestamp(),
+      });
+    }));
+  });
+}
+
+test('Ready to Active transaction reserves one vehicle log and is idempotent on repeat', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    const database = context.firestore();
+    await Promise.all([
+      setDoc(doc(database, 'vehicleSessions/session-a'), {
+        ...session('session-a'),
+        stage: 'Ready', status: 'Ready', queueStatus: 'Ready',
+        vehicle_plate: '1กข1234', target_room: 'A-101',
+        entry_plate_photo_url: '', entry_vehicle_photo_url: '',
+      }),
+      setDoc(doc(database, 'parkingCards/card-a'), {
+        firestore_document_id: 'card-a', card_id: 'card-a', site_id: 'site-a',
+        card_number: 'CARD-A', card_number_normalized: 'CARD-A',
+        qr_code_value: 'CARD-A', qr_code_normalized: 'CARD-A',
+        card_type: 'Temporary', status: 'Reserved', status_normalized: 'Reserved',
+        current_vehicle_session_id: 'session-a',
+        created_at: Timestamp.now(), updated_at: Timestamp.now(),
+      }),
+    ]);
+  });
+  const database = environment.authenticatedContext('guard-a').firestore();
+  const admit = () => runTransaction(database, async transaction => {
+    const sessionReference = doc(database, 'vehicleSessions/session-a');
+    const cardReference = doc(database, 'parkingCards/card-a');
+    const sessionSnapshot = await transaction.get(sessionReference);
+    if (sessionSnapshot.get('stage') === 'Active') return String(sessionSnapshot.get('vehicle_log_id'));
+    await transaction.get(cardReference);
+    const logId = 'log-admission-a';
+    transaction.set(doc(database, `vehicleLogs/${logId}`), {
+      log_id: logId, vehicle_session_id: 'session-a', site_id: 'site-a',
+      parking_card_id: 'card-a', card_number: 'CARD-A', vehicle_plate: '1กข1234',
+      vehicle_type: 'รถยนต์', visitor_name: '', visitor_phone: '', target_room: 'A-101',
+      purpose: '', entry_time: '2026-07-30T00:00:00.000Z', status: 'กำลังจอด',
+      workflow_status: 'active', recorded_by: 'Guard A',
+      operator_name: 'Guard A', operator_id: 'guard-a', account_uid: 'guard-a',
+      created_at: '2026-07-30T00:00:00.000Z', updated_at: '2026-07-30T00:00:00.000Z',
+    });
+    transaction.update(cardReference, {
+      status: 'InUse', status_normalized: 'InUse', current_vehicle_plate: '1กข1234',
+      current_vehicle_log_id: logId, current_vehicle_session_id: '',
+      last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
+    });
+    transaction.update(sessionReference, {
+      stage: 'Active', status: 'InProgress', queueStatus: 'In Progress',
+      vehicle_log_id: logId, current_owner: 'guard-a', last_updated_by: 'guard-a',
+      sessionVersion: 2, last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
+      editing_by: '', editing_by_name: '', editing_since: null, expires_at: null,
+      'stage_updates.Active': { updatedBy: 'guard-a', updatedAt: serverTimestamp() },
+    });
+    transaction.set(doc(database, 'vehicleSessions/session-a/activities/admit-a'), {
+      activity_id: 'admit-a', client_event_id: 'admit-a', session_id: 'session-a',
+      action: 'SessionCompletion', from_stage: 'Ready', to_stage: 'Active',
+      from_status: 'Ready', to_status: 'InProgress', actor_uid: 'guard-a',
+      actor_operator_id: 'guard-a', actor_name: 'Guard A', actor_role: 'Guard',
+      site_id: 'site-a', details: { vehicle_log_id: logId },
+      created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, 'auditLogs/audit-admit-a'), {
+      audit_id: 'audit-admit-a', module_name: 'VehicleSessions', record_id: 'session-a',
+      vehicle_log_id: logId, action: 'Ready->Active', operator_id: 'guard-a',
+      account_uid: 'guard-a', site_id: 'site-a', created_at: serverTimestamp(),
+    });
+    return logId;
+  });
+  await assertSucceeds(admit());
+  await assertSucceeds(admit());
+  const logs = await getDocs(query(
+    collection(database, 'vehicleLogs'),
+    where('site_id', '==', 'site-a'),
+    where('vehicle_session_id', '==', 'session-a'),
+  ));
+  if (logs.size !== 1) throw new Error(`Expected one vehicle log, found ${logs.size}.`);
+});
+
+[
+  { uid: 'guard-a', operatorName: 'Guard A', role: 'Guard', suffix: 'guard' },
+  { uid: 'shift-head-a', operatorName: 'JK-Secure', role: 'ShiftHead', suffix: 'shift-head', siteId: 'site-01' },
+  { uid: 'manager-a', operatorName: 'Manager A', role: 'Manager', suffix: 'manager' },
+  { uid: 'admin-a', operatorName: 'Admin A', role: 'Admin', suffix: 'admin' },
+].forEach(actor => {
+  test(`${actor.role} can atomically reserve an available card and create a vehicle session`, async () => {
+    await seedAvailableCard(
+      `card-${actor.suffix}`,
+      `CARD-${actor.suffix.toUpperCase()}`,
+      actor.siteId ?? 'site-a',
+    );
+    const database = environment.authenticatedContext(actor.uid).firestore();
+    await assertSucceeds(createVehicleSessionTransaction(database, {
+      ...actor,
+      siteId: actor.siteId ?? 'site-a',
+    }));
+  });
+});
+
+test('inactive user cannot atomically create a vehicle session', async () => {
+  await seedAvailableCard('card-inactive', 'CARD-INACTIVE');
+  const database = environment.authenticatedContext('inactive-a').firestore();
+  await assertFails(createVehicleSessionTransaction(database, {
+    uid: 'inactive-a', operatorName: 'Inactive A', role: 'Guard',
+    siteId: 'site-a', suffix: 'inactive',
+  }));
+});
+
+test('missing user profile cannot atomically create a vehicle session', async () => {
+  await seedAvailableCard('card-missing-profile', 'CARD-MISSING-PROFILE');
+  const database = environment.authenticatedContext('missing-profile').firestore();
+  await assertFails(createVehicleSessionTransaction(database, {
+    uid: 'missing-profile', operatorName: 'Missing Profile', role: 'Guard',
+    siteId: 'site-a', suffix: 'missing-profile',
+  }));
+});
+
+test('cross-site user cannot read and reserve a card from another site', async () => {
+  await seedAvailableCard('card-wrong-site', 'CARD-WRONG-SITE');
+  const database = environment.authenticatedContext('admin-b').firestore();
+  await assertFails(createVehicleSessionTransaction(database, {
+    uid: 'admin-b', operatorName: 'Admin B', role: 'Admin',
+    siteId: 'site-a', suffix: 'wrong-site',
+  }));
+});
+
+test('unknown role cannot atomically create a vehicle session', async () => {
+  await seedAvailableCard('card-unknown', 'CARD-UNKNOWN');
+  const database = environment.authenticatedContext('unknown-a').firestore();
+  await assertFails(createVehicleSessionTransaction(database, {
+    uid: 'unknown-a', operatorName: 'Unknown A', role: 'Supervisor',
+    siteId: 'site-a', suffix: 'unknown',
+  }));
+});
+
+test('legacy ShiftLeader role cannot atomically create a vehicle session', async () => {
+  await seedAvailableCard('card-legacy-role', 'CARD-LEGACY-ROLE');
+  const database = environment.authenticatedContext('legacy-a').firestore();
+  await assertFails(createVehicleSessionTransaction(database, {
+    uid: 'legacy-a', operatorName: 'Legacy A', role: 'ShiftLeader',
+    siteId: 'site-a', suffix: 'legacy-role',
+  }));
+});
+
+test('accounts role and site mismatch do not override the canonical users profile', async () => {
+  await seedAvailableCard('card-account-mismatch', 'CARD-ACCOUNT-MISMATCH');
+  const database = environment.authenticatedContext('shift-a').firestore();
+  await assertSucceeds(createVehicleSessionTransaction(database, {
+    uid: 'shift-a', operatorName: 'Shift A', role: 'ShiftHead',
+    siteId: 'site-a', suffix: 'account-mismatch',
+  }));
+});
+
+test('deployed legacy session payload is denied for fields outside validVehicleSession allowlist', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'parkingCards/card-legacy-payload'), {
+      firestore_document_id: 'card-legacy-payload', card_id: 'card-legacy-payload',
+      site_id: 'site-a', card_number: 'R027', card_number_normalized: 'R027',
+      qr_code_value: 'R027', qr_code_normalized: 'R027', card_type: 'Temporary',
+      status: 'Available', status_normalized: 'Available',
+      created_at: Timestamp.now(), updated_at: Timestamp.now(),
+    });
+  });
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(runTransaction(database, async transaction => {
+    transaction.set(doc(database, 'vehicleSessions/session-legacy-payload'), {
+      ...session('session-legacy-payload'),
+      parking_card_id: 'card-legacy-payload', card_number: 'R027',
+      movement_status: 'ENTRY_OPENED', completeness_status: 'INCOMPLETE',
+      missing_fields: ['vehicle_plate'], opened_by_operator_id: 'guard-a',
+      opened_at: serverTimestamp(),
+    });
+    transaction.update(doc(database, 'parkingCards/card-legacy-payload'), {
+      status: 'Reserved', status_normalized: 'Reserved',
+      current_vehicle_session_id: 'session-legacy-payload',
+      last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
+    });
+  }));
+});
+
+test('Vehicle Exit rejects the pre-fix trimmed canonical actor name and accepts the exact profile value', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'users/shift-a'), {
+      status: 'Active', role: 'ShiftHead', site_id: 'site-a',
+      operator_name: 'Shift A ',
+    });
+  });
+  await seedActiveVehicleExit('canonical-name');
+  const database = environment.authenticatedContext('shift-a').firestore();
+  await assertFails(completeVehicleExitTransaction(database, {
+    uid: 'shift-a', operatorName: 'Shift A', role: 'ShiftHead',
+    suffix: 'canonical-name',
+  }));
+  await assertSucceeds(completeVehicleExitTransaction(database, {
+    uid: 'shift-a', operatorName: 'Shift A ', role: 'ShiftHead',
+    suffix: 'canonical-name',
+  }));
+});
+
+for (const actor of [
+  { uid: 'guard-a', operatorName: 'Guard A', role: 'Guard' },
+  { uid: 'shift-a', operatorName: 'Shift A', role: 'ShiftHead' },
+  { uid: 'manager-a', operatorName: 'Manager A', role: 'Manager' },
+  { uid: 'admin-a', operatorName: 'Admin A', role: 'Admin' },
+]) {
+  test(`${actor.role} can atomically complete same-site Vehicle Exit`, async () => {
+    const suffix = `role-${actor.uid}`;
+    await seedActiveVehicleExit(suffix);
+    await assertSucceeds(completeVehicleExitTransaction(
+      environment.authenticatedContext(actor.uid).firestore(),
+      { ...actor, suffix },
+    ));
+  });
+}
+
+test('Vehicle Exit atomically records a Lost Card transition and immutable history', async () => {
+  await seedActiveVehicleExit('lost');
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertSucceeds(completeVehicleExitTransaction(database, {
+    uid: 'guard-a', operatorName: 'Guard A', role: 'Guard',
+    suffix: 'lost', lostCard: true,
+  }));
+  await assertFails(updateDoc(doc(database, 'parkingCardHistory/exit-history-lost'), {
+    reason: 'tampered',
+  }));
+});
+
+for (const actor of [
+  { uid: 'admin-b', operatorName: 'Admin B', role: 'Admin', label: 'cross-site' },
+  { uid: 'inactive-a', operatorName: 'Inactive A', role: 'Guard', label: 'inactive' },
+  { uid: 'legacy-a', operatorName: 'Legacy A', role: 'ShiftLeader', label: 'legacy ShiftLeader' },
+]) {
+  test(`${actor.label} account cannot complete Vehicle Exit`, async () => {
+    const suffix = `denied-${actor.uid}`;
+    await seedActiveVehicleExit(suffix);
+    await assertFails(completeVehicleExitTransaction(
+      environment.authenticatedContext(actor.uid).firestore(),
+      { ...actor, suffix },
+    ));
+  });
+}
 
 test('audit logs remain immutable', async () => {
   const database = environment.authenticatedContext('manager-a').firestore();
