@@ -37,6 +37,13 @@ export default function OperationalQueueDashboard({ siteId, operatorName, role, 
   const canManage = ['ShiftHead', 'Manager', 'Admin'].includes(role);
 
   useEffect(() => {
+    const reportReadError = (queryName: string) => (reason: Error) => {
+      console.error(`[OperationalAnalytics][${queryName}]`, {
+        code: 'code' in reason ? String(reason.code) : undefined,
+        message: reason.message,
+      });
+      setMessage(reason.message);
+    };
     const stopQueue = subscribeOperationalQueue(siteId, items => {
       const mine = items.filter(item => item.assignedTo === uid);
       mine.forEach(item => {
@@ -44,8 +51,12 @@ export default function OperationalQueueDashboard({ siteId, operatorName, role, 
         knownAssignments.current.add(item.session_id);
       });
       setQueue(items);
-    });
-    const stopCompleted = subscribeCompletedToday(siteId, setCompleted);
+    }, reportReadError('vehicleSessions.operationalQueue'));
+    const stopCompleted = subscribeCompletedToday(
+      siteId,
+      setCompleted,
+      reportReadError('vehicleSessions.completedToday'),
+    );
     return () => { stopQueue(); stopCompleted(); };
   }, [siteId, uid]);
 
@@ -101,6 +112,11 @@ export default function OperationalQueueDashboard({ siteId, operatorName, role, 
       <div className="max-h-80 space-y-2 overflow-y-auto">
         {queue.map(session => {
           const mine = session.assignedTo === uid;
+          const missing = [
+            !session.vehicle_plate && 'ทะเบียน',
+            !session.visitor_name && 'ชื่อผู้มาติดต่อ',
+            !session.target_room && 'ห้อง/ปลายทาง',
+          ].filter(Boolean);
           return <article key={session.session_id} className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="flex flex-wrap items-center gap-2">
@@ -109,10 +125,18 @@ export default function OperationalQueueDashboard({ siteId, operatorName, role, 
                 <span className="text-xs text-slate-500">{session.vehicle_plate || 'ยังไม่มีทะเบียน'} · {session.queueStatus}</span>
               </div>
               <p className="mt-1 flex items-center gap-1 text-[11px] text-slate-400"><Clock className="h-3 w-3" /> อัปเดต {session.last_activity_at ? new Date(session.last_activity_at).toLocaleString('th-TH') : '-'}</p>
+              <p className="mt-1 text-[10px] text-slate-500">
+                เปิดโดย {session.opened_by_name || session.opened_by || '-'}
+                {' · '}ผู้รับผิดชอบ {session.assignedTo || 'คิวกลาง'}
+                {' · '}แก้ล่าสุด {session.last_updated_by || '-'}
+              </p>
+              <p className={`mt-1 text-[10px] font-bold ${missing.length ? 'text-amber-700' : 'text-emerald-700'}`}>
+                {missing.length ? `ข้อมูลที่ขาด: ${missing.join(', ')}` : 'ข้อมูลหลักฐานครบ'}
+              </p>
             </div>
             <div className="flex flex-wrap gap-1">
               {!session.assignedTo && <button type="button" onClick={() => void perform(() => takeVehicleJob(session.session_id, context, { expectedSessionVersion: session.sessionVersion, expectedAssignmentVersion: session.assignmentVersion }))} className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white"><Hand className="h-3 w-3" /> รับงาน</button>}
-              {mine && <button type="button" onClick={() => onContinue(session)} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white"><UserCheck className="h-3 w-3" /> ทำต่อ</button>}
+              <button type="button" onClick={() => onContinue(session)} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white"><UserCheck className="h-3 w-3" /> ดำเนินการต่อ</button>
               {mine && <button type="button" onClick={() => void perform(() => releaseVehicleJob(session.session_id, context, { expectedSessionVersion: session.sessionVersion, expectedAssignmentVersion: session.assignmentVersion }))} className="rounded-lg bg-slate-200 px-3 py-2 text-xs font-bold text-slate-700">คืนคิว</button>}
               {canManage && <button type="button" onClick={() => { setTransferSession(session); setTransferTarget(''); setTransferNote(''); }} className="rounded-lg bg-violet-100 px-3 py-2 text-xs font-bold text-violet-800">โอนงาน</button>}
               {canManage && <select aria-label="กำหนดความสำคัญ" value={session.priority} onChange={event => void perform(() => setVehicleJobPriority(session.session_id, event.target.value as VehicleQueuePriority, context, { expectedSessionVersion: session.sessionVersion }))} className="rounded-lg border border-slate-200 px-2 text-xs font-bold">

@@ -65,7 +65,11 @@ export function sortOperationalQueue(sessions: VehicleSessionRecord[]): VehicleS
     || new Date(left.created_at).getTime() - new Date(right.created_at).getTime());
 }
 
-export function subscribeOperationalQueue(siteId: string, callback: (sessions: VehicleSessionRecord[]) => void): Unsubscribe {
+export function subscribeOperationalQueue(
+  siteId: string,
+  callback: (sessions: VehicleSessionRecord[]) => void,
+  onError?: (error: Error) => void,
+): Unsubscribe {
   return onSnapshot(
     query(
       collection(db, 'vehicleSessions'),
@@ -74,11 +78,25 @@ export function subscribeOperationalQueue(siteId: string, callback: (sessions: V
       orderBy('queuePosition', 'asc'),
       limit(100),
     ),
-    snapshot => callback(sortOperationalQueue(snapshot.docs.map(queueRecord))),
+    snapshot => callback(sortOperationalQueue(
+      snapshot.docs.map(queueRecord).filter(session => session.status !== 'InProgress'),
+    )),
+    reason => {
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      console.error('[OperationalAnalytics][vehicleSessions.operationalQueue]', {
+        code: 'code' in error ? String(error.code) : undefined,
+        message: error.message,
+      });
+      onError?.(error);
+    },
   );
 }
 
-export function subscribeCompletedToday(siteId: string, callback: (sessions: VehicleSessionRecord[]) => void): Unsubscribe {
+export function subscribeCompletedToday(
+  siteId: string,
+  callback: (sessions: VehicleSessionRecord[]) => void,
+  onError?: (error: Error) => void,
+): Unsubscribe {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   return onSnapshot(
@@ -91,5 +109,13 @@ export function subscribeCompletedToday(siteId: string, callback: (sessions: Veh
       limit(100),
     ),
     snapshot => callback(snapshot.docs.map(queueRecord)),
+    reason => {
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      console.error('[OperationalAnalytics][vehicleSessions.completedToday]', {
+        code: 'code' in error ? String(error.code) : undefined,
+        message: error.message,
+      });
+      onError?.(error);
+    },
   );
 }

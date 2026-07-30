@@ -26,6 +26,7 @@ export default function OperationalAnalyticsDashboard({ siteId, role, operatorNa
   const start = new Date(); start.setDate(start.getDate() - 6);
   const [startDate, setStartDate] = useState(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok' }).format(start));
   const [rangeEnd, setRangeEnd] = useState(endDate);
+  const canDailyAnalytics = ['ShiftHead', 'Manager', 'Admin'].includes(role);
   const canHistorical = ['Manager', 'Admin'].includes(role);
 
   useEffect(() => {
@@ -40,12 +41,15 @@ export default function OperationalAnalyticsDashboard({ siteId, role, operatorNa
   const loadAnalytics = async () => {
     setLoading(true); setError('');
     try {
-      setDaily(await getTodayOperationalMetrics(siteId));
+      setDaily(canDailyAnalytics ? await getTodayOperationalMetrics(siteId) : null);
       if (canHistorical) setHistory(await getHistoricalDailyAnalytics(siteId, startDate, rangeEnd));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    } catch (reason) {
+      console.error('[OperationalAnalytics][loadAnalytics]', reason);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
     finally { setLoading(false); }
   };
-  useEffect(() => { void loadAnalytics(); }, [siteId]);
+  useEffect(() => { void loadAnalytics(); }, [siteId, role]);
 
   const averages = useMemo(() => {
     const completed = daily?.sessions_completed || 0;

@@ -20,12 +20,21 @@ export interface EligibleQueueOperator {
 }
 
 export async function listEligibleQueueOperators(siteId: string): Promise<EligibleQueueOperator[]> {
-  const callable = httpsCallable<{ siteId: string }, { operators: EligibleQueueOperator[] }>(
-    getFunctions(undefined, FUNCTIONS_REGION),
-    'listEligibleQueueOperators',
-  );
-  const result = await callable({ siteId });
-  return result.data.operators;
+  try {
+    const callable = httpsCallable<{ siteId: string }, { operators: EligibleQueueOperator[] }>(
+      getFunctions(undefined, FUNCTIONS_REGION),
+      'listEligibleQueueOperators',
+    );
+    const result = await callable({ siteId });
+    return result.data.operators;
+  } catch (reason) {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    console.error('[OperationalAnalytics][operators.eligibleCallable]', {
+      code: 'code' in error ? String(error.code) : undefined,
+      message: error.message,
+    });
+    throw error;
+  }
 }
 
 function actor(context: QueueActor) {

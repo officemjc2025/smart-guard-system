@@ -52,6 +52,15 @@ export interface AnalyticsFilters {
 }
 
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
+const reportQueryError = (queryName: string, reason: unknown) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  console.error(`[OperationalAnalytics][${queryName}]`, {
+    code: 'code' in error ? String(error.code) : undefined,
+    message: error.message,
+  });
+  return error;
+};
+
 const dailyRecord = (data: Record<string, unknown>): DailyAnalyticsRecord => ({
   site_id: String(data.site_id || ''), date_key: String(data.date_key || ''),
   timezone: String(data.timezone || 'Asia/Bangkok'), schema_version: number(data.schema_version) || 1,
@@ -110,26 +119,34 @@ export function subscribeRealtimeQueueMetrics(
         oldestWaitingSeconds: waiting.length ? Math.max(...waiting.map(item => Math.max(0, Math.floor((now - (item.created_at?.toMillis?.() ?? now)) / 1000)))) : 0,
       });
     },
-    reason => onError(reason instanceof Error ? reason : new Error(String(reason))),
+    reason => onError(reportQueryError('vehicleSessions.realtimeQueue', reason)),
   );
 }
 
 export async function getTodayOperationalMetrics(siteId: string): Promise<DailyAnalyticsRecord | null> {
-  const snapshot = await getDoc(doc(db, 'siteAnalyticsDaily', `${siteId}_${bangkokDateKey()}`));
-  return snapshot.exists() ? dailyRecord(snapshot.data()) : null;
+  try {
+    const snapshot = await getDoc(doc(db, 'siteAnalyticsDaily', `${siteId}_${bangkokDateKey()}`));
+    return snapshot.exists() ? dailyRecord(snapshot.data()) : null;
+  } catch (reason) {
+    throw reportQueryError('siteAnalyticsDaily.today', reason);
+  }
 }
 
 export async function getHistoricalDailyAnalytics(siteId: string, startDate: string, endDate: string): Promise<DailyAnalyticsRecord[]> {
   assertBoundedDateRange(startDate, endDate);
-  const snapshot = await getDocs(query(
-    collection(db, 'siteAnalyticsDaily'),
-    where('site_id', '==', siteId),
-    where('date_key', '>=', startDate),
-    where('date_key', '<=', endDate),
-    orderBy('date_key', 'asc'),
-    limit(31),
-  ));
-  return snapshot.docs.map(item => dailyRecord(item.data()));
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, 'siteAnalyticsDaily'),
+      where('site_id', '==', siteId),
+      where('date_key', '>=', startDate),
+      where('date_key', '<=', endDate),
+      orderBy('date_key', 'asc'),
+      limit(31),
+    ));
+    return snapshot.docs.map(item => dailyRecord(item.data()));
+  } catch (reason) {
+    throw reportQueryError('siteAnalyticsDaily.history', reason);
+  }
 }
 
 const safeCsvCell = (value: string | number) => {
