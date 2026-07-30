@@ -22,6 +22,7 @@ export default function QRScanner({ onScanSuccess, onClose, title = 'สแก�
   const [scanError, setScanError] = useState<string | null>(null);
   
   const qrScannerRef = useRef<Html5Qrcode | null>(null);
+  const scanAcceptedRef = useRef(false);
   const scannerId = 'qr-reader-element';
 
   useEffect(() => {
@@ -46,6 +47,7 @@ export default function QRScanner({ onScanSuccess, onClose, title = 'สแก�
 
   const startScanner = async () => {
     setScanError(null);
+    scanAcceptedRef.current = false;
     setIsScanning(true);
     setShowManual(false);
 
@@ -63,8 +65,10 @@ export default function QRScanner({ onScanSuccess, onClose, title = 'สแก�
           }
         },
         (decodedText) => {
+          if (scanAcceptedRef.current) return;
+          scanAcceptedRef.current = true;
+          void stopScanner();
           onScanSuccess(decodedText);
-          stopScanner();
         },
         () => {
           // Silent failure for framing error
@@ -90,7 +94,8 @@ export default function QRScanner({ onScanSuccess, onClose, title = 'สแก�
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (manualInput.trim()) {
+    if (manualInput.trim() && !scanAcceptedRef.current) {
+      scanAcceptedRef.current = true;
       onScanSuccess(manualInput.trim());
       if (onClose) onClose();
     }

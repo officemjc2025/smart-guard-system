@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Users, CreditCard, MapPin, Key, Ban, AlertTriangle, Settings, 
   ClipboardList, Download, LayoutDashboard, QrCode, Plus, Edit2, 
@@ -73,6 +73,12 @@ const EXPORT_COLUMNS = {
 } as const;
 
 export default function AdminPanel({ currentUser, loginEmail = '', authorizationResult = '' }: AdminPanelProps) {
+  const toastTimers = useRef<{ success?: number; error?: number }>({});
+
+  useEffect(() => () => {
+    if (toastTimers.current.success) window.clearTimeout(toastTimers.current.success);
+    if (toastTimers.current.error) window.clearTimeout(toastTimers.current.error);
+  }, []);
   const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -141,10 +147,12 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   const showToast = (type: 'success' | 'error', message: string) => {
     if (type === 'success') {
       setSuccess(message);
-      setTimeout(() => setSuccess(null), 4000);
+      if (toastTimers.current.success) window.clearTimeout(toastTimers.current.success);
+      toastTimers.current.success = window.setTimeout(() => setSuccess(null), 4000);
     } else {
       setError(message);
-      setTimeout(() => setError(null), 4000);
+      if (toastTimers.current.error) window.clearTimeout(toastTimers.current.error);
+      toastTimers.current.error = window.setTimeout(() => setError(null), 4000);
     }
   };
 

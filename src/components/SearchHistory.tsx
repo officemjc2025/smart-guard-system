@@ -13,6 +13,7 @@ import { listContractors } from '../services/contractorService';
 import { listKeyLogs } from '../services/keyService';
 import { listPatrolLogs } from '../services/patrolService';
 import { listIncidents } from '../services/incidentService';
+import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 
 const resolveHistoryImageUrl = (fileId: string): string =>
   fileId.startsWith('http://') || fileId.startsWith('https://')
@@ -539,7 +540,9 @@ export default function SearchHistory() {
                           {url === 'loading' ? (
                             <div className="text-[11px] font-bold text-slate-400 animate-pulse">กำลังดาวน์โหลดภาพจาก Cloud Storage...</div>
                           ) : url ? (
-                            <img src={url} alt={field} className="w-full h-full object-cover" />
+                            field === 'entry_plate_photo_url' || field === 'entry_vehicle_photo_url'
+                              ? <AuthenticatedEvidenceImage mediaReference={String(selectedRecord[field])} alt={field} className="w-full h-full object-cover" />
+                              : <img src={url} alt={field} className="w-full h-full object-cover" />
                           ) : (
                             <span className="text-[10px] text-slate-400">ไม่มีการแนบภาพถ่าย</span>
                           )}

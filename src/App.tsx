@@ -36,6 +36,7 @@ console.log('[Smart Guard Build] v4.0.1 bootstrap-permission fix loaded');
 
 const Dashboard = lazy(() => import('./components/Dashboard'));
 const VehicleEntryExit = lazy(() => import('./components/VehicleEntryExit'));
+const VehicleOperations = lazy(() => import('./components/VehicleOperations'));
 const ContractorLogs = lazy(() => import('./components/ContractorLogs'));
 const KeyLogs = lazy(() => import('./components/KeyLogs'));
 const PatrolLogs = lazy(() => import('./components/PatrolLogs'));
@@ -44,7 +45,7 @@ const SearchHistory = lazy(() => import('./components/SearchHistory'));
 const MasterData = lazy(() => import('./components/MasterData'));
 const AdminPanel = lazy(() => import('./components/AdminPanel'));
 
-export type TabType = 'dashboard' | 'vehicles' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'history' | 'settings' | 'admin';
+export type TabType = 'dashboard' | 'vehicles' | 'vehicleOperations' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'history' | 'settings' | 'admin';
 type Role = 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
 
 function DebugPage({ name, children }: { name: string; children: ReactNode }) {
@@ -533,6 +534,16 @@ export default function App() {
           </button>
 
           <button
+            onClick={() => setActiveTab('vehicleOperations')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'vehicleOperations' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <RefreshCw className="w-4.5 h-4.5" />
+            คิวและวิเคราะห์รถ (Operations)
+          </button>
+
+          <button
             onClick={() => setActiveTab('contractors')}
             className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
               activeTab === 'contractors' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
@@ -620,6 +631,7 @@ export default function App() {
           <Suspense fallback={<PageFallback />}>
           {activeTab === 'dashboard' && <DebugPage name="Dashboard"><Dashboard onNavigate={setActiveTab} activeRole={userRole} siteId={currentProfile.site_id} /></DebugPage>}
           {activeTab === 'vehicles' && <DebugPage name="VehicleEntryExit"><VehicleEntryExit guardName={guardName} userRole={userRole} /></DebugPage>}
+          {activeTab === 'vehicleOperations' && <DebugPage name="VehicleOperations"><VehicleOperations siteId={currentProfile.site_id} operatorName={guardName} role={userRole} onOpenVehicleSession={() => setActiveTab('vehicles')} /></DebugPage>}
           {activeTab === 'contractors' && <DebugPage name="ContractorLogs"><ContractorLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} /></DebugPage>}
