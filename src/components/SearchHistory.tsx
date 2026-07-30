@@ -500,14 +500,14 @@ export default function SearchHistory() {
                     status: '⚙️ สถานะบันทึกในตาราง'
                   };
 
-                  const formattedVal = (key.includes('time') || key.endsWith('_at')) && val
+                  const formattedVal = key.includes('time') || key.endsWith('_at')
                     ? formatThaiDateTime(val)
-                    : String(val);
+                    : val === null || val === undefined || val === '' ? '—' : String(val);
 
                   return (
                     <div key={key} className="flex flex-col gap-1">
                       <span className="text-[10px] text-slate-400 uppercase font-bold">{labels[key] || key}</span>
-                      <span className="text-slate-800 font-bold text-sm bg-slate-50 p-2 rounded-lg">{formattedVal || '-'}</span>
+                      <span className="text-slate-800 font-bold text-sm bg-slate-50 p-2 rounded-lg">{formattedVal}</span>
                     </div>
                   );
                 })}

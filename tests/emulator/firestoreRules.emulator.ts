@@ -1,4 +1,5 @@
 import { after, before, beforeEach, test } from 'node:test';
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   assertFails,
@@ -1276,6 +1277,31 @@ test('Vehicle Exit atomically records a Lost Card transition and immutable histo
   await assertFails(updateDoc(doc(database, 'parkingCardHistory/exit-history-lost'), {
     reason: 'tampered',
   }));
+});
+
+test('Vehicle Exit atomically records immutable server exit_time and preserves entry_time', async () => {
+  const suffix = 'business-time';
+  const logId = `exit-log-${suffix}`;
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await seedActiveVehicleExit(suffix);
+  const before = await getDoc(doc(database, `vehicleLogs/${logId}`));
+  const originalEntryTime = before.get('entry_time');
+
+  await assertSucceeds(completeVehicleExitTransaction(database, {
+    uid: 'guard-a', operatorName: 'Guard A', role: 'Guard', suffix,
+  }));
+
+  const completed = await getDoc(doc(database, `vehicleLogs/${logId}`));
+  assert.equal(completed.get('status'), 'ออกแล้ว');
+  assert.equal(completed.get('workflow_status'), 'completed');
+  assert.ok(completed.get('exit_time') instanceof Timestamp);
+  assert.deepEqual(completed.get('entry_time'), originalEntryTime);
+
+  await assertFails(completeVehicleExitTransaction(database, {
+    uid: 'guard-a', operatorName: 'Guard A', role: 'Guard', suffix,
+  }));
+  const afterDuplicate = await getDoc(doc(database, `vehicleLogs/${logId}`));
+  assert.deepEqual(afterDuplicate.get('exit_time'), completed.get('exit_time'));
 });
 
 for (const actor of [

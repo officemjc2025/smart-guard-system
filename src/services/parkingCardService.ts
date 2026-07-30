@@ -35,7 +35,7 @@ export const DUPLICATE_CARD_MESSAGE = 'บัตรนี้กำลังใ�
 export const LEGACY_CARD_MESSAGE = 'พบบัตรเดิมในระบบแต่ยังไม่ได้ผูกกับพื้นที่\nกรุณาให้ผู้ดูแลระบบตรวจสอบและ Migration ข้อมูลบัตร';
 
 export class ParkingCardWorkflowError extends Error {
-  constructor(message: string, readonly code: 'not-found' | 'legacy-unassigned' | 'in-use' | 'unavailable' | 'vip-disabled' | 'illegal-transition' | 'duplicate-log') {
+  constructor(message: string, readonly code: 'not-found' | 'legacy-unassigned' | 'in-use' | 'unavailable' | 'vip-disabled' | 'illegal-transition' | 'duplicate-log' | 'already-exited') {
     super(message);
     this.name = 'ParkingCardWorkflowError';
   }
@@ -458,7 +458,9 @@ export const getActiveVehicleExitDetails = findActiveVehicleByCard;
 
 export function validateVehicleExitIntegrity(card: ParkingCardRecord, log: VehicleLogRecord, siteId: string) {
   if ((card.site_id && card.site_id !== siteId) || (log.site_id && log.site_id !== siteId)) throw new Error('SITE_MISMATCH: Card or vehicle belongs to another site.');
-  if (log.status !== 'กำลังจอด' || log.exit_time || log.workflow_status === 'completed') throw new Error('Vehicle log is no longer active.');
+  if (log.status !== 'กำลังจอด' || log.exit_time || log.workflow_status === 'completed') {
+    throw new ParkingCardWorkflowError('รถรายการนี้ออกจากพื้นที่แล้ว', 'already-exited');
+  }
   if (!['InUse'].includes(card.status)) throw new Error(`Parking card is ${card.status}; exit transaction was blocked.`);
   if (card.current_vehicle_log_id && card.current_vehicle_log_id !== log.log_id) throw new Error('Parking card points to a different active vehicle log.');
 }
@@ -529,8 +531,8 @@ export async function completeVehicleExit(log: VehicleLogRecord, input: VehicleE
       completedSessionId = log.vehicle_session_id || '';
     }
     });
-    if (completedSessionId) await applyVehicleSessionAnalytics(completedSessionId, siteId, 'Vehicle Exit');
   } catch (reason) {
+    if (reason instanceof ParkingCardWorkflowError && reason.code === 'already-exited') throw reason;
     const message = reason instanceof Error ? reason.message : String(reason);
     const failureAudit = auditRecord(operatorName, normalizeParkingCard(cardSnapshot), log.log_id, 'VehicleExitTransactionFailure', 'InUse', 'InUse', message, 'Failed');
     try {
@@ -540,6 +542,10 @@ export async function completeVehicleExit(log: VehicleLogRecord, input: VehicleE
     }
     throw reason;
   }
+  if (completedSessionId) await applyVehicleSessionAnalytics(completedSessionId, siteId, 'Vehicle Exit');
+  const completedSnapshot = await getDoc(doc(db, 'vehicleLogs', log.log_id));
+  if (!completedSnapshot.exists()) throw new Error('Completed vehicle log could not be reloaded.');
+  return vehicleLogFromData(completedSnapshot.id, completedSnapshot.data());
 }
 
 export const completeVehicleExitWithLostCard = (log: VehicleLogRecord, input: VehicleExitInput, context: VehicleExitAccountContext) => completeVehicleExit(log, { ...input, lostCard: true }, context);

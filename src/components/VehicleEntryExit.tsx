@@ -47,6 +47,7 @@ import {
   beginWorkspaceRelease,
   failWorkspaceRelease,
 } from '../services/workspaceEngine';
+import { formatThaiDateTime } from '../utils/dateTime';
 
 interface VehicleEntryExitProps {
   guardName: string;
@@ -90,6 +91,7 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
   const [lostCardReason, setLostCardReason] = useState('');
   const [exitLoadError, setExitLoadError] = useState('');
   const [showExitScanner, setShowExitScanner] = useState(false);
+  const [completedExitVehicle, setCompletedExitVehicle] = useState<VehicleLogRecord | null>(null);
 
   useEffect(() => {
     fetchInitialData();
@@ -583,11 +585,12 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
         exitVehicleUrl = await uploadImageToDrive(exitVehiclePhoto, `vehicle_out_${selectedExitVehicle.vehicle_plate}_${Date.now()}.jpg`, { moduleName: 'VehicleLogs', recordId: selectedExitVehicle.log_id, siteId: selectedExitVehicle.site_id, uploadedBy: guardName, mediaType: 'exit_vehicle' });
       }
 
-      await completeVehicleExit(selectedExitVehicle, {
+      const completedVehicle = await completeVehicleExit(selectedExitVehicle, {
         exitPlatePhotoUrl: exitPlateUrl, exitVehiclePhotoUrl: exitVehicleUrl, exitNote, abnormalNote, lostCard, lostCardReason,
       }, { operatorName: guardName, role: userRole });
 
-      setStatusMessage({ type: 'success', text: `Vehicle ${selectedExitVehicle.vehicle_plate} exited successfully. Card ${selectedExitVehicle.card_number} is now ${lostCard ? 'Lost' : 'available'}.` });
+      setCompletedExitVehicle(completedVehicle);
+      setStatusMessage({ type: 'success', text: `รถทะเบียน ${completedVehicle.vehicle_plate} ออกจากพื้นที่เมื่อ ${formatThaiDateTime(completedVehicle.exit_time)} บัตร ${completedVehicle.card_number} เปลี่ยนเป็น ${lostCard ? 'Lost' : 'Available'}` });
       setSelectedExitVehicle(null);
       setExitPlatePhoto('');
       setExitVehiclePhoto('');
@@ -890,6 +893,14 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
         /* EXIT TAB */
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col gap-5">
           <h2 className="text-lg font-black text-slate-800">ค้นหาและบันทึกข้อมูลรถออกอาคาร</h2>
+          {completedExitVehicle && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <p className="font-black">บันทึกรถออกสำเร็จ</p>
+              <p>ทะเบียน: {completedExitVehicle.vehicle_plate}</p>
+              <p>เวลาเข้า: {formatThaiDateTime(completedExitVehicle.entry_time)}</p>
+              <p>เวลาออก: {formatThaiDateTime(completedExitVehicle.exit_time)}</p>
+            </div>
+          )}
 
           <button type="button" onClick={() => setShowExitScanner(true)} className="min-h-14 w-full rounded-xl bg-indigo-600 px-5 py-4 text-base font-black text-white shadow active:scale-[0.99]">
             สแกนบัตรที่คืน (Scan Returned Card)
