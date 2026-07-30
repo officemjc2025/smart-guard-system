@@ -143,7 +143,7 @@ async function firebaseSecretSet(name, value) {
       '--project',
       STAGING_PROJECT_ID,
     ],
-    { input: `${value}\n` },
+    { input: value },
   );
   if (!result.ok) {
     fail(

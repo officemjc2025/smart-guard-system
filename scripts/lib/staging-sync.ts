@@ -17,16 +17,15 @@ export const STAGING_PROJECT_ID = 'securityprojectv1-staging';
 export const DEFAULT_DATABASE_ID = '(default)';
 export const DEFAULT_MANIFEST_PATH = 'clone-manifest.json';
 
+// Business reference data copied from Production into Staging.
+// Authentication identities and environment configuration remain Staging-owned.
 export const REFERENCE_COLLECTIONS = [
   'sites',
-  'accounts',
-  'operators',
   'parkingCards',
   'units',
   'patrolPoints',
   'keys',
   'blacklist',
-  'systemSettings',
 ] as const;
 
 export const OPERATIONAL_COLLECTIONS = [
@@ -277,7 +276,8 @@ export function diffCollection(
     sourceCount: source.length,
     targetCount: target.length,
     estimatedReads: source.length + target.length,
-    estimatedWrites: missingIds.length + extraIds.length + mismatchedIds.length,
+    // Staging-only documents are reported but preserved.
+    estimatedWrites: missingIds.length + mismatchedIds.length,
     missingIds,
     extraIds,
     mismatchedIds,
@@ -295,8 +295,8 @@ export async function buildDiffs(
   for (const collection of collections) {
     const [sourceDocuments, targetDocuments] = await Promise.all([
       readManagedCollection(source, collection, mode, now),
-      // Target is intentionally read without a window so records outside the
-      // selected operational snapshot are detected as extras and removed.
+      // Read the complete target collection so Staging-only records are
+      // reported as extras. They are preserved unless an explicit prune exists.
       readManagedCollection(target, collection, 'all', now),
     ]);
     const diff = diffCollection(collection, sourceDocuments, targetDocuments);
@@ -349,10 +349,8 @@ export async function applyDiffs(
         data: document.data,
       });
     }
-    for (const id of item.diff.extraIds) operations.push({
-      type: 'delete',
-      path: `${item.diff.collection}/${id}`,
-    });
+    // Staging-only documents are intentionally preserved.
+    // Destructive pruning must be a separate explicit operation.
   }
   for (let start = 0; start < operations.length; start += 400) {
     const batch = operations.slice(start, start + 400);

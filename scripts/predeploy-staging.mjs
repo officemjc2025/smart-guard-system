@@ -18,7 +18,10 @@ const activeProjectId = active.stdout.split(/\r?\n/).at(-1)?.trim() || '';
 const databases = firebase(['firestore:databases:list', '--project', STAGING_PROJECT_ID]);
 const functions = firebase(['functions:list', '--project', STAGING_PROJECT_ID]);
 const hosting = firebase(['hosting:sites:list', '--project', STAGING_PROJECT_ID]);
-const functionSource = readFileSync('functions/src/index.ts', 'utf8');
+const functionSource = [
+  readFileSync('functions/src/index.ts', 'utf8'),
+  readFileSync('functions/src/vehicleEvidencePolicy.ts', 'utf8'),
+].join('\n');
 
 checks.push(result('environment', env.VITE_APP_ENV === 'STAGING' ? 'PASS' : 'FAIL', String(env.VITE_APP_ENV || '(missing)')));
 checks.push(result('target', activeProjectId === STAGING_PROJECT_ID ? 'PASS' : 'FAIL', activeProjectId || active.stderr));
