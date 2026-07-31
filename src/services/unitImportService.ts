@@ -4,6 +4,7 @@ import type { UnitRecord } from '../types';
 import type { ImportPreview } from './importExport/excelImportService';
 import { createUnitDocumentId, normalizeRoomNumber as roomComparisonKey, normalizeUnitId } from './unitService';
 import { downloadCsv, parseCsvFile } from './importExport/csvSafe';
+import { createUuid } from '../utils/uuid';
 
 export type UnitImportAction = 'create' | 'update' | 'unchanged' | 'reject';
 
@@ -216,7 +217,7 @@ export async function commitUnitFrameworkImport(preview: ImportPreview, operator
   const commitRows = async (items: typeof prepared) => {
     const batch = writeBatch(db);
     items.forEach(({ row, existing, documentId, unit }) => {
-      const auditId = `AUD_${crypto.randomUUID()}`;
+      const auditId = `AUD_${createUuid()}`;
       batch.set(doc(db, 'units', documentId), unit, { merge: Boolean(existing) });
       batch.set(doc(db, 'auditLogs', auditId), {
         audit_id: auditId, operator_id: uid, account_uid: uid, operator_name: operatorName,
@@ -244,7 +245,7 @@ export async function commitUnitFrameworkImport(preview: ImportPreview, operator
       }
     }
   }
-  const summaryId = `AUD_${crypto.randomUUID()}`;
+  const summaryId = `AUD_${createUuid()}`;
   const summaryBatch = writeBatch(db);
   summaryBatch.set(doc(db, 'auditLogs', summaryId), {
     audit_id: summaryId, operator_id: uid, account_uid: uid, operator_name: operatorName,

@@ -32,6 +32,7 @@ import { validateNonVehicleMediaUpload } from './mediaModulePolicy';
 import { extractDriveFileId } from './driveMediaReference';
 import {
   PrivateEvidencePolicyError,
+  authorizeDriveEvidenceIdentity,
   authorizeRegisteredEvidence,
   validatePrivateImageMetadata,
 } from './privateEvidencePolicy';
@@ -875,6 +876,8 @@ export const getVehicleEvidenceImage = onRequest(
           const module = String(metadata.module || '');
           const collectionName = module === 'Contractor'
             ? 'contractorLogs'
+            : module === 'Key'
+              ? 'keyLogs'
             : ['entry_plate', 'entry_vehicle', 'visitor_document'].includes(mediaType)
               ? 'vehicleSessions'
               : 'vehicleLogs';
@@ -910,15 +913,8 @@ export const getVehicleEvidenceImage = onRequest(
       if (metadata.data.id !== fileId) throw new PrivateEvidencePolicyError('Evidence file was not found.', 404);
       validatePrivateImageMetadata(fileId, mimeType, size, metadata.data.trashed === true, PRIVATE_EVIDENCE_MAX_BYTES);
       const appProperties = metadata.data.appProperties ?? {};
-      if (appProperties.system === 'smart-guard' && (
-        appProperties.site_id !== actor.siteId
-        || (appProperties.record_id && appProperties.record_id !== recordId)
-        || (appProperties.module && registry.exists && appProperties.module !== registry.get('module'))
-        || (appProperties.module_name && registry.exists && appProperties.module_name !== registry.get('module_name'))
-        || (appProperties.media_type && registry.exists && appProperties.media_type !== registry.get('media_type'))
-      )) {
-        response.status(403).json({ error: 'Drive evidence metadata does not match the authorized record.' });
-        return;
+      if (registry.exists) {
+        authorizeDriveEvidenceIdentity(actor, registry.data() ?? {}, recordId, appProperties);
       }
       const media = await drive.files.get(
         { fileId, alt: 'media', supportsAllDrives: true },

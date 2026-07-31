@@ -5,16 +5,29 @@
 
 import React, { useState, useEffect } from 'react';
 import { 
-  Key, Search, Check, Camera, RefreshCw, AlertTriangle
+  Key, Search, Check, Camera, X
 } from 'lucide-react';
 import { KeyLogRecord } from '../types';
-import { checkoutKey, listCheckedOutKeys, returnKey } from '../services/keyService';
-import { createAuditLog } from '../services/auditService';
+import {
+  checkoutKey,
+  completeKeyReturn,
+  listCheckedOutKeys,
+  prepareKeyReturn,
+} from '../services/keyService';
+import { normalizeOptionalIdentityNumber } from '../services/keyIdentityPolicy';
+import {
+  dataUrlToImageBlob,
+  imageBlobToDataUrl,
+  submitKeyReturnEvidence,
+  validateLocalKeyReturnEvidence,
+} from '../services/keyReturnPolicy';
 import { uploadImageToDrive } from '../services/mediaUploadService';
 import SignaturePad from './SignaturePad';
 import ConfirmModal from './ConfirmModal';
 import UnitSearchSelect from './UnitSearchSelect';
 import { formatThaiDateTime } from '../utils/dateTime';
+import { createUuid } from '../utils/uuid';
+import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 
 interface KeyLogsProps {
   guardName: string;
@@ -48,10 +61,24 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
   // Return State
   const [activeKeys, setActiveKeys] = useState<KeyLogRecord[]>([]);
   const [returnSearchQuery, setReturnSearchQuery] = useState('');
+  const [completedKeyLog, setCompletedKeyLog] = useState<KeyLogRecord | null>(null);
+  const [returnPhotoFile, setReturnPhotoFile] = useState<File | null>(null);
+  const [returnPhotoPreviewUrl, setReturnPhotoPreviewUrl] = useState('');
+  const [returnPhotoMediaReference, setReturnPhotoMediaReference] = useState('');
+  const [returnSignatureBlob, setReturnSignatureBlob] = useState<Blob | null>(null);
+  const [returnSignaturePreviewUrl, setReturnSignaturePreviewUrl] = useState('');
+  const [returnSignatureMediaReference, setReturnSignatureMediaReference] = useState('');
+  const [returnSignatureHasStroke, setReturnSignatureHasStroke] = useState(false);
 
   useEffect(() => {
     fetchInitialKeys();
   }, [activeTab]);
+
+  useEffect(() => () => {
+    if (returnPhotoPreviewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(returnPhotoPreviewUrl);
+    }
+  }, [returnPhotoPreviewUrl]);
 
   const fetchInitialKeys = async () => {
     setLoading(true);
@@ -94,21 +121,20 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
     try {
       let bPhotoUrl = '';
       let sigUrl = '';
-      const keyLogId = 'KEY' + Math.floor(Math.random() * 1000000);
+      const keyLogId = `KEY_${createUuid()}`;
+      const identityNumber = normalizeOptionalIdentityNumber(checkoutForm.borrower_id_number);
 
       // 1. Upload Borrower Photo if taken
       if (borrowerPhoto) {
-        bPhotoUrl = await uploadImageToDrive(borrowerPhoto, `key_borrower_${checkoutForm.room_number}_${Date.now()}.jpg`, { moduleName: 'KeyLogs', recordId: keyLogId, siteId: 'smart-guard', uploadedBy: guardName });
+        bPhotoUrl = await uploadImageToDrive(borrowerPhoto, `key_borrower_${checkoutForm.room_number}_${Date.now()}.jpg`, { moduleName: 'KeyLogs', recordId: keyLogId, siteId, uploadedBy: guardName, mediaType: 'key_borrower' });
       }
 
       // 2. Upload Canvas Signature image
       if (signatureImage) {
-        sigUrl = await uploadImageToDrive(signatureImage, `sig_key_${checkoutForm.room_number}_${Date.now()}.png`, { moduleName: 'KeyLogs', recordId: keyLogId, siteId: 'smart-guard', uploadedBy: guardName });
+        sigUrl = await uploadImageToDrive(signatureImage, `sig_key_${checkoutForm.room_number}_${Date.now()}.jpg`, { moduleName: 'KeyLogs', recordId: keyLogId, siteId, uploadedBy: guardName, mediaType: 'sig_key' });
       }
 
-      const nowStr = new Date().toISOString();
-
-      // 3. Write row to KeyLogs
+      // 3. Atomically write KeyLog + immutable audit with server timestamps.
       const newKeyLog = {
         key_log_id: keyLogId,
         room_number: checkoutForm.room_number,
@@ -117,9 +143,8 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
         key_type: checkoutForm.key_type,
         borrower_name: checkoutForm.borrower_name,
         borrower_phone: checkoutForm.borrower_phone,
-        borrower_id_number: checkoutForm.borrower_id_number,
+        borrower_id_number: identityNumber,
         purpose: checkoutForm.purpose,
-        checkout_time: nowStr,
         issued_by: guardName,
         signature_image_url: sigUrl,
         borrower_photo_url: bPhotoUrl,
@@ -127,20 +152,9 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
         note: checkoutForm.note
       };
 
-      await checkoutKey(siteId, newKeyLog);
-
-      // Write Audit log
-      await createAuditLog(siteId, {
-        audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
-        user_name: guardName,
-        action: 'เบิกจ่ายกุญแจ',
-        module_name: 'KeyLogs',
-        record_id: keyLogId,
-        old_value: '',
-        new_value: checkoutForm.room_number
-      });
-
-      setStatusMessage({ type: 'success', text: `บันทึกเบิกกุญแจห้อง ${checkoutForm.room_number} เรียบร้อยแล้ว!` });
+      const completed = await checkoutKey(siteId, newKeyLog);
+      setCompletedKeyLog(completed);
+      setStatusMessage({ type: 'success', text: `บันทึกเบิกกุญแจห้อง ${completed.room_number} เมื่อ ${formatThaiDateTime(completed.checkout_time)}` });
 
       // Reset
       setCheckoutForm({
@@ -166,6 +180,30 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
 
   const handleReturnSubmit = async (keyLog: KeyLogRecord) => {
     setKeyToReturn(keyLog);
+    setReturnPhotoFile(null);
+    setReturnPhotoPreviewUrl('');
+    setReturnPhotoMediaReference('');
+    setReturnSignatureBlob(null);
+    setReturnSignaturePreviewUrl('');
+    setReturnSignatureMediaReference('');
+    setReturnSignatureHasStroke(false);
+    setStatusMessage(null);
+  };
+
+  const handleRequestReturnConfirmation = () => {
+    try {
+      validateLocalKeyReturnEvidence({
+        photoFile: returnPhotoFile,
+        signatureBlob: returnSignatureBlob,
+        signatureHasStroke: returnSignatureHasStroke,
+      });
+    } catch (error) {
+      setStatusMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'หลักฐานการคืนกุญแจไม่ครบถ้วน',
+      });
+      return;
+    }
     setShowReturnModal(true);
   };
 
@@ -173,33 +211,78 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
     if (!keyToReturn) return;
     const keyLog = keyToReturn;
     setShowReturnModal(false);
-    setKeyToReturn(null);
 
     setLoading(true);
     setStatusMessage(null);
+    let uploadedDuringAttempt = false;
 
     try {
-      const nowStr = new Date().toISOString();
-
-      // Update KeyLog to Returned
-      await returnKey(siteId, keyLog.key_log_id, guardName, nowStr);
-
-      // Write Audit log
-      await createAuditLog(siteId, {
-        audit_id: 'AUD' + Math.floor(Math.random() * 1000000),
-        user_name: guardName,
-        action: 'รับคืนกุญแจ',
-        module_name: 'KeyLogs',
-        record_id: keyLog.key_log_id,
-        old_value: 'ถูกเบิก',
-        new_value: 'คืนแล้ว'
+      const { result: completed } = await submitKeyReturnEvidence({
+        recordId: keyLog.key_log_id,
+        siteId,
+        localEvidence: {
+          photoFile: returnPhotoFile,
+          signatureBlob: returnSignatureBlob,
+          signatureHasStroke: returnSignatureHasStroke,
+        },
+        existingPhotoReference: returnPhotoMediaReference,
+        existingSignatureReference: returnSignatureMediaReference,
+      }, {
+        prepare: () => prepareKeyReturn(siteId, keyLog.key_log_id),
+        uploadPhoto: async photo => uploadImageToDrive(
+            await imageBlobToDataUrl(photo),
+            `key_return_${keyLog.room_number}_${Date.now()}.${photo.type === 'image/png' ? 'png' : 'jpg'}`,
+            {
+              moduleName: 'KeyLogs',
+              recordId: keyLog.key_log_id,
+              siteId,
+              uploadedBy: guardName,
+              mediaType: 'key_return',
+            },
+          ),
+        uploadSignature: async signature => uploadImageToDrive(
+            await imageBlobToDataUrl(signature),
+            `sig_key_return_${keyLog.room_number}_${Date.now()}.jpg`,
+            {
+              moduleName: 'KeyLogs',
+              recordId: keyLog.key_log_id,
+              siteId,
+              uploadedBy: guardName,
+              mediaType: 'sig_key_return',
+            },
+          ),
+        onPhotoUploaded: reference => {
+          setReturnPhotoMediaReference(reference);
+          uploadedDuringAttempt = true;
+        },
+        onSignatureUploaded: reference => {
+          setReturnSignatureMediaReference(reference);
+          uploadedDuringAttempt = true;
+        },
+        complete: evidence => completeKeyReturn(
+          siteId,
+          keyLog.key_log_id,
+          guardName,
+          evidence,
+        ),
       });
-
-      setStatusMessage({ type: 'success', text: `รับคืนกุญแจห้อง ${keyLog.room_number} เข้าตู้เรียบร้อย!` });
-      fetchInitialKeys();
+      setCompletedKeyLog(completed);
+      setStatusMessage({ type: 'success', text: `รับคืนกุญแจห้อง ${completed.room_number} เมื่อ ${formatThaiDateTime(completed.return_time)}` });
+      setKeyToReturn(null);
+      setReturnPhotoFile(null);
+      setReturnPhotoPreviewUrl('');
+      setReturnPhotoMediaReference('');
+      setReturnSignatureBlob(null);
+      setReturnSignaturePreviewUrl('');
+      setReturnSignatureMediaReference('');
+      setReturnSignatureHasStroke(false);
+      await fetchInitialKeys();
     } catch (err: any) {
       console.error(err);
-      setStatusMessage({ type: 'error', text: `เกิดข้อผิดพลาด: ${err.message}` });
+      const orphanWarning = uploadedDuringAttempt || returnPhotoMediaReference || returnSignatureMediaReference
+        ? ' หลักฐานที่อัปโหลดแล้วจะถูกนำกลับมาใช้เมื่อกดลองใหม่ โดยรายการยังไม่ถูกปิด'
+        : '';
+      setStatusMessage({ type: 'error', text: `เกิดข้อผิดพลาด: ${err.message}${orphanWarning}` });
     } finally {
       setLoading(false);
     }
@@ -249,6 +332,32 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
         </div>
       )}
 
+      {completedKeyLog && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          <p className="font-black">{completedKeyLog.status === 'คืนแล้ว' ? 'รับคืนกุญแจสำเร็จ' : 'เบิกกุญแจสำเร็จ'}</p>
+          <p>กุญแจ/ห้อง: {completedKeyLog.room_number}</p>
+          <p>ผู้ยืม: {completedKeyLog.borrower_name}</p>
+          <p>เวลาเบิก: {formatThaiDateTime(completedKeyLog.checkout_time)}</p>
+          <p>เวลาคืน: {formatThaiDateTime(completedKeyLog.return_time)}</p>
+          <p>ผู้บันทึก: {completedKeyLog.status === 'คืนแล้ว' ? completedKeyLog.returned_by : completedKeyLog.issued_by}</p>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            {[
+              ['รูป Checkout', completedKeyLog.borrower_photo_url],
+              ['ลายเซ็น Checkout', completedKeyLog.signature_image_url],
+              ['รูป Return', completedKeyLog.return_photo_url],
+              ['ลายเซ็น Return', completedKeyLog.return_signature_url],
+            ].map(([label, reference]) => (
+              <div key={label} className="rounded-lg border border-emerald-200 bg-white p-2">
+                <p className="mb-1 text-xs font-bold">{label}</p>
+                {reference
+                  ? <AuthenticatedEvidenceImage mediaReference={reference} alt={label} className="h-28 w-full rounded-lg object-cover" />
+                  : <div className="flex h-28 items-center justify-center text-xs text-slate-400">ไม่มีหลักฐาน</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {activeTab === 'checkout' ? (
         <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col gap-5">
           <h2 className="text-lg font-black text-slate-800">บันทึกประวัติการเบิกออกกุญแจอาคาร</h2>
@@ -291,27 +400,25 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
 
               {/* Phone */}
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-bold text-slate-600">เบอร์โทรศัพท์ผู้เบิก *</label>
+                <label className="text-xs font-bold text-slate-600">เบอร์โทรศัพท์ผู้เบิก (ไม่บังคับ)</label>
                 <input
                   type="tel"
                   value={checkoutForm.borrower_phone}
                   onChange={(e) => setCheckoutForm(prev => ({ ...prev, borrower_phone: e.target.value }))}
                   placeholder="เช่น 0823456789"
                   className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold font-mono"
-                  required
                 />
               </div>
 
               {/* National ID / ID card number */}
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-bold text-slate-600">เลขบัตรประชาชน / รหัสช่างประจําตัว *</label>
+                <label className="text-xs font-bold text-slate-600">เลขเอกสารประจำตัว (ไม่บังคับ)</label>
                 <input
                   type="text"
                   value={checkoutForm.borrower_id_number}
                   onChange={(e) => setCheckoutForm(prev => ({ ...prev, borrower_id_number: e.target.value }))}
                   placeholder="กรอกเลข 13 หลัก หรือ ID ประจำตัว"
                   className="p-3.5 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold font-mono"
-                  required
                 />
               </div>
 
@@ -406,6 +513,119 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
             />
           </div>
 
+          {keyToReturn && (
+            <div className="flex flex-col gap-4 rounded-xl border-2 border-emerald-200 bg-emerald-50 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-black text-emerald-900">หลักฐานคืนกุญแจห้อง {keyToReturn.room_number}</p>
+                  <p className="text-xs font-semibold text-emerald-700">ต้องมีรูปและลายเซ็นครบก่อนปิดรายการ</p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="ยกเลิกการคืนกุญแจ"
+                  onClick={() => {
+                    setKeyToReturn(null);
+                    setReturnPhotoFile(null);
+                    setReturnPhotoPreviewUrl('');
+                    setReturnPhotoMediaReference('');
+                    setReturnSignatureBlob(null);
+                    setReturnSignaturePreviewUrl('');
+                    setReturnSignatureMediaReference('');
+                    setReturnSignatureHasStroke(false);
+                  }}
+                  className="rounded-lg p-1 text-slate-500 hover:bg-white"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-4">
+                <span className="flex items-center gap-1 text-xs font-bold text-slate-700">
+                  <Camera className="h-4 w-4 text-emerald-600" />
+                  ถ่ายรูปหลักฐานการคืนกุญแจ *
+                </span>
+                <input
+                  id="key-return-photo-upload"
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={event => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    setReturnPhotoFile(file);
+                    setReturnPhotoPreviewUrl(URL.createObjectURL(file));
+                    setReturnPhotoMediaReference('');
+                  }}
+                />
+                <label
+                  htmlFor="key-return-photo-upload"
+                  className="flex h-36 cursor-pointer items-center justify-center overflow-hidden rounded-lg border-2 border-dashed border-slate-300 bg-slate-50"
+                >
+                  {returnPhotoPreviewUrl
+                    ? <img src={returnPhotoPreviewUrl} alt="ตัวอย่างรูปหลักฐานการคืนกุญแจ" className="h-full w-full object-cover" />
+                    : <span className="text-xs font-bold text-slate-400">กดเพื่อถ่ายหรือเลือกรูป</span>}
+                </label>
+                {returnPhotoPreviewUrl && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReturnPhotoFile(null);
+                      setReturnPhotoPreviewUrl('');
+                      setReturnPhotoMediaReference('');
+                    }}
+                    className="self-start text-xs font-bold text-red-600"
+                  >
+                    ลบและถ่ายใหม่
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-4">
+                <span className="text-xs font-bold text-slate-700">ลายเซ็นผู้คืน/ผู้ส่งมอบ *</span>
+                <div
+                  key={keyToReturn.key_log_id}
+                  data-has-signature-preview={Boolean(returnSignaturePreviewUrl)}
+                >
+                  <SignaturePad
+                    onSave={value => {
+                      try {
+                        setReturnSignatureBlob(dataUrlToImageBlob(value));
+                        setReturnSignaturePreviewUrl(value);
+                        setReturnSignatureHasStroke(true);
+                        setReturnSignatureMediaReference('');
+                      } catch (error) {
+                        setReturnSignatureBlob(null);
+                        setReturnSignaturePreviewUrl('');
+                        setReturnSignatureHasStroke(false);
+                        setStatusMessage({
+                          type: 'error',
+                          text: error instanceof Error ? error.message : 'ไฟล์ลายเซ็นผู้คืนกุญแจไม่รองรับ',
+                        });
+                      }
+                    }}
+                    onClear={() => {
+                      setReturnSignatureBlob(null);
+                      setReturnSignaturePreviewUrl('');
+                      setReturnSignatureHasStroke(false);
+                      setReturnSignatureMediaReference('');
+                    }}
+                    placeholder="กรุณาลงลายเซ็นผู้คืนกุญแจ"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={loading}
+                onClick={handleRequestReturnConfirmation}
+                className="w-full rounded-xl bg-emerald-600 py-3.5 text-sm font-bold text-white disabled:opacity-50"
+              >
+                ยืนยันรับคืนและปิดรายการ
+              </button>
+            </div>
+          )}
+
           {loading && (
             <div className="py-10 text-center font-bold text-slate-500 animate-pulse text-sm">
               กำลังดึงข้อมูลกุญแจค้างส่ง...
@@ -438,6 +658,7 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
                       <p className="text-[11px] text-slate-400 font-medium mt-1">
                         🔑 รปภ.ผู้จ่ายออก: {k.issued_by} • หมายเหตุ: {k.note || '-'}
                       </p>
+                      {(k.borrower_photo_url || k.signature_image_url) && <div className="mt-2 flex gap-2">{k.borrower_photo_url && <AuthenticatedEvidenceImage mediaReference={k.borrower_photo_url} alt="หลักฐานผู้ยืมกุญแจ" className="h-16 w-16 rounded object-cover" />}{k.signature_image_url && <AuthenticatedEvidenceImage mediaReference={k.signature_image_url} alt="ลายเซ็นรับกุญแจ" className="h-16 w-16 rounded object-cover" />}</div>}
                     </div>
                   </div>
                   <div className="flex sm:flex-col items-end gap-3 justify-between sm:justify-center border-t sm:border-t-0 border-slate-200 pt-2 sm:pt-0">
@@ -464,12 +685,11 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
         isOpen={showReturnModal}
         title="ยืนยันการรับคืนกุญแจ"
         message={`คุณยืนยันต้องการรับคืนกุญแจห้อง "${keyToReturn?.room_number}" (${keyToReturn?.key_type}) จากคุณ ${keyToReturn?.borrower_name} กลับเข้าสู่ตู้นิรภัยของอาคารโครงการหรือไม่?`}
-        confirmText="ยืนยันรับคืน"
+        confirmText="ยืนยันรับคืนและปิดรายการ"
         cancelText="ยกเลิก"
         onConfirm={handleConfirmReturn}
         onCancel={() => {
           setShowReturnModal(false);
-          setKeyToReturn(null);
         }}
       />
     </div>

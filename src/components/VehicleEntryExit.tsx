@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { createUuid } from '../utils/uuid';
 import { 
   Car, Search, Check, AlertTriangle, ShieldAlert,
   ArrowUpRight, ArrowDownLeft, Camera, ShieldX, HelpCircle
@@ -296,7 +297,7 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
       assertCurrentEntryIdentity(cardNumber);
       setEntryForm(prev => ({ ...prev, card_number: cardNumber }));
       if (!navigator.onLine) {
-        const localId = `OFFLINE_${crypto.randomUUID()}`;
+        const localId = `OFFLINE_${createUuid()}`;
         await queueOfflineVehicleSession({
           localId, cardValue: cardNumber,
           siteId: sessionStorage.getItem('selected_site_id') || 'site-01',
@@ -393,7 +394,7 @@ export default function VehicleEntryExit({ guardName, userRole }: VehicleEntryEx
         throw new Error('ไม่สามารถบันทึก Session ที่ล็อกอยู่แบบออฟไลน์ได้ กรุณาเชื่อมต่อเครือข่ายเพื่อบันทึกและปลดล็อกอย่างปลอดภัย');
       }
       if (!navigator.onLine || entryWorkspace.resourceId.startsWith('OFFLINE_')) {
-        const localId = `OFFLINE_${crypto.randomUUID()}`;
+        const localId = `OFFLINE_${createUuid()}`;
         await queueOfflineVehicleSession({
           localId, cardValue: entryForm.card_number,
           siteId: sessionStorage.getItem('selected_site_id') || 'site-01',

@@ -54,3 +54,46 @@ test('module policy rejects Vehicle media identity on Contractor uploads', () =>
     /Unsupported media type/,
   );
 });
+
+test('Key evidence accepts only canonical same-site media identities', () => {
+  const keyRequest = request({
+    moduleName: 'KeyLogs',
+    recordId: 'KEY_LOG_1',
+    mediaType: 'key_borrower',
+  });
+  assert.doesNotThrow(() => validateNonVehicleMediaUpload(keyRequest, actor));
+  assert.doesNotThrow(() => validateNonVehicleMediaUpload(
+    { ...keyRequest, mediaType: 'sig_key' },
+    actor,
+  ));
+  assert.doesNotThrow(() => validateNonVehicleMediaUpload(
+    { ...keyRequest, mediaType: 'key_return' },
+    actor,
+    { site_id: 'site-01', status: 'ถูกเบิก' },
+  ));
+  assert.doesNotThrow(() => validateNonVehicleMediaUpload(
+    { ...keyRequest, mediaType: 'sig_key_return' },
+    actor,
+    { site_id: 'site-01', status: 'ถูกเบิก' },
+  ));
+  assert.throws(
+    () => validateNonVehicleMediaUpload(
+      { ...keyRequest, mediaType: 'key_return' },
+      actor,
+      { site_id: 'site-01', status: 'คืนแล้ว' },
+    ),
+    /borrowed same-site Key record/,
+  );
+  assert.throws(
+    () => validateNonVehicleMediaUpload({ ...keyRequest, mediaType: 'entry_vehicle' }, actor),
+    /Unsupported media type/,
+  );
+  assert.throws(
+    () => validateNonVehicleMediaUpload({ ...keyRequest, mediaType: 'key_return_tampered' }, actor),
+    /Unsupported media type/,
+  );
+  assert.throws(
+    () => validateNonVehicleMediaUpload({ ...keyRequest, siteId: 'site-02' }, actor),
+    /Cross-site/,
+  );
+});

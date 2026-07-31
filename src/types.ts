@@ -277,6 +277,8 @@ export interface KeyLogRecord {
   returned_by?: string;
   signature_image_url?: string;
   borrower_photo_url?: string;
+  return_photo_url?: string;
+  return_signature_url?: string;
   document_photo_url?: string;
   status: 'ถูกเบิก' | 'คืนแล้ว';
   note?: string;

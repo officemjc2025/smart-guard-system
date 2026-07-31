@@ -1,6 +1,7 @@
 import { collection, doc, getDocs, query, runTransaction, serverTimestamp, where } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import type { UnitRecord } from '../types';
+import { createUuid } from '../utils/uuid';
 
 export type UnitInput = Pick<UnitRecord, 'unit_id' | 'room_number' | 'building' | 'floor' | 'owner_name' | 'resident_name'> & {
   phone?: string;
@@ -16,7 +17,7 @@ export const normalizeRoomNumber = (value: string) => value.trim().normalize('NF
 
 export async function createUnitDocumentId(siteId: string, unitId?: string, roomNumber?: string) {
   const normalizedSite = siteId.trim().normalize('NFKC').toLocaleLowerCase('en-US') || 'unknown-site';
-  const identifier = normalizeUnitId(unitId || '') || normalizeRoomNumber(roomNumber || '') || crypto.randomUUID();
+  const identifier = normalizeUnitId(unitId || '') || normalizeRoomNumber(roomNumber || '') || createUuid();
   const bytes = new TextEncoder().encode(`${normalizedSite}\u0000${identifier}`);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -32,7 +33,7 @@ function identity(operatorName: string) {
 function auditData(operatorName: string, action: string, recordId: string, oldValue: string, newValue: string, result = 'Success') {
   const account = identity(operatorName);
   return {
-    audit_id: `AUD_${crypto.randomUUID()}`,
+    audit_id: `AUD_${createUuid()}`,
     operator_id: account.uid,
     account_uid: account.uid,
     operator_name: account.operatorName,

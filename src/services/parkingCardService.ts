@@ -22,6 +22,7 @@ import { sanitizeAndValidateFirestoreData } from './firestoreData';
 import { appendSessionActivityInTransaction } from './vehicleSessionActivityService';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { FUNCTIONS_REGION } from '../config/firebaseFunctions';
+import { createUuid } from '../utils/uuid';
 import {
   isAllowedParkingCardTransition,
   normalizeParkingCardIdentifier,
@@ -229,7 +230,7 @@ async function cardSnapshotByNumber(scannedValue: string) {
 
 function auditRecord(operatorName: string, card: Pick<ParkingCardRecord, 'card_id' | 'card_number' | 'site_id'> | null, vehicleLogId: string, action: string, previousState: string, newState: string, reason = '', result = 'Success') {
   const identity = currentIdentity(operatorName);
-  const auditId = `AUD_${crypto.randomUUID()}`;
+  const auditId = `AUD_${createUuid()}`;
   return {
     auditId,
     data: {
@@ -264,7 +265,7 @@ function writeAuditWithCardHistory(
   const auditData = { ...audit.data, ...overrides };
   transaction.set(doc(db, 'auditLogs', audit.auditId), auditData);
   if (!text(auditData.record_id)) return;
-  const historyId = `PCH_${crypto.randomUUID()}`;
+  const historyId = `PCH_${createUuid()}`;
   transaction.set(doc(db, 'parkingCardHistory', historyId), {
     history_id: historyId,
     event_type: parkingCardHistoryEvent(text(auditData.action)),
@@ -512,7 +513,7 @@ export async function completeVehicleExit(log: VehicleLogRecord, input: VehicleE
     if (sessionReference && sessionSnapshot?.exists()) {
       const sessionData = sessionSnapshot.data();
       const sessionVersion = typeof sessionData.sessionVersion === 'number' ? sessionData.sessionVersion : 0;
-      const eventId = `SESSION_${crypto.randomUUID()}`;
+      const eventId = `SESSION_${createUuid()}`;
       transaction.update(sessionReference, {
         stage: 'Completed', status: 'Completed', queueStatus: 'Completed', current_owner: identity.accountUid,
         sessionVersion: sessionVersion + 1,
@@ -734,7 +735,7 @@ export async function replaceParkingCard(oldDocumentId: string, input: ParkingCa
     if (oldCard.replaced_by_card_id) throw new Error('A replacement card has already been issued.');
     const identity = currentIdentity(operatorName);
     const newCard = sanitizeAndValidateFirestoreData({
-      firestore_document_id: newReference.id, card_id: `C_${crypto.randomUUID()}`, site_id: oldCard.site_id,
+      firestore_document_id: newReference.id, card_id: `C_${createUuid()}`, site_id: oldCard.site_id,
       card_number: text(input.card_number), card_number_normalized: normalizeCardNumber(input.card_number), qr_code_value: qrValue,
       qr_code_normalized: normalizeQrValue(qrValue), card_type: input.card_type,
       status: 'Available', status_normalized: 'Available', replacement_for_card_id: oldCard.card_id,

@@ -849,6 +849,103 @@ service cloud.firestore {
              && data.created_at == request.time;
     }
 
+    function validKeyLogCreate(data, id) {
+      return data.keys().hasOnly([
+               'key_log_id', 'site_id', 'room_number', 'target_unit_id', 'unit_lookup_status',
+               'key_type', 'borrower_name', 'borrower_phone', 'borrower_id_number',
+               'purpose', 'checkout_time', 'issued_by', 'signature_image_url',
+               'borrower_photo_url', 'document_photo_url', 'status', 'note',
+               'created_at', 'updated_at'
+             ])
+             && data.keys().hasAll([
+               'key_log_id', 'site_id', 'room_number', 'key_type', 'borrower_name',
+               'borrower_phone', 'borrower_id_number', 'purpose', 'checkout_time',
+               'issued_by', 'signature_image_url', 'borrower_photo_url', 'status',
+               'created_at', 'updated_at'
+             ])
+             && data.key_log_id == id
+             && data.site_id == activeSiteId()
+             && data.room_number is string && data.room_number.size() > 0 && data.room_number.size() <= 128
+             && data.key_type in ['ห้องพัก', 'ห้องไฟฟ้า', 'ห้องเครื่องจักร', 'พื้นที่ส่วนกลาง', 'อื่นๆ']
+             && data.borrower_name is string && data.borrower_name.size() > 0 && data.borrower_name.size() <= 256
+             && data.borrower_phone is string && data.borrower_phone.size() <= 64
+             && data.borrower_id_number is string && data.borrower_id_number.size() <= 64
+             && data.purpose is string && data.purpose.size() > 0 && data.purpose.size() <= 1000
+             && data.issued_by is string && data.issued_by.size() > 0 && data.issued_by.size() <= 256
+             && data.signature_image_url is string && data.signature_image_url.size() <= 4096
+             && data.borrower_photo_url is string && data.borrower_photo_url.size() <= 4096
+             && data.status == 'ถูกเบิก'
+             && data.checkout_time == request.time
+             && data.created_at == request.time
+             && data.updated_at == request.time
+             && (!('target_unit_id' in data) || data.target_unit_id is string)
+             && (!('unit_lookup_status' in data) || data.unit_lookup_status in ['matched', 'manual'])
+             && (!('document_photo_url' in data) || data.document_photo_url is string)
+             && (!('note' in data) || (data.note is string && data.note.size() <= 2000));
+    }
+
+    function validKeyReturn() {
+      return resource.data.site_id == activeSiteId()
+             && resource.data.status == 'ถูกเบิก'
+             && !('return_time' in resource.data)
+             && request.resource.data.status == 'คืนแล้ว'
+             && request.resource.data.return_time == request.time
+             && request.resource.data.updated_at == request.time
+             && request.resource.data.returned_by is string
+             && request.resource.data.returned_by.size() > 0
+             && request.resource.data.returned_by.size() <= 256
+             && request.resource.data.return_photo_url is string
+             && request.resource.data.return_photo_url.size() > 0
+             && request.resource.data.return_photo_url.size() <= 4096
+             && request.resource.data.return_photo_url.matches('^https://drive[.]google[.]com/.*')
+             && request.resource.data.return_signature_url is string
+             && request.resource.data.return_signature_url.size() > 0
+             && request.resource.data.return_signature_url.size() <= 4096
+             && request.resource.data.return_signature_url.matches('^https://drive[.]google[.]com/.*')
+             && request.resource.data.return_photo_url != request.resource.data.return_signature_url
+             && request.resource.data.diff(resource.data).affectedKeys()
+                  .hasOnly([
+                    'return_time', 'returned_by', 'return_photo_url',
+                    'return_signature_url', 'status', 'updated_at'
+                  ]);
+    }
+
+    function validKeyAudit(data, id) {
+      return data.keys().hasOnly([
+               'audit_id', 'operator_id', 'account_uid', 'user_name', 'operator_name',
+               'site_id', 'action', 'module_name', 'record_id', 'old_value',
+               'new_value', 'action_result', 'created_at'
+             ])
+             && data.keys().hasAll([
+               'audit_id', 'operator_id', 'account_uid', 'user_name', 'operator_name',
+               'site_id', 'action', 'module_name', 'record_id', 'old_value',
+               'new_value', 'action_result', 'created_at'
+             ])
+             && data.audit_id == id
+             && data.operator_id == request.auth.uid
+             && data.account_uid == request.auth.uid
+             && data.site_id == activeSiteId()
+             && data.module_name == 'KeyLogs'
+             && data.action in ['KeyCheckout', 'KeyReturn']
+             && data.record_id is string && data.record_id.size() > 0 && data.record_id.size() <= 128
+             && data.user_name is string && data.user_name.size() > 0 && data.user_name.size() <= 256
+             && data.operator_name is string && data.operator_name.size() > 0 && data.operator_name.size() <= 256
+             && data.old_value is string && data.old_value.size() <= 64
+             && data.new_value is string && data.new_value.size() <= 64
+             && data.action_result == 'Success'
+             && data.created_at == request.time
+             && existsAfter(/databases/$(database)/documents/keyLogs/$(data.record_id))
+             && getAfter(/databases/$(database)/documents/keyLogs/$(data.record_id)).data.site_id == data.site_id
+             && (data.action != 'KeyReturn'
+               || (
+                 getAfter(/databases/$(database)/documents/keyLogs/$(data.record_id)).data.status == 'คืนแล้ว'
+                 && getAfter(/databases/$(database)/documents/keyLogs/$(data.record_id)).data.return_photo_url is string
+                 && getAfter(/databases/$(database)/documents/keyLogs/$(data.record_id)).data.return_photo_url.size() > 0
+                 && getAfter(/databases/$(database)/documents/keyLogs/$(data.record_id)).data.return_signature_url is string
+                 && getAfter(/databases/$(database)/documents/keyLogs/$(data.record_id)).data.return_signature_url.size() > 0
+               ));
+    }
+
     match /loginDirectory/{username} {
       allow get: if isAdmin();
       allow list: if false;
@@ -1007,8 +1104,13 @@ service cloud.firestore {
     }
 
     match /keyLogs/{id} {
-      allow read, create, update: if isActiveUser();
-      allow delete: if isAdmin();
+      allow get: if isActiveUser()
+                 && (!exists(/databases/$(database)/documents/keyLogs/$(id))
+                   || resource.data.site_id == activeSiteId());
+      allow list: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow create: if isActiveUser() && validKeyLogCreate(request.resource.data, id);
+      allow update: if isActiveUser() && validKeyReturn();
+      allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
     }
 
     match /patrolPoints/{id} {
@@ -1044,7 +1146,8 @@ service cloud.firestore {
                     && request.resource.data.audit_id == id
                     && ((request.resource.data.module_name == 'ParkingCards' && validParkingAudit(request.resource.data))
                       || (request.resource.data.module_name == 'units' && validUnitAudit(request.resource.data))
-                      || !(request.resource.data.module_name in ['ParkingCards', 'units']));
+                      || (request.resource.data.module_name == 'KeyLogs' && validKeyAudit(request.resource.data, id))
+                      || !(request.resource.data.module_name in ['ParkingCards', 'units', 'KeyLogs']));
       allow update, delete: if false;
     }
 

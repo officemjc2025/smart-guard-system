@@ -13,6 +13,7 @@ import {
   type UpdateData,
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import { createUuid } from '../utils/uuid';
 
 const ARCHIVE_BATCHES_COLLECTION = 'archiveBatches';
 
@@ -140,7 +141,7 @@ async function readRequiredArchiveBatch(batchId: string): Promise<ArchiveBatchRe
 
 /** Generates a collision-resistant, sortable client-side archive batch ID. */
 export function generateBatchId(): string {
-  const randomPart = globalThis.crypto.randomUUID().replace(/-/g, '');
+  const randomPart = createUuid().replace(/-/g, '');
   return `archive_${Date.now().toString(36)}_${randomPart}`;
 }
 

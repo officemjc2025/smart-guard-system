@@ -16,11 +16,6 @@ import { listIncidents } from '../services/incidentService';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 import { formatThaiDateTime } from '../utils/dateTime';
 
-const resolveHistoryImageUrl = (fileId: string): string =>
-  fileId.startsWith('http://') || fileId.startsWith('https://')
-    ? fileId
-    : 'https://images.unsplash.com/photo-1557683316-973673baf926?w=400&h=300&fit=crop&q=80';
-
 export default function SearchHistory() {
   const [activeModule, setActiveModule] = useState<'vehicles' | 'contractors' | 'keys' | 'patrols' | 'incidents'>('vehicles');
   const [loading, setLoading] = useState(false);
@@ -89,6 +84,7 @@ export default function SearchHistory() {
       'exit_plate_photo_url', 'exit_vehicle_photo_url',
       'id_card_photo_url', 'face_photo_url',
       'signature_image_url', 'borrower_photo_url',
+      'return_photo_url', 'return_signature_url',
       'photo_url', 'incident_photo_url'
     ];
 
@@ -96,14 +92,7 @@ export default function SearchHistory() {
     for (const field of imageFields) {
       const fileId = record[field];
       if (fileId) {
-        resolved[field] = 'loading';
-        try {
-          const url = resolveHistoryImageUrl(fileId);
-          resolved[field] = url;
-        } catch (error) {
-          console.error('Failed to resolve history image URL:', error);
-          resolved[field] = '';
-        }
+        resolved[field] = String(fileId);
       }
     }
     setResolvedImages(resolved);
@@ -527,6 +516,8 @@ export default function SearchHistory() {
                       face_photo_url: 'ใบหน้าช่างผู้รับเหมา',
                       signature_image_url: 'ลายเซ็นรับเบิกกุญแจ',
                       borrower_photo_url: 'พยานเบิกจ่ายกุญแจ',
+                      return_photo_url: 'รูปหลักฐานการคืนกุญแจ',
+                      return_signature_url: 'ลายเซ็นผู้คืนกุญแจ',
                       photo_url: 'รูปถ่ายเหตุด่วนภัยคุกคาม',
                       incident_photo_url: 'ความเสียหายกรณีเดินตรวจ'
                     };

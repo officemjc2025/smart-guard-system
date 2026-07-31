@@ -12,6 +12,7 @@ import {
 } from '../services/vehicleSessionActivityService';
 import { uploadImageToDrive } from '../services/mediaUploadService';
 import { runSingleFlight } from '../utils/singleFlight';
+import { createUuid } from '../utils/uuid';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 
 export default function VehicleSessionTimeline({ session, actorName, actorRole }: { session: VehicleSessionRecord; actorName?: string; actorRole?: string }) {
@@ -46,7 +47,7 @@ export default function VehicleSessionTimeline({ session, actorName, actorRole }
 
   const submitActivity = () => runSingleFlight(submitRef, async () => {
     setMessage('');
-    const eventId = `ACT_${crypto.randomUUID()}`;
+    const eventId = `ACT_${createUuid()}`;
     let photoUrls: string[] = [];
     if (photoDataUrl) {
       const url = await uploadImageToDrive(photoDataUrl, `vehicle_activity_${eventId}.jpg`, {

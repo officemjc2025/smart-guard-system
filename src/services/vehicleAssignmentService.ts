@@ -2,6 +2,7 @@ import { doc, increment, runTransaction, serverTimestamp, setDoc, Timestamp } fr
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { auth, db } from '../firebase';
 import { FUNCTIONS_REGION } from '../config/firebaseFunctions';
+import { createUuid } from '../utils/uuid';
 import type { VehicleQueuePriority } from '../types';
 import { appendSessionActivityInTransaction } from './vehicleSessionActivityService';
 import { assertExpectedSessionVersion } from './vehicleSessionVersionService';
@@ -51,7 +52,7 @@ export interface AssignmentOptions {
 }
 
 async function writeConflictAudit(sessionId: string, current: ReturnType<typeof actor>, message: string) {
-  const auditId = `AUD_${crypto.randomUUID()}`;
+  const auditId = `AUD_${createUuid()}`;
   await setDoc(doc(db, 'auditLogs', auditId), {
     audit_id: auditId, module_name: 'VehicleSessions', record_id: sessionId,
     action: 'AssignmentConflict', operator_id: current.uid, account_uid: current.uid,
@@ -76,8 +77,8 @@ async function assign(sessionId: string, targetUid: string, action: string, cont
       const expiresAt = snapshot.get('expires_at');
       const activeForeignLock = expiresAt instanceof Timestamp && expiresAt.toMillis() > Date.now() && snapshot.get('editing_by') !== current.uid;
       if (action === 'TransferJob' && activeForeignLock && !options.administrativeOverride) throw new Error('งานกำลังถูกแก้ไขโดยผู้ใช้อื่น');
-      const auditId = `AUD_${crypto.randomUUID()}`;
-      const eventId = `QUEUE_${crypto.randomUUID()}`;
+      const auditId = `AUD_${createUuid()}`;
+      const eventId = `QUEUE_${createUuid()}`;
       const nextQueueStatus = targetUid ? 'Assigned' : 'Waiting';
       transaction.update(reference, {
         assignedTo: targetUid || null, assignedBy: current.uid,
@@ -125,10 +126,10 @@ export async function setVehicleJobPriority(sessionId: string, priority: Vehicle
     const reference = doc(db, 'vehicleSessions', sessionId);
     const snapshot = await transaction.get(reference);
     if (!snapshot.exists() || snapshot.get('site_id') !== current.siteId) throw new Error('ไม่พบงานในพื้นที่นี้');
-    const auditId = `AUD_${crypto.randomUUID()}`;
+    const auditId = `AUD_${createUuid()}`;
     const sessionVersion = Number(snapshot.get('sessionVersion') ?? 0);
     if (options?.expectedSessionVersion !== undefined) assertExpectedSessionVersion(sessionId, options.expectedSessionVersion, sessionVersion, snapshot.data());
-    const eventId = `QUEUE_${crypto.randomUUID()}`;
+    const eventId = `QUEUE_${createUuid()}`;
     transaction.update(reference, {
       priority, last_updated_by: current.uid, last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
       sessionVersion: sessionVersion + 1,

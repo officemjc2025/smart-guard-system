@@ -20,6 +20,12 @@ const EVIDENCE_MEDIA_TYPES = {
     'contractor_face',
     'contractor_activity',
   ]),
+  Key: new Set([
+    'key_borrower',
+    'sig_key',
+    'key_return',
+    'sig_key_return',
+  ]),
 } as const;
 
 export type PrivateEvidenceModule = keyof typeof EVIDENCE_MEDIA_TYPES;
@@ -27,6 +33,7 @@ export type PrivateEvidenceModule = keyof typeof EVIDENCE_MEDIA_TYPES;
 const MODULE_NAMES: Record<PrivateEvidenceModule, ReadonlySet<string>> = {
   Vehicle: new Set(['VehicleLogs', 'VehicleSessionActivities']),
   Contractor: new Set(['ContractorLogs']),
+  Key: new Set(['KeyLogs']),
 };
 
 export function authorizeRegisteredEvidence(
@@ -81,5 +88,26 @@ export function validatePrivateImageMetadata(
   }
   if (!Number.isFinite(size) || size <= 0 || size > maximumBytes) {
     throw new PrivateEvidencePolicyError('Evidence file exceeds the preview size limit.', 413);
+  }
+}
+
+export function authorizeDriveEvidenceIdentity(
+  actor: CanonicalUploadActor,
+  registry: Record<string, unknown>,
+  linkedRecordId: string,
+  appProperties: Record<string, unknown>,
+): void {
+  if (appProperties.system !== 'smart-guard') return;
+  if (
+    appProperties.site_id !== actor.siteId
+    || (appProperties.record_id && appProperties.record_id !== linkedRecordId)
+    || (appProperties.module && appProperties.module !== registry.module)
+    || (appProperties.module_name && appProperties.module_name !== registry.module_name)
+    || (appProperties.media_type && appProperties.media_type !== registry.media_type)
+  ) {
+    throw new PrivateEvidencePolicyError(
+      'Drive evidence metadata does not match the authorized record.',
+      403,
+    );
   }
 }

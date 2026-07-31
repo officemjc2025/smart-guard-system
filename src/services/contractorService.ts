@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { auth } from '../firebase';
+import { createUuid } from '../utils/uuid';
 import type {
   ContractorActivityRecord,
   ContractorActivityType,
@@ -192,7 +193,7 @@ export async function appendContractorActivity(
   const uid = requireCurrentUid();
   const reference = doc(db, 'contractorLogs', contractorId);
   const activity: ContractorActivityRecord = {
-    activity_id: `CA_${crypto.randomUUID()}`,
+    activity_id: `CA_${createUuid()}`,
     activity_type: activityType,
     note: note.trim(),
     created_at: new Date().toISOString(),
@@ -234,7 +235,7 @@ export function completeContractor(
     if (lockUid && lockUid !== uid) throw new Error('Contractor Workspace belongs to another operator.');
     const activities = Array.isArray(snapshot.get('activities')) ? snapshot.get('activities') : [];
     const exitActivity: ContractorActivityRecord = {
-      activity_id: `CA_${crypto.randomUUID()}`,
+      activity_id: `CA_${createUuid()}`,
       activity_type: 'exit',
       note: 'ออกจากพื้นที่',
       created_at: exitTime,

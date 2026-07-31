@@ -17,6 +17,7 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { auth, db } from '../firebase';
+import { createUuid } from '../utils/uuid';
 import type {
   ParkingCardRecord,
   VehicleLogRecord,
@@ -237,7 +238,7 @@ async function findCard(rawValue: string, siteId: string): Promise<ParkingCardRe
 }
 
 function auditReference() {
-  const auditId = `AUD_${crypto.randomUUID()}`;
+  const auditId = `AUD_${createUuid()}`;
   return { auditId, reference: doc(db, 'auditLogs', auditId) };
 }
 
@@ -313,8 +314,8 @@ export async function createVehicleSessionFromScan(rawValue: string, requestedSi
   if (card.status !== 'Available') {
     throw new Error(`บัตร ${card.card_number} ไม่พร้อมใช้งาน (${card.status})`);
   }
-  const sessionId = `VS_${crypto.randomUUID()}`;
-  const eventId = `SESSION_${crypto.randomUUID()}`;
+  const sessionId = `VS_${createUuid()}`;
+  const eventId = `SESSION_${createUuid()}`;
   const audit = auditReference();
   const sessionRef = doc(db, SESSION_COLLECTION, sessionId);
   const cardRef = doc(db, 'parkingCards', card.firestore_document_id);
@@ -405,7 +406,7 @@ export async function updateVehicleSession(
     if (!snapshot.exists()) throw new Error('ไม่พบ Vehicle Session');
     const actualVersion = typeof snapshot.get('sessionVersion') === 'number' ? snapshot.get('sessionVersion') as number : 0;
     if (expectedVersion !== undefined) assertExpectedSessionVersion(sessionId, expectedVersion, actualVersion, snapshot.data());
-    const eventId = `SESSION_${crypto.randomUUID()}`;
+    const eventId = `SESSION_${createUuid()}`;
     transaction.update(reference, sanitizeAndValidateFirestoreData({
       ...patch, stage, status, queueStatus, last_updated_by: actor.uid,
       sessionVersion: actualVersion + 1,
@@ -454,7 +455,7 @@ export async function updateActiveVehicleSession(
     if (!logSnapshot.exists() || logSnapshot.get('vehicle_session_id') !== sessionId || logSnapshot.get('status') !== 'กำลังจอด') {
       throw new Error('ข้อมูล Vehicle Log ไม่สอดคล้องกับ Session');
     }
-    const eventId = `SESSION_${crypto.randomUUID()}`;
+    const eventId = `SESSION_${createUuid()}`;
     const mutablePatch = sanitizeAndValidateFirestoreData({ ...patch });
     transaction.update(sessionReference, {
       ...mutablePatch,
@@ -570,7 +571,7 @@ export async function completeVehicleSession(sessionId: string, operatorName: st
     if (!cardSnapshot.exists() || cardSnapshot.get('current_vehicle_session_id') !== sessionId || cardSnapshot.get('status') !== 'Reserved') {
       throw new Error('สถานะบัตรไม่ตรงกับ Vehicle Session');
     }
-    const logId = `V_${crypto.randomUUID()}`;
+    const logId = `V_${createUuid()}`;
     const now = new Date().toISOString();
     const log = sanitizeAndValidateFirestoreData({
       log_id: logId, vehicle_session_id: sessionId, site_id: data.site_id, parking_card_id: data.parking_card_id,
@@ -591,7 +592,7 @@ export async function completeVehicleSession(sessionId: string, operatorName: st
       current_vehicle_log_id: logId, current_vehicle_session_id: '',
       last_activity_at: serverTimestamp(), updated_at: serverTimestamp(),
     });
-    const eventId = `SESSION_${crypto.randomUUID()}`;
+    const eventId = `SESSION_${createUuid()}`;
     transaction.update(sessionRef, {
       stage: 'Active', status: 'InProgress', queueStatus: 'In Progress', vehicle_log_id: logId,
       sessionVersion: actualVersion + 1,

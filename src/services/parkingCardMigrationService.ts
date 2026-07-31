@@ -3,6 +3,7 @@ import { auth, db } from '../firebase';
 import { normalizeCardNumber, normalizeQrValue, parkingCardStatusOrNull } from './parkingCardService';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
 import type { ParkingCardStatus, ParkingCardType } from '../types';
+import { createUuid } from '../utils/uuid';
 
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
 const allowedTypes: readonly ParkingCardType[] = ['Temporary', 'VIP', 'Resident', 'Contractor', 'Staff', 'Other'];
@@ -40,7 +41,7 @@ async function canonicalAdminContext() {
 }
 
 async function writeMigrationAudit(context: Awaited<ReturnType<typeof canonicalAdminContext>>, action: string, recordId: string, reason: string, result = 'Success') {
-  const auditId = `AUD_${crypto.randomUUID()}`;
+  const auditId = `AUD_${createUuid()}`;
   const batch = writeBatch(db);
   batch.set(doc(db, 'auditLogs', auditId), {
     audit_id: auditId, operator_id: context.uid, account_uid: context.uid, operator_name: context.operatorName,
@@ -133,7 +134,7 @@ export async function executeParkingCardMigration(dryRun: Awaited<ReturnType<typ
     const batch = writeBatch(db);
     chunk.forEach((candidate, index) => {
       batch.update(doc(db, 'parkingCards', candidate.documentId), sanitizeAndValidateFirestoreData({ ...candidate.changes, updated_at: serverTimestamp() }, start + index + 1));
-      const auditId = `AUD_${crypto.randomUUID()}`;
+      const auditId = `AUD_${createUuid()}`;
       batch.set(doc(db, 'auditLogs', auditId), {
         audit_id: auditId, operator_id: context.uid, account_uid: context.uid, operator_name: context.operatorName,
         user_name: context.operatorName, site_id: context.siteId, card_id: candidate.cardId, card_number: candidate.cardNumber,

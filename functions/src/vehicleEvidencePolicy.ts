@@ -66,13 +66,28 @@ export function allowedUploadOrigins(projectId: string, configuredOrigins = ''):
   return new Set([...localDevelopmentOrigins, ...projectOrigins, ...configured]);
 }
 
+function isStagingLanDevelopmentOrigin(origin: string, projectId: string): boolean {
+  if (projectId !== 'securityprojectv1-staging') return false;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' || url.port !== '3000' || url.username || url.password) return false;
+    return /^10(?:[.]\d{1,3}){3}$/.test(url.hostname)
+      || /^192[.]168(?:[.]\d{1,3}){2}$/.test(url.hostname)
+      || /^172[.](?:1[6-9]|2\d|3[01])(?:[.]\d{1,3}){2}$/.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function corsDecision(
   method: string,
   origin: string | undefined,
   projectId: string,
   configuredOrigins = '',
 ): { allowed: boolean; preflightStatus: 204 | 403 | null; allowOrigin?: string } {
-  const allowed = !origin || allowedUploadOrigins(projectId, configuredOrigins).has(origin);
+  const allowed = !origin
+    || allowedUploadOrigins(projectId, configuredOrigins).has(origin)
+    || isStagingLanDevelopmentOrigin(origin, projectId);
   return {
     allowed,
     preflightStatus: method === 'OPTIONS' ? (allowed ? 204 : 403) : null,

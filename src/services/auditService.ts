@@ -9,6 +9,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 import type { AuditLogRecord } from '../types';
+import { createUuid } from '../utils/uuid';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
 
 export interface SiteAuditLogRecord extends AuditLogRecord {
@@ -89,7 +90,7 @@ export async function writeAuditLog(
 ): Promise<void> {
   const finalOperator = operatorName || sessionStorage.getItem('selected_operator_name') || userName || '';
   await createAuditLog(sessionStorage.getItem('selected_site_id') || 'site-01', {
-    audit_id: `AUD_${crypto.randomUUID()}`,
+    audit_id: `AUD_${createUuid()}`,
     user_name: userName || finalOperator || 'Unknown',
     action,
     module_name: moduleName,

@@ -4,9 +4,12 @@ import {
   UploadPolicyError,
 } from './vehicleEvidencePolicy';
 
+const EXACT_MEDIA_TYPES: Record<string, ReadonlySet<string>> = {
+  ContractorLogs: new Set(['contractor_id', 'contractor_face', 'contractor_activity']),
+  KeyLogs: new Set(['key_borrower', 'sig_key', 'key_return', 'sig_key_return']),
+};
+
 const MEDIA_TYPE_PREFIXES: Record<string, readonly string[]> = {
-  ContractorLogs: ['contractor_id', 'contractor_face', 'contractor_activity'],
-  KeyLogs: ['key_borrower', 'sig_key'],
   PatrolLogs: ['patrol_', 'patrol_abn_'],
   IncidentReports: ['incident_'],
 };
@@ -16,8 +19,12 @@ export function validateNonVehicleMediaUpload(
   actor: CanonicalUploadActor,
   resource?: Record<string, unknown>,
 ): void {
-  const prefixes = MEDIA_TYPE_PREFIXES[request.moduleName];
-  if (!prefixes || !prefixes.some(prefix => request.mediaType === prefix || request.mediaType.startsWith(prefix))) {
+  const exactTypes = EXACT_MEDIA_TYPES[request.moduleName];
+  const prefixes = MEDIA_TYPE_PREFIXES[request.moduleName] ?? [];
+  if (
+    !(exactTypes?.has(request.mediaType)
+      || prefixes.some(prefix => request.mediaType.startsWith(prefix)))
+  ) {
     throw new UploadPolicyError('UPLOAD_INVALID_FILE', 'Unsupported media type for this module.', 400);
   }
   if (request.siteId !== actor.siteId) {
@@ -34,6 +41,17 @@ export function validateNonVehicleMediaUpload(
     throw new UploadPolicyError(
       resource ? 'UPLOAD_FORBIDDEN' : 'UPLOAD_NOT_FOUND',
       'An active Contractor record is required for activity evidence.',
+      resource ? 403 : 404,
+    );
+  }
+  if (
+    request.moduleName === 'KeyLogs'
+    && ['key_return', 'sig_key_return'].includes(request.mediaType)
+    && (!resource || resource.status !== 'ถูกเบิก')
+  ) {
+    throw new UploadPolicyError(
+      resource ? 'UPLOAD_FORBIDDEN' : 'UPLOAD_NOT_FOUND',
+      'A borrowed same-site Key record is required for return evidence.',
       resource ? 403 : 404,
     );
   }

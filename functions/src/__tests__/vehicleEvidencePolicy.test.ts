@@ -40,6 +40,30 @@ describe('Vehicle Evidence CORS policy', () => {
     expect(origins.has('https://staging.example.test')).toBe(true);
   });
 
+  it.each([
+    'http://192.168.1.20:3000',
+    'http://10.0.0.12:3000',
+    'http://172.16.5.8:3000',
+    'http://172.31.255.9:3000',
+  ])('allows a private-LAN Vite origin only on staging: %s', origin => {
+    expect(corsDecision('OPTIONS', origin, 'securityprojectv1-staging')).toEqual({
+      allowed: true, preflightStatus: 204, allowOrigin: origin,
+    });
+    expect(corsDecision('OPTIONS', origin, 'securityprojectv1')).toEqual({
+      allowed: false, preflightStatus: 403,
+    });
+  });
+
+  it.each([
+    'http://192.168.1.20:3001',
+    'https://192.168.1.20:3000',
+    'http://8.8.8.8:3000',
+    'http://172.15.1.2:3000',
+    'http://172.32.1.2:3000',
+  ])('denies non-canonical LAN development origins: %s', origin => {
+    expect(corsDecision('OPTIONS', origin, 'securityprojectv1-staging').allowed).toBe(false);
+  });
+
   it('denies a disallowed origin before authentication or Drive work', () => {
     expect(corsDecision('OPTIONS', 'https://evil.example', 'securityprojectv1-staging')).toEqual({
       allowed: false, preflightStatus: 403,

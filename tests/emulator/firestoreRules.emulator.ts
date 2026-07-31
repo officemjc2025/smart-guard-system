@@ -240,6 +240,92 @@ const completeVehicleExitTransaction = (
   });
 });
 
+const checkoutKeyTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  input: { uid: string; siteId: string; suffix: string; identityNumber?: string },
+) => runTransaction(database, async transaction => {
+  const logId = `key-log-${input.suffix}`;
+  const auditId = `KEY_CHECKOUT_${logId}`;
+  const logReference = doc(database, `keyLogs/${logId}`);
+  const snapshot = await transaction.get(logReference);
+  if (snapshot.exists()) throw new Error('duplicate checkout');
+  transaction.set(logReference, {
+    key_log_id: logId,
+    site_id: input.siteId,
+    room_number: 'A-101',
+    key_type: 'ห้องพัก',
+    borrower_name: 'Borrower A',
+    borrower_phone: '',
+    borrower_id_number: input.identityNumber ?? '',
+    purpose: 'Maintenance',
+    checkout_time: serverTimestamp(),
+    issued_by: 'Guard A',
+    signature_image_url: '',
+    borrower_photo_url: '',
+    status: 'ถูกเบิก',
+    note: '',
+    created_at: serverTimestamp(),
+    updated_at: serverTimestamp(),
+  });
+  transaction.set(doc(database, `auditLogs/${auditId}`), {
+    audit_id: auditId,
+    operator_id: input.uid,
+    account_uid: input.uid,
+    user_name: 'Guard A',
+    operator_name: 'Guard A',
+    site_id: input.siteId,
+    action: 'KeyCheckout',
+    module_name: 'KeyLogs',
+    record_id: logId,
+    old_value: '',
+    new_value: 'ถูกเบิก',
+    action_result: 'Success',
+    created_at: serverTimestamp(),
+  });
+});
+
+const returnKeyTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  input: {
+    uid: string;
+    siteId: string;
+    suffix: string;
+    returnPhoto?: string;
+    returnSignature?: string;
+  },
+) => runTransaction(database, async transaction => {
+  const logId = `key-log-${input.suffix}`;
+  const auditId = `KEY_RETURN_${logId}`;
+  const logReference = doc(database, `keyLogs/${logId}`);
+  const snapshot = await transaction.get(logReference);
+  if (!snapshot.exists() || snapshot.get('return_time')) throw new Error('already returned');
+  transaction.update(logReference, {
+    return_time: serverTimestamp(),
+    returned_by: 'Guard A',
+    ...(input.returnPhoto === undefined ? { return_photo_url: 'https://drive.google.com/file/d/RETURNPHOTO123/view' }
+      : input.returnPhoto ? { return_photo_url: input.returnPhoto } : {}),
+    ...(input.returnSignature === undefined ? { return_signature_url: 'https://drive.google.com/file/d/RETURNSIGNATURE123/view' }
+      : input.returnSignature ? { return_signature_url: input.returnSignature } : {}),
+    status: 'คืนแล้ว',
+    updated_at: serverTimestamp(),
+  });
+  transaction.set(doc(database, `auditLogs/${auditId}`), {
+    audit_id: auditId,
+    operator_id: input.uid,
+    account_uid: input.uid,
+    user_name: 'Guard A',
+    operator_name: 'Guard A',
+    site_id: input.siteId,
+    action: 'KeyReturn',
+    module_name: 'KeyLogs',
+    record_id: logId,
+    old_value: 'ถูกเบิก',
+    new_value: 'คืนแล้ว',
+    action_result: 'Success',
+    created_at: serverTimestamp(),
+  });
+});
+
 const seedActiveVehicleExit = async (suffix: string) => {
   const sessionId = `exit-session-${suffix}`;
   const logId = `exit-log-${suffix}`;
@@ -1323,4 +1409,110 @@ test('audit logs remain immutable', async () => {
   const database = environment.authenticatedContext('manager-a').firestore();
   await assertFails(updateDoc(doc(database, 'auditLogs/audit-a'), { action: 'Tampered' }));
   await assertFails(deleteDoc(doc(database, 'auditLogs/audit-a')));
+});
+
+test('Key checkout and return atomically use immutable server business timestamps', async () => {
+  const suffix = 'atomic-time';
+  const logId = `key-log-${suffix}`;
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertSucceeds(checkoutKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-a', suffix, identityNumber: '',
+  }));
+
+  let checkoutTime: unknown;
+  await environment.withSecurityRulesDisabled(async context => {
+    const checkout = await getDoc(doc(context.firestore(), `keyLogs/${logId}`));
+    const audit = await getDoc(doc(context.firestore(), `auditLogs/KEY_CHECKOUT_${logId}`));
+    checkoutTime = checkout.get('checkout_time');
+    assert.ok(checkoutTime instanceof Timestamp);
+    assert.equal(checkout.get('borrower_id_number'), '');
+    assert.equal(checkout.get('status'), 'ถูกเบิก');
+    assert.ok(audit.exists());
+  });
+
+  await assert.rejects(checkoutKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-a', suffix,
+  }), /duplicate checkout/);
+  await assertSucceeds(returnKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-a', suffix,
+  }));
+
+  let firstReturnTime: unknown;
+  await environment.withSecurityRulesDisabled(async context => {
+    const returned = await getDoc(doc(context.firestore(), `keyLogs/${logId}`));
+    const audit = await getDoc(doc(context.firestore(), `auditLogs/KEY_RETURN_${logId}`));
+    firstReturnTime = returned.get('return_time');
+    assert.ok(firstReturnTime instanceof Timestamp);
+    assert.deepEqual(returned.get('checkout_time'), checkoutTime);
+    assert.equal(returned.get('status'), 'คืนแล้ว');
+    assert.equal(returned.get('borrower_photo_url'), '');
+    assert.equal(returned.get('signature_image_url'), '');
+    assert.equal(returned.get('return_photo_url'), 'https://drive.google.com/file/d/RETURNPHOTO123/view');
+    assert.equal(returned.get('return_signature_url'), 'https://drive.google.com/file/d/RETURNSIGNATURE123/view');
+    assert.ok(audit.exists());
+  });
+
+  await assert.rejects(returnKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-a', suffix,
+  }), /already returned/);
+  await environment.withSecurityRulesDisabled(async context => {
+    const returned = await getDoc(doc(context.firestore(), `keyLogs/${logId}`));
+    assert.deepEqual(returned.get('return_time'), firstReturnTime);
+    assert.equal(returned.get('return_photo_url'), 'https://drive.google.com/file/d/RETURNPHOTO123/view');
+    assert.equal(returned.get('return_signature_url'), 'https://drive.google.com/file/d/RETURNSIGNATURE123/view');
+  });
+});
+
+test('Key Return requires both distinct evidence references in the atomic transition', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  for (const [suffix, returnPhoto, returnSignature] of [
+    ['missing-photo', '', 'https://drive.google.com/file/d/RETURNSIGNATURE123/view'],
+    ['missing-signature', 'https://drive.google.com/file/d/RETURNPHOTO123/view', ''],
+    ['same-reference', 'https://drive.google.com/file/d/SAMEREFERENCE123/view', 'https://drive.google.com/file/d/SAMEREFERENCE123/view'],
+  ] as const) {
+    await assertSucceeds(checkoutKeyTransaction(database, {
+      uid: 'guard-a', siteId: 'site-a', suffix,
+    }));
+    await assertFails(returnKeyTransaction(database, {
+      uid: 'guard-a', siteId: 'site-a', suffix, returnPhoto, returnSignature,
+    }));
+    await environment.withSecurityRulesDisabled(async context => {
+      const record = await getDoc(doc(context.firestore(), `keyLogs/key-log-${suffix}`));
+      const audit = await getDoc(doc(context.firestore(), `auditLogs/KEY_RETURN_key-log-${suffix}`));
+      assert.equal(record.get('status'), 'ถูกเบิก');
+      assert.equal(record.get('return_time'), undefined);
+      assert.equal(audit.exists(), false);
+    });
+  }
+});
+
+test('Key Return evidence and timestamp are immutable after completion', async () => {
+  const suffix = 'immutable-return-evidence';
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertSucceeds(checkoutKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-a', suffix,
+  }));
+  await assertSucceeds(returnKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-a', suffix,
+  }));
+  await assertFails(updateDoc(doc(database, `keyLogs/key-log-${suffix}`), {
+    return_time: serverTimestamp(),
+    return_photo_url: 'https://drive.google.com/file/d/REPLACEDPHOTO123/view',
+    return_signature_url: 'https://drive.google.com/file/d/REPLACEDSIGNATURE123/view',
+    updated_at: serverTimestamp(),
+  }));
+});
+
+test('Key transactions deny cross-site writes and arbitrary field mutation', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(checkoutKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-b', suffix: 'cross-site',
+  }));
+  await assertSucceeds(checkoutKeyTransaction(database, {
+    uid: 'guard-a', siteId: 'site-a', suffix: 'tamper',
+  }));
+  await assertFails(updateDoc(doc(database, 'keyLogs/key-log-tamper'), {
+    borrower_name: 'Tampered',
+    updated_at: serverTimestamp(),
+  }));
 });

@@ -4,6 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createUuid } from '../utils/uuid';
 import {
   AlertTriangle,
   Camera,
@@ -150,7 +151,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
             status: 'กำลังปฏิบัติงาน',
             recorded_by: item.guardName,
             activities: [{
-              activity_id: `CA_${crypto.randomUUID()}`,
+              activity_id: `CA_${createUuid()}`,
               activity_type: 'entered',
               note: 'เข้าพื้นที่ (บันทึก offline)',
               created_at: item.entryTime,
@@ -160,7 +161,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
             }],
           });
           await createAuditLog(item.siteId, {
-            audit_id: `AUD_${crypto.randomUUID()}`,
+            audit_id: `AUD_${createUuid()}`,
             user_name: item.guardName,
             action: 'ซิงก์ผู้รับเหมาเข้าจาก Offline',
             module_name: 'ContractorLogs',
@@ -299,7 +300,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         if (workspace.contractorId) {
           throw new Error('ไม่สามารถแก้ไข Contractor ที่ถือ remote lock แบบ offline ได้ กรุณาเชื่อมต่อก่อนบันทึก');
         }
-        const localId = `CON_${crypto.randomUUID()}`;
+        const localId = `CON_${createUuid()}`;
         queueOfflineContractor({
           localId,
           siteId,
@@ -312,7 +313,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         resetWorkspace({ type: 'success', text: `บันทึก ${entryForm.contractor_name} แบบ Offline แล้ว พร้อมรับรายการใหม่` });
         return;
       }
-      const contractorId = workspace.contractorId || `CON_${crypto.randomUUID()}`;
+      const contractorId = workspace.contractorId || `CON_${createUuid()}`;
       const { idUrl, faceUrl } = await uploadContractorPhotos(contractorId);
       const baseData = {
         ...entryForm,
@@ -329,7 +330,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         const latest = await getContractor(siteId, contractorId);
         setWorkspace(activateContractorWorkspace(latest));
         await createAuditLog(siteId, {
-          audit_id: `AUD_${crypto.randomUUID()}`,
+          audit_id: `AUD_${createUuid()}`,
           user_name: guardName,
           action: 'แก้ไขข้อมูลผู้รับเหมา',
           module_name: 'ContractorLogs',
@@ -355,7 +356,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
           status: 'กำลังปฏิบัติงาน',
           recorded_by: guardName,
           activities: [{
-            activity_id: `CA_${crypto.randomUUID()}`,
+            activity_id: `CA_${createUuid()}`,
             activity_type: 'entered',
             note: 'เข้าพื้นที่',
             created_at: now,
@@ -366,7 +367,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         });
         contractorSaved = true;
         await createAuditLog(siteId, {
-          audit_id: `AUD_${crypto.randomUUID()}`,
+          audit_id: `AUD_${createUuid()}`,
           user_name: guardName,
           action: 'ลงทะเบียนผู้รับเหมาเข้าทำงาน',
           module_name: 'ContractorLogs',
@@ -443,7 +444,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
       await completeContractor(siteId, workspace.contractorId, exitTime, guardName);
       exitCompleted = true;
       await createAuditLog(siteId, {
-        audit_id: `AUD_${crypto.randomUUID()}`,
+        audit_id: `AUD_${createUuid()}`,
         user_name: guardName,
         action: 'บันทึกผู้รับเหมาออกจากอาคาร',
         module_name: 'ContractorLogs',

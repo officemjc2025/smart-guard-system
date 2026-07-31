@@ -1,6 +1,7 @@
 import { canonicalUploadActor } from '../vehicleEvidencePolicy';
 import {
   PrivateEvidencePolicyError,
+  authorizeDriveEvidenceIdentity,
   authorizeRegisteredEvidence,
   validatePrivateImageMetadata,
 } from '../privateEvidencePolicy';
@@ -29,6 +30,36 @@ describe('private vehicle evidence authorization', () => {
         record_id: 'CON_1',
       }, 'CON_1', { site_id: 'site-a', status })).not.toThrow();
     }
+  });
+
+  it('allows same-site Key evidence for borrowed and returned records', () => {
+    for (const status of ['ถูกเบิก', 'คืนแล้ว']) {
+      for (const mediaType of ['key_borrower', 'sig_key', 'key_return', 'sig_key_return']) {
+        expect(() => authorizeRegisteredEvidence(fileId, actor, {
+          file_id: fileId,
+          site_id: 'site-a',
+          module: 'Key',
+          module_name: 'KeyLogs',
+          media_type: mediaType,
+          record_id: 'KEY_LOG_1',
+        }, 'KEY_LOG_1', { site_id: 'site-a', status })).not.toThrow();
+      }
+    }
+  });
+
+  it('does not allow Key evidence identity to cross modules or records', () => {
+    expect(() => authorizeRegisteredEvidence(fileId, actor, {
+      file_id: fileId, site_id: 'site-a', module: 'Key',
+      module_name: 'KeyLogs', media_type: 'entry_vehicle', record_id: 'KEY_LOG_1',
+    }, 'KEY_LOG_1', { site_id: 'site-a' })).toThrow(PrivateEvidencePolicyError);
+    expect(() => authorizeRegisteredEvidence(fileId, actor, {
+      file_id: fileId, site_id: 'site-a', module: 'Vehicle',
+      module_name: 'VehicleLogs', media_type: 'key_borrower', record_id: 'KEY_LOG_1',
+    }, 'KEY_LOG_1', { site_id: 'site-a' })).toThrow(PrivateEvidencePolicyError);
+    expect(() => authorizeRegisteredEvidence(fileId, actor, {
+      file_id: fileId, site_id: 'site-a', module: 'Key',
+      module_name: 'KeyLogs', media_type: 'sig_key', record_id: 'KEY_LOG_1',
+    }, 'KEY_LOG_2', { site_id: 'site-a' })).toThrow(PrivateEvidencePolicyError);
   });
 
   it('denies cross-site, unknown, mismatched, and unlinked Drive files', () => {
@@ -69,6 +100,42 @@ describe('private vehicle evidence authorization', () => {
       media_type: 'contractor_face',
       record_id: 'CON_1',
     }, 'CON_1', { site_id: 'site-a' })).toThrow(PrivateEvidencePolicyError);
+  });
+
+  it('accepts matching Drive Key identity and rejects every mismatched identity field', () => {
+    const registry = {
+      site_id: 'site-a', module: 'Key', module_name: 'KeyLogs',
+      media_type: 'key_borrower', record_id: 'KEY_LOG_1',
+    };
+    const driveIdentity = {
+      system: 'smart-guard', site_id: 'site-a', module: 'Key',
+      module_name: 'KeyLogs', media_type: 'key_borrower', record_id: 'KEY_LOG_1',
+    };
+    expect(() => authorizeDriveEvidenceIdentity(
+      actor, registry, 'KEY_LOG_1', driveIdentity,
+    )).not.toThrow();
+    for (const [field, value] of [
+      ['site_id', 'site-b'],
+      ['module', 'Vehicle'],
+      ['module_name', 'VehicleLogs'],
+      ['media_type', 'entry_vehicle'],
+      ['record_id', 'KEY_LOG_2'],
+    ]) {
+      expect(() => authorizeDriveEvidenceIdentity(
+        actor, registry, 'KEY_LOG_1', { ...driveIdentity, [field]: value },
+      )).toThrow(PrivateEvidencePolicyError);
+    }
+  });
+
+  it('keeps legacy missing module_name compatible without bypassing registered identity', () => {
+    const registry = {
+      site_id: 'site-a', module: 'Key',
+      media_type: 'sig_key', record_id: 'KEY_LOG_1',
+    };
+    expect(() => authorizeDriveEvidenceIdentity(actor, registry, 'KEY_LOG_1', {
+      system: 'smart-guard', site_id: 'site-a', module: 'Key',
+      media_type: 'sig_key', record_id: 'KEY_LOG_1',
+    })).not.toThrow();
   });
 
   it('denies non-images and oversized files', () => {
