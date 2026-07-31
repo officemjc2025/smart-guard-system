@@ -62,6 +62,7 @@ export default function ReportsCenter({
 }: ReportsCenterProps) {
   const [activeReport, setActiveReport] = useState<ReportKey>('vehicle');
   const [filters, setFilters] = useState<ExportFilters>({});
+  const [googleSheetsMode, setGoogleSheetsMode] = useState(true);
   const [exporting, setExporting] = useState<'csv' | 'excel' | 'all' | null>(null);
   const [exportError, setExportError] = useState('');
 
@@ -100,11 +101,11 @@ export default function ReportsCenter({
     setExportError('');
     setExporting(kind);
     try {
-      if (kind === 'csv') exportCsv(records, report.module, filters);
+      if (kind === 'csv') exportCsv(records, report.module, filters, { googleSheetsMode });
       else if (kind === 'excel') {
-        await downloadExcelWorkbook(buildModuleWorkbook({ module: report.module, records }, filters));
+        await downloadExcelWorkbook(buildModuleWorkbook({ module: report.module, records }, filters, { googleSheetsMode }));
       } else {
-        await downloadExcelWorkbook(buildAllReportsWorkbook(excelSources, filters));
+        await downloadExcelWorkbook(buildAllReportsWorkbook(excelSources, filters, { googleSheetsMode }));
       }
     } catch (reason) {
       setExportError(reason instanceof Error ? reason.message : 'ไม่สามารถสร้างไฟล์รายงานได้');
@@ -137,6 +138,11 @@ export default function ReportsCenter({
           </div>
         </div>
         {exportError && <div role="alert" className="mt-3 rounded-xl border border-red-800 bg-red-950/60 p-3 text-xs font-bold text-red-200">สร้างไฟล์ไม่สำเร็จ: {exportError}</div>}
+        <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 text-xs font-bold text-slate-200">
+          <input type="checkbox" checked={googleSheetsMode} onChange={event => setGoogleSheetsMode(event.target.checked)} className="h-4 w-4 accent-emerald-500" />
+          Google Sheets Ready
+          <span className="font-normal text-slate-500">ISO Date, UTF-8 และลิงก์ที่คลิกได้</span>
+        </label>
       </div>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-5">

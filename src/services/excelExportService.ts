@@ -1,4 +1,4 @@
-import { buildExportGrid, bangkokExportDate, exportFileBase } from './importExport/exportData';
+import { buildExportGrid, bangkokExportDate, exportFileBase, GOOGLE_DRIVE_EXPORT_COLUMNS, type ExportFormatOptions } from './importExport/exportData';
 import { filterExportRows, type ExportFilters, type ImportExportModule, type ImportExportRecord } from './importExport/validationService';
 
 export interface ExcelExportSource {
@@ -15,11 +15,12 @@ export interface WorkbookSheetData {
 export interface WorkbookData {
   fileName: string;
   sheets: WorkbookSheetData[];
+  googleSheetsMode: boolean;
 }
 
-const sheetData = (source: ExcelExportSource, filters: ExportFilters): WorkbookSheetData => {
+const sheetData = (source: ExcelExportSource, filters: ExportFilters, options: ExportFormatOptions): WorkbookSheetData => {
   const filtered = filterExportRows(source.records, filters);
-  const { columns, grid } = buildExportGrid(filtered, source.module);
+  const { columns, grid } = buildExportGrid(filtered, source.module, options);
   return {
     name: source.module.worksheetName || source.module.label.slice(0, 31),
     columns,
@@ -27,18 +28,31 @@ const sheetData = (source: ExcelExportSource, filters: ExportFilters): WorkbookS
   };
 };
 
-export function buildModuleWorkbook(source: ExcelExportSource, filters: ExportFilters = {}): WorkbookData {
+export function buildModuleWorkbook(source: ExcelExportSource, filters: ExportFilters = {}, options: ExportFormatOptions = {}): WorkbookData {
   return {
     fileName: `${exportFileBase(source.module)}_${bangkokExportDate()}.xlsx`,
-    sheets: [sheetData(source, filters)],
+    sheets: [sheetData(source, filters, options)],
+    googleSheetsMode: Boolean(options.googleSheetsMode),
   };
 }
 
-export function buildAllReportsWorkbook(sources: readonly ExcelExportSource[], filters: ExportFilters = {}): WorkbookData {
+export function buildAllReportsWorkbook(sources: readonly ExcelExportSource[], filters: ExportFilters = {}, options: ExportFormatOptions = {}): WorkbookData {
   return {
     fileName: `smart_guard_reports_${bangkokExportDate()}.xlsx`,
-    sheets: sources.map(source => sheetData(source, filters)),
+    sheets: sources.map(source => sheetData(source, filters, options)),
+    googleSheetsMode: Boolean(options.googleSheetsMode),
   };
+}
+
+const hyperlinkFormula = (url: string) => `HYPERLINK("${url.replace(/"/g, '""')}","${url.replace(/"/g, '""')}")`;
+
+export function buildExcelCell(value: string | number | boolean, column: string, googleSheetsMode: boolean) {
+  const isLink = googleSheetsMode
+    && (GOOGLE_DRIVE_EXPORT_COLUMNS as readonly string[]).slice(1, 4).includes(column)
+    && typeof value === 'string' && /^https?:[/][/]/.test(value);
+  return isLink
+    ? { value: hyperlinkFormula(value), type: 'Formula' as const, color: '#1155CC', underline: true }
+    : { value, type: typeof value === 'number' ? Number : typeof value === 'boolean' ? Boolean : String };
 }
 
 export async function downloadExcelWorkbook(workbook: WorkbookData): Promise<void> {
@@ -47,7 +61,7 @@ export async function downloadExcelWorkbook(workbook: WorkbookData): Promise<voi
     sheet: sheet.name,
     data: [
       sheet.columns.map(column => ({ value: column, type: String, fontWeight: 'bold' as const })),
-      ...sheet.rows.map(row => row.map(value => ({ value, type: typeof value === 'number' ? Number : typeof value === 'boolean' ? Boolean : String }))),
+      ...sheet.rows.map(row => row.map((value, index) => buildExcelCell(value, sheet.columns[index], workbook.googleSheetsMode))),
     ],
     columns: sheet.columns.map(() => ({ width: 20 })),
   }));
