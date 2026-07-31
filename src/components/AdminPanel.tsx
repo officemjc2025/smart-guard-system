@@ -15,6 +15,7 @@ import ImportExportDialog from './ImportExportDialog';
 import ParkingCardDataAuditPanel from './ParkingCardDataAuditPanel';
 import ParkingCardHistoryModal from './ParkingCardHistoryModal';
 import ParkingCardActionDialog, { type ParkingCardActionValues } from './ParkingCardActionDialog';
+import ReportsCenter from './ReportsCenter';
 import QueueMigrationPanel from './QueueMigrationPanel';
 import AnalyticsRebuildPanel from './AnalyticsRebuildPanel';
 import { IMPORT_EXPORT_MODULES } from '../services/importExport/modules';
@@ -40,13 +41,15 @@ import { exportCsv } from '../services/importExport/csvExportService';
 import { listAuditLogs, writeAuditLog } from '../services/auditService';
 import { createBlacklistEntry, listBlacklist, setBlacklistStatus } from '../services/blacklistService';
 import { listIncidents, updateIncident } from '../services/incidentService';
-import { createKey, listKeys, setKeyStatus } from '../services/keyService';
-import { createPatrolPoint, listPatrolPoints, setPatrolPointStatus } from '../services/patrolService';
+import { createKey, listKeyLogs, listKeys, setKeyStatus, type SiteKeyLogRecord } from '../services/keyService';
+import { createPatrolPoint, listPatrolLogs, listPatrolPoints, setPatrolPointStatus, type SitePatrolLogRecord } from '../services/patrolService';
+import { listContractors, type SiteContractorRecord } from '../services/contractorService';
+import { listVehicleHistory } from '../services/vehicleSessionService';
 import { listSystemSettings, updateSystemSetting } from '../services/systemSettingsService';
 import { initializeSystemData } from '../services/systemInitializationService';
 import { 
   UserRecord, ParkingCardRecord, PatrolPointRecord, KeyLogRecord, 
-  IncidentReportRecord, BlacklistRecord, AuditLogRecord 
+  IncidentReportRecord, BlacklistRecord, AuditLogRecord, VehicleLogRecord,
 } from '../types';
 
 interface AdminPanelProps {
@@ -60,7 +63,7 @@ interface AdminPanelProps {
 
 
 
-type AdminTab = 'dashboard' | 'users' | 'units' | 'cards' | 'points' | 'keys' | 'blacklist' | 'incidents' | 'settings' | 'audit';
+type AdminTab = 'dashboard' | 'users' | 'units' | 'cards' | 'points' | 'keys' | 'blacklist' | 'incidents' | 'reports' | 'settings' | 'audit';
 
 const EXPORT_COLUMNS = {
   Users: ['user_id', 'login_email', 'operator_name', 'role', 'shift', 'phone', 'status', 'created_at', 'updated_at'],
@@ -74,6 +77,7 @@ const EXPORT_COLUMNS = {
 
 export default function AdminPanel({ currentUser, loginEmail = '', authorizationResult = '' }: AdminPanelProps) {
   const toastTimers = useRef<{ success?: number; error?: number }>({});
+  const reportRequestSequence = useRef(0);
 
   useEffect(() => () => {
     if (toastTimers.current.success) window.clearTimeout(toastTimers.current.success);
@@ -93,6 +97,13 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   const [incidentList, setIncidentList] = useState<IncidentReportRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
   const [systemSettings, setSystemSettings] = useState<any[]>([]);
+  const [vehicleHistory, setVehicleHistory] = useState<VehicleLogRecord[]>([]);
+  const [contractorLogs, setContractorLogs] = useState<SiteContractorRecord[]>([]);
+  const [patrolLogs, setPatrolLogs] = useState<SitePatrolLogRecord[]>([]);
+  const [keyLogs, setKeyLogs] = useState<SiteKeyLogRecord[]>([]);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportLoaded, setReportLoaded] = useState(false);
+  const [reportSiteId, setReportSiteId] = useState('');
 
   // Selection/Modals/Editing States
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -126,6 +137,36 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   const canManageCards = isAdmin || isManager;
 
   const [initSystemLoading, setInitSystemLoading] = useState(false);
+  const selectedSiteId = sessionStorage.getItem('selected_site_id') || 'site-01';
+
+  const loadReportData = async (force = false) => {
+    const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
+    if (!force && reportLoaded && reportSiteId === siteId) return;
+    const requestSequence = ++reportRequestSequence.current;
+    setReportLoading(true);
+    try {
+      const [vehicles, contractors, patrols, keys] = await Promise.all([
+        listVehicleHistory(siteId),
+        listContractors(siteId),
+        listPatrolLogs(siteId),
+        listKeyLogs(siteId),
+      ]);
+      if (requestSequence !== reportRequestSequence.current
+        || siteId !== (sessionStorage.getItem('selected_site_id') || 'site-01')) return;
+      setVehicleHistory(vehicles);
+      setContractorLogs(contractors);
+      setPatrolLogs(patrols);
+      setKeyLogs(keys);
+      setReportSiteId(siteId);
+      setReportLoaded(true);
+    } catch (reason) {
+      if (requestSequence === reportRequestSequence.current) {
+        showToast('error', reason instanceof Error ? reason.message : 'ไม่สามารถโหลดข้อมูลรายงานได้');
+      }
+    } finally {
+      if (requestSequence === reportRequestSequence.current) setReportLoading(false);
+    }
+  };
 
   const handleManualSystemInit = async () => {
     if (!isAdmin) {
@@ -189,6 +230,21 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   useEffect(() => {
     fetchData();
   }, [activeTab]);
+
+  useEffect(() => {
+    reportRequestSequence.current += 1;
+    setReportLoaded(false);
+    setReportSiteId('');
+    setVehicleHistory([]);
+    setContractorLogs([]);
+    setPatrolLogs([]);
+    setKeyLogs([]);
+    setReportLoading(false);
+  }, [selectedSiteId]);
+
+  useEffect(() => {
+    if (activeTab === 'reports') void loadReportData();
+  }, [activeTab, selectedSiteId]);
 
   // Handle Create Operations
   const handleAddUser = async (e: React.FormEvent) => {
@@ -732,7 +788,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
       )}
 
       {/* Responsive Sub-navigation Grid */}
-      <div className="relative z-10 grid grid-cols-3 sm:grid-cols-5 md:grid-cols-10 gap-2 mb-6 bg-slate-950/60 p-1.5 rounded-2xl border border-slate-800">
+      <div className="relative z-10 grid grid-cols-3 sm:grid-cols-5 md:grid-cols-11 gap-2 mb-6 bg-slate-950/60 p-1.5 rounded-2xl border border-slate-800">
         {[
           { tab: 'dashboard', icon: LayoutDashboard, text: 'หน้าแรก' },
           { tab: 'users', icon: Users, text: 'พนักงาน' },
@@ -742,6 +798,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
           { tab: 'keys', icon: Key, text: 'กุญแจหลัก' },
           { tab: 'blacklist', icon: Ban, text: 'แบล็กลิสต์' },
           { tab: 'incidents', icon: AlertTriangle, text: 'จัดการเหตุ' },
+          { tab: 'reports', icon: FileSpreadsheet, text: 'Reports' },
           { tab: 'settings', icon: Settings, text: 'ตั้งค่าระบบ' },
           { tab: 'audit', icon: ClipboardList, text: 'ประวัติระบบ' }
         ].map(item => {
@@ -779,6 +836,34 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
 
         {activeTab === 'units' && (
           <UnitManagementPanel operatorName={currentUser.name} canImport={isAdmin} />
+        )}
+
+        {activeTab === 'reports' && (
+          <div className="flex flex-col gap-4">
+            <div className="flex justify-end">
+              <button
+                type="button"
+                disabled={reportLoading}
+                onClick={() => void loadReportData(true)}
+                className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4 ${reportLoading ? 'animate-spin' : ''}`} /> รีเฟรชรายงาน
+              </button>
+            </div>
+            {reportLoading && !reportLoaded ? (
+              <div role="status" className="rounded-2xl border border-slate-800 bg-slate-950 p-10 text-center text-sm font-bold text-slate-400">
+                กำลังโหลดข้อมูลรายงาน...
+              </div>
+            ) : (
+              <ReportsCenter
+                vehicleRecords={vehicleHistory}
+                contractorRecords={contractorLogs}
+                patrolRecords={patrolLogs}
+                keyRecords={keyLogs}
+                incidentRecords={incidentList}
+              />
+            )}
+          </div>
         )}
 
         {/* 10. Admin Dashboard Tab */}
