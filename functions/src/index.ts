@@ -878,6 +878,10 @@ export const getVehicleEvidenceImage = onRequest(
             ? 'contractorLogs'
             : module === 'Key'
               ? 'keyLogs'
+              : module === 'Patrol'
+                ? 'patrolLogs'
+                : module === 'Incident'
+                  ? 'incidentReports'
             : ['entry_plate', 'entry_vehicle', 'visitor_document'].includes(mediaType)
               ? 'vehicleSessions'
               : 'vehicleLogs';

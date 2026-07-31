@@ -1516,3 +1516,183 @@ test('Key transactions deny cross-site writes and arbitrary field mutation', asy
     updated_at: serverTimestamp(),
   }));
 });
+
+const patrolCheckinTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  siteId: string,
+  suffix: string,
+  overrides: Record<string, unknown> = {},
+  includePhoto2 = true,
+) => runTransaction(database, async transaction => {
+  const id = `patrol-${suffix}`;
+  const photo2Fields = includePhoto2 ? {
+    incident_photo_url: 'https://drive.google.com/file/d/PATROLPHOTOTWO123/view',
+    evidence_photo_2_url: 'https://drive.google.com/file/d/PATROLPHOTOTWO123/view',
+    evidence_photo_2_file_id: `PATROLTWO${suffix}`,
+  } : {};
+  transaction.set(doc(database, `patrolLogs/${id}`), {
+    patrol_log_id: id, patrol_point_id: 'PP-1', point_name: 'ห้องเครื่อง',
+    patrol_point_name: 'ห้องเครื่อง', custom_location: '', guard_name: 'Guard A',
+    shift_type: 'เช้า', checkin_time: serverTimestamp(),
+    photo_url: 'https://drive.google.com/file/d/PATROLPHOTOONE123/view',
+    evidence_photo_1_url: 'https://drive.google.com/file/d/PATROLPHOTOONE123/view',
+    evidence_photo_1_file_id: `PATROLONE${suffix}`,
+    ...photo2Fields,
+    status: 'ปกติ', area_status: 'normal', abnormal_detail: '', abnormal_reason: '',
+    captured_at_client: '2026-07-31T05:00:00.000Z', recorded_by_uid: 'guard-a',
+    workflow_status: 'completed', shift_id: '2026-07-31_DAY', operational_date: '2026-07-31', site_id: siteId,
+    created_at: serverTimestamp(), updated_at: serverTimestamp(), ...overrides,
+  });
+  transaction.set(doc(database, `auditLogs/PATROL_CHECKIN_${id}`), {
+    audit_id: `PATROL_CHECKIN_${id}`, operator_id: 'guard-a', account_uid: 'guard-a',
+    user_name: 'Guard A', operator_name: 'Guard A', site_id: siteId,
+    action: 'PatrolCheckin', module_name: 'PatrolLogs', record_id: id,
+    old_value: '', new_value: String(overrides.area_status || 'normal'),
+    action_result: 'Success', created_at: serverTimestamp(),
+  });
+});
+
+const incidentCreateTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  siteId: string,
+  suffix: string,
+  overrides: Record<string, unknown> = {},
+) => runTransaction(database, async transaction => {
+  const id = `incident-${suffix}`;
+  transaction.set(doc(database, `incidentReports/${id}`), {
+    incident_id: id, incident_datetime: Timestamp.fromDate(new Date('2026-07-30T10:00:00Z')),
+    reported_at: serverTimestamp(), location: 'Lobby', location_type: 'common_area',
+    location_name_snapshot: 'Lobby', incident_type: 'อุปกรณ์ชำรุด',
+    description: 'พบอุปกรณ์ชำรุด', photo_url: 'https://drive.google.com/file/d/INCIDENTPHOTO123/view',
+    photo_file_id: `INCIDENTPHOTO${suffix}`,
+    reported_by: 'Guard A', shift_leader: '', priority: 'Normal', status: 'แจ้งแล้ว',
+    incident_status: 'reported', alert_status: 'active',
+    recorded_by_uid: 'guard-a', site_id: siteId,
+    created_at: serverTimestamp(), updated_at: serverTimestamp(), ...overrides,
+  });
+  transaction.set(doc(database, `auditLogs/INCIDENT_REPORTED_${id}`), {
+    audit_id: `INCIDENT_REPORTED_${id}`, operator_id: 'guard-a', account_uid: 'guard-a',
+    user_name: 'Guard A', operator_name: 'Guard A', site_id: siteId,
+    action: 'IncidentReported', module_name: 'IncidentReports', record_id: id,
+    old_value: '', new_value: 'แจ้งแล้ว', action_result: 'Success',
+    created_at: serverTimestamp(),
+  });
+});
+
+const seedOperationalMedia = async (siteId: string, suffix: string) => {
+  await environment.withSecurityRulesDisabled(async context => {
+    const database = context.firestore();
+    await Promise.all([
+      setDoc(doc(database, `mediaUploads/PATROLONE${suffix}`), {
+        site_id: siteId, module: 'Patrol', module_name: 'PatrolLogs',
+        record_id: `patrol-${suffix}`, media_type: 'patrol_photo_1',
+      }),
+      setDoc(doc(database, `mediaUploads/PATROLTWO${suffix}`), {
+        site_id: siteId, module: 'Patrol', module_name: 'PatrolLogs',
+        record_id: `patrol-${suffix}`, media_type: 'patrol_photo_2',
+      }),
+      setDoc(doc(database, `mediaUploads/INCIDENTPHOTO${suffix}`), {
+        site_id: siteId, module: 'Incident', module_name: 'IncidentReports',
+        record_id: `incident-${suffix}`, media_type: 'incident_photo',
+      }),
+    ]);
+  });
+};
+
+test('Patrol same-site atomic check-in succeeds with one required evidence reference', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await seedOperationalMedia('site-a', 'one-photo');
+  await assertSucceeds(patrolCheckinTransaction(database, 'site-a', 'one-photo', {}, false));
+  const record = await getDoc(doc(database, 'patrolLogs/patrol-one-photo'));
+  assert.ok(record.get('checkin_time') instanceof Timestamp);
+  assert.equal(record.get('evidence_photo_2_url'), undefined);
+  await assertFails(updateDoc(record.ref, { abnormal_reason: 'tampered' }));
+});
+
+test('Patrol same-site atomic check-in succeeds with two distinct evidence references', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await seedOperationalMedia('site-a', 'positive');
+  await assertSucceeds(patrolCheckinTransaction(database, 'site-a', 'positive'));
+  const record = await getDoc(doc(database, 'patrolLogs/patrol-positive'));
+  assert.ok(record.get('checkin_time') instanceof Timestamp);
+  assert.ok(record.get('created_at') instanceof Timestamp);
+  await assertFails(updateDoc(record.ref, { abnormal_reason: 'tampered' }));
+});
+
+test('Patrol rejects cross-site, missing first evidence, invalid second evidence, duplicates, abnormal without reason, and arbitrary fields', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  for (const suffix of ['cross-site', 'missing-photo', 'partial-photo2', 'duplicate', 'reason', 'extra']) {
+    await seedOperationalMedia(suffix === 'cross-site' ? 'site-b' : 'site-a', suffix);
+  }
+  await assertFails(patrolCheckinTransaction(database, 'site-b', 'cross-site'));
+  await assertFails(patrolCheckinTransaction(database, 'site-a', 'missing-photo', { evidence_photo_1_url: '' }, false));
+  await assertFails(patrolCheckinTransaction(database, 'site-a', 'partial-photo2', {
+    evidence_photo_2_url: 'https://drive.google.com/file/d/PARTIALPHOTO2/view',
+  }, false));
+  await assertFails(patrolCheckinTransaction(database, 'site-a', 'duplicate', {
+    incident_photo_url: 'https://drive.google.com/file/d/PATROLPHOTOONE123/view',
+    evidence_photo_2_url: 'https://drive.google.com/file/d/PATROLPHOTOONE123/view',
+    evidence_photo_2_file_id: 'PATROLONEduplicate',
+  }));
+  await assertFails(patrolCheckinTransaction(database, 'site-a', 'reason', {
+    area_status: 'abnormal', status: 'ผิดปกติ', abnormal_reason: '',
+  }));
+  await assertFails(patrolCheckinTransaction(database, 'site-a', 'extra', { role: 'Admin' }));
+});
+
+test('Incident same-site atomic create preserves separate event and server report timestamps', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await seedOperationalMedia('site-a', 'positive');
+  await assertSucceeds(incidentCreateTransaction(database, 'site-a', 'positive'));
+  const record = await getDoc(doc(database, 'incidentReports/incident-positive'));
+  assert.ok(record.get('incident_datetime') instanceof Timestamp);
+  assert.ok(record.get('reported_at') instanceof Timestamp);
+  assert.notDeepEqual(record.get('incident_datetime'), record.get('reported_at'));
+});
+
+test('Incident acknowledgement requires Manager/Admin, same-site atomic audit, and preserves first timestamp', async () => {
+  const guard = environment.authenticatedContext('guard-a').firestore();
+  const manager = environment.authenticatedContext('manager-a').firestore();
+  await seedOperationalMedia('site-a', 'ack');
+  await assertSucceeds(incidentCreateTransaction(guard, 'site-a', 'ack'));
+  const incidentRef = doc(manager, 'incidentReports/incident-ack');
+  const auditRef = doc(manager, 'auditLogs/INCIDENT_ACKNOWLEDGE_incident-ack');
+  await assertFails(updateDoc(doc(guard, 'incidentReports/incident-ack'), {
+    incident_status: 'acknowledged', alert_status: 'acknowledged',
+    acknowledged_at: serverTimestamp(), acknowledged_by: 'guard-a',
+    updated_at: serverTimestamp(),
+  }));
+  await assertSucceeds(runTransaction(manager, async transaction => {
+    transaction.update(incidentRef, {
+      incident_status: 'acknowledged', alert_status: 'acknowledged',
+      acknowledged_at: serverTimestamp(), acknowledged_by: 'manager-a',
+      updated_at: serverTimestamp(),
+    });
+    transaction.set(auditRef, {
+      audit_id: auditRef.id, operator_id: 'manager-a', account_uid: 'manager-a',
+      user_name: 'Manager A', operator_name: 'Manager A', site_id: 'site-a',
+      action: 'Incident:acknowledge', module_name: 'IncidentReports', record_id: 'incident-ack',
+      old_value: 'reported', new_value: 'acknowledged', action_result: 'Success',
+      created_at: serverTimestamp(),
+    });
+  }));
+  const acknowledged = await getDoc(incidentRef);
+  assert.ok(acknowledged.get('acknowledged_at') instanceof Timestamp);
+  await assertFails(updateDoc(incidentRef, {
+    acknowledged_at: serverTimestamp(), updated_at: serverTimestamp(),
+  }));
+});
+
+test('Incident rejects cross-site, arbitrary mutation, missing photo, and client-owned reported_at', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  for (const suffix of ['cross-site', 'missing-photo', 'client-time', 'tamper']) {
+    await seedOperationalMedia(suffix === 'cross-site' ? 'site-b' : 'site-a', suffix);
+  }
+  await assertFails(incidentCreateTransaction(database, 'site-b', 'cross-site'));
+  await assertFails(incidentCreateTransaction(database, 'site-a', 'missing-photo', { photo_url: '' }));
+  await assertFails(incidentCreateTransaction(database, 'site-a', 'client-time', { reported_at: Timestamp.fromDate(new Date(0)) }));
+  await assertSucceeds(incidentCreateTransaction(database, 'site-a', 'tamper'));
+  await assertFails(updateDoc(doc(database, 'incidentReports/incident-tamper'), {
+    description: 'forged', updated_at: serverTimestamp(),
+  }));
+});

@@ -9,7 +9,11 @@ import {
   ArrowUpRight, ArrowDownLeft, RefreshCw, Clock, Ban
 } from 'lucide-react';
 import type { TabType } from '../App';
-import { getDashboardSummary, type DashboardSummary } from '../services/dashboardService';
+import {
+  getDashboardSummary,
+  subscribeDashboardSummary,
+  type DashboardSummary,
+} from '../services/dashboardService';
 import {
   firebaseErrorCode,
   firebaseErrorMessage,
@@ -26,34 +30,20 @@ interface DashboardProps {
 
 export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardProps) {
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState({
-    vehiclesIn: 0,
-    vehiclesOut: 0,
-    vehiclesCurrent: 0,
-    contractorsCurrent: 0,
-    keysCheckedOut: 0,
-    patrolDone: 0,
-    patrolPending: 4, // out of 4 total PP
-    patrolOverdue: 0,
-    incidentsToday: 0,
-    blacklistAlerts: 0,
-    availableCards: 0,
-    cardsInUse: 0,
-    suspendedCards: 0,
-    lostCards: 0,
-    vipEntriesToday: 0,
-  });
+  const [data, setData] = useState<DashboardSummary | null>(null);
+  const [loadError, setLoadError] = useState('');
 
   const [recentIncidents, setRecentIncidents] = useState<DashboardSummary['recentIncidents']>([]);
 
   const fetchStats = async () => {
     if (!canLoadDashboard({ role: activeRole, site_id: siteId, status: 'Active' })) return;
     setLoading(true);
+    setLoadError('');
     try {
       const { recentIncidents: latestIncidents, ...summary } = await getDashboardSummary(
         siteId,
       );
-      setData(summary);
+      setData({ ...summary, recentIncidents: latestIncidents });
       setRecentIncidents(latestIncidents);
       recordAuthStage({
         stage: 'AUTH-13',
@@ -64,6 +54,7 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
       });
     } catch (error) {
       console.error('Error fetching dashboard stats:', error);
+      setLoadError('ไม่สามารถโหลดข้อมูลได้');
       recordAuthStage({
         stage: 'AUTH-13',
         status: 'FAIL',
@@ -77,17 +68,40 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
   };
 
   useEffect(() => {
-    fetchStats();
+    if (!canLoadDashboard({ role: activeRole, site_id: siteId, status: 'Active' })) return;
+    setLoading(true);
+    setLoadError('');
+    return subscribeDashboardSummary(siteId, summary => {
+      const { recentIncidents: latestIncidents, ...metrics } = summary;
+      setData({ ...metrics, recentIncidents: latestIncidents });
+      setRecentIncidents(latestIncidents);
+      setLoading(false);
+    }, error => {
+      console.error('Dashboard realtime query failed:', error);
+      setLoadError('ไม่สามารถโหลดข้อมูลได้');
+      setLoading(false);
+    });
   }, [activeRole, siteId]);
 
   // Format date helper
-  const formatTime = (isoString: string) => {
+  const formatTime = (isoString: unknown) => {
     return isoString ? formatThaiTime(isoString, '') : '';
   };
+
+  if (!data && loading) {
+    return <div className="mx-auto flex min-h-64 max-w-7xl items-center justify-center text-sm font-bold text-slate-500">กำลังโหลดข้อมูล Dashboard...</div>;
+  }
+  if (!data) {
+    return <div role="alert" className="mx-auto max-w-2xl rounded-2xl border border-red-200 bg-red-50 p-6 text-center font-bold text-red-800">
+      {loadError || 'ไม่สามารถโหลดข้อมูลได้'}
+      <button type="button" onClick={() => void fetchStats()} className="ml-3 underline">ลองใหม่</button>
+    </div>;
+  }
 
   return (
     <div className="flex flex-col gap-6 w-full max-w-7xl mx-auto px-1">
       {/* Header Panel */}
+      {loadError && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">{loadError}</div>}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
         <div>
           <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">ยินดีต้อนรับ • แดชบอร์ดความปลอดภัย</span>
@@ -187,7 +201,7 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
             <div className="flex flex-col">
               <span className="text-sm font-bold text-slate-500">การเดินตรวจวันนี้</span>
               <span className="text-3xl font-black text-slate-800 mt-2">
-                {data.patrolDone}/4 <span className="text-xs font-medium text-slate-400">จุดตรวจเสร็จ</span>
+                {data.patrolDone}/{data.patrolTotal} <span className="text-xs font-medium text-slate-400">จุดตรวจเสร็จ</span>
               </span>
             </div>
             <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl group-hover:scale-110 transition-transform">
@@ -215,6 +229,17 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
         </div>)}
       </div>
 
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+          <p className="text-xs font-bold text-red-700">เหตุที่ยังไม่ได้รับทราบ</p>
+          <p className="mt-1 text-2xl font-black text-red-800">{data.unacknowledgedIncidents}</p>
+        </div>
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <p className="text-xs font-bold text-amber-700">เหตุกำลังดำเนินการ</p>
+          <p className="mt-1 text-2xl font-black text-amber-800">{data.incidentsInProgress}</p>
+        </div>
+      </div>
+
       {/* Row: Analytics Gauge & Recent Incidents */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Patrol Progress Gauge - SVG Gauge (Custom design) */}
@@ -239,20 +264,21 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
                 className="stroke-blue-600 fill-transparent transition-all duration-1000 ease-out"
                 strokeWidth="14"
                 strokeDasharray={464}
-                strokeDashoffset={464 - (464 * (data.patrolDone / 4))}
+                strokeDashoffset={464 - (464 * (data.patrolTotal ? data.patrolDone / data.patrolTotal : 0))}
                 strokeLinecap="round"
               />
             </svg>
             <div className="absolute flex flex-col items-center justify-center">
               <span className="text-4xl font-black text-slate-800">
-                {Math.round((data.patrolDone / 4) * 100)}%
+                {Math.round((data.patrolTotal ? data.patrolDone / data.patrolTotal : 0) * 100)}%
               </span>
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-0.5">Patrol Coverage</span>
             </div>
           </div>
 
           <p className="text-center text-xs text-slate-500 font-medium max-w-[220px]">
-            {data.patrolDone === 4 
+            {data.patrolTotal === 0 ? 'ยังไม่ได้กำหนดจุดตรวจสำหรับพื้นที่นี้'
+              : data.patrolDone === data.patrolTotal
               ? '🎉 ยอดเยี่ยม! รปภ. เดินตรวจครบทุกจุดตรวจความเรียบร้อยครบ 100%' 
               : `เหลืออีกเพียง ${data.patrolPending} จุดตรวจ จะบรรลุเป้าหมายการเดินตรวจรอบปัจจุบัน`}
           </p>

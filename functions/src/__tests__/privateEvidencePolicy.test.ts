@@ -47,6 +47,30 @@ describe('private vehicle evidence authorization', () => {
     }
   });
 
+  it('allows exact same-site Patrol and Incident evidence identities', () => {
+    for (const [module, moduleName, mediaType, recordId] of [
+      ['Patrol', 'PatrolLogs', 'patrol_photo_1', 'PL_1'],
+      ['Patrol', 'PatrolLogs', 'patrol_photo_2', 'PL_1'],
+      ['Incident', 'IncidentReports', 'incident_photo', 'INC_1'],
+    ]) {
+      expect(() => authorizeRegisteredEvidence(fileId, actor, {
+        file_id: fileId, site_id: 'site-a', module, module_name: moduleName,
+        media_type: mediaType, record_id: recordId,
+      }, recordId, { site_id: 'site-a' })).not.toThrow();
+    }
+  });
+
+  it('denies cross-site and cross-module Patrol/Incident evidence', () => {
+    expect(() => authorizeRegisteredEvidence(fileId, actor, {
+      file_id: fileId, site_id: 'site-b', module: 'Incident',
+      module_name: 'IncidentReports', media_type: 'incident_photo', record_id: 'INC_1',
+    }, 'INC_1', { site_id: 'site-b' })).toThrow(PrivateEvidencePolicyError);
+    expect(() => authorizeRegisteredEvidence(fileId, actor, {
+      file_id: fileId, site_id: 'site-a', module: 'Incident',
+      module_name: 'IncidentReports', media_type: 'patrol_photo_1', record_id: 'INC_1',
+    }, 'INC_1', { site_id: 'site-a' })).toThrow(PrivateEvidencePolicyError);
+  });
+
   it('does not allow Key evidence identity to cross modules or records', () => {
     expect(() => authorizeRegisteredEvidence(fileId, actor, {
       file_id: fileId, site_id: 'site-a', module: 'Key',

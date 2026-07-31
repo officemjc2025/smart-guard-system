@@ -46,3 +46,17 @@ export function formatThaiDateTime(value: unknown, fallback = '—'): string {
   const date = asDate(value);
   return date ? `${formatThaiDate(date, fallback)} ${formatThaiTime(date, fallback)}` : fallback;
 }
+
+export function formatBangkokDateKey(value: unknown): string {
+  const date = asDate(value);
+  if (!date) return '';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BANGKOK_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find(item => item.type === type)?.value || '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}

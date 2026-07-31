@@ -26,6 +26,8 @@ const EVIDENCE_MEDIA_TYPES = {
     'key_return',
     'sig_key_return',
   ]),
+  Patrol: new Set(['patrol_photo_1', 'patrol_photo_2']),
+  Incident: new Set(['incident_photo']),
 } as const;
 
 export type PrivateEvidenceModule = keyof typeof EVIDENCE_MEDIA_TYPES;
@@ -34,6 +36,8 @@ const MODULE_NAMES: Record<PrivateEvidenceModule, ReadonlySet<string>> = {
   Vehicle: new Set(['VehicleLogs', 'VehicleSessionActivities']),
   Contractor: new Set(['ContractorLogs']),
   Key: new Set(['KeyLogs']),
+  Patrol: new Set(['PatrolLogs']),
+  Incident: new Set(['IncidentReports']),
 };
 
 export function authorizeRegisteredEvidence(

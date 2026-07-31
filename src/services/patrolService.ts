@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDocs,
+  getDoc,
   query,
   runTransaction,
   serverTimestamp,
@@ -9,13 +10,15 @@ import {
   where,
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import { auth } from '../firebase';
 import type { PatrolLogRecord, PatrolPointRecord } from '../types';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
+import { currentOperationalShift } from './operationalShift';
 
 export type SitePatrolPointRecord = PatrolPointRecord & { site_id: string };
 export type SitePatrolLogRecord = PatrolLogRecord & { site_id: string };
 export type CreatePatrolPointInput = Omit<SitePatrolPointRecord, 'site_id' | 'created_at' | 'updated_at'>;
-export type CreatePatrolLogInput = Omit<SitePatrolLogRecord, 'site_id' | 'created_at'>;
+export type CreatePatrolLogInput = Omit<SitePatrolLogRecord, 'site_id' | 'created_at' | 'updated_at' | 'checkin_time'>;
 
 const site = (value: string) => {
   const result = value.trim();
@@ -96,4 +99,67 @@ export async function createPatrolLog(siteId: string, input: CreatePatrolLogInpu
     site_id: site(siteId),
     created_at: serverTimestamp(),
   }));
+}
+
+export async function completePatrolCheckin(
+  siteId: string,
+  input: CreatePatrolLogInput,
+): Promise<SitePatrolLogRecord> {
+  const scopedSite = site(siteId);
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error('Authenticated account is required for Patrol check-in.');
+  if (!input.patrol_log_id.trim()) throw new Error('patrol_log_id is required.');
+  if (!input.patrol_point_name?.trim() && !input.custom_location?.trim()) {
+    throw new Error('กรุณาเลือกจุดตรวจหรือระบุสถานที่');
+  }
+  if (!['normal', 'abnormal'].includes(input.area_status || '')) {
+    throw new Error('กรุณาระบุสถานะพื้นที่');
+  }
+  if (input.area_status === 'abnormal' && !input.abnormal_reason?.trim()) {
+    throw new Error('กรุณาระบุรายละเอียดหรือเหตุผลของความผิดปกติ');
+  }
+  if (!input.evidence_photo_1_url || !input.evidence_photo_1_file_id) {
+    throw new Error('กรุณาถ่ายรูปหลักฐานจุดตรวจอย่างน้อย 1 รูป');
+  }
+  const hasPhoto2 = Boolean(input.evidence_photo_2_url || input.evidence_photo_2_file_id);
+  if (hasPhoto2 && (!input.evidence_photo_2_url || !input.evidence_photo_2_file_id)) {
+    throw new Error('ข้อมูลรูปหลักฐานที่ 2 ไม่สมบูรณ์');
+  }
+  if (input.evidence_photo_2_url && input.evidence_photo_1_url === input.evidence_photo_2_url) {
+    throw new Error('รูปหลักฐานทั้งสองต้องเป็นคนละไฟล์');
+  }
+  const reference = doc(db, 'patrolLogs', input.patrol_log_id);
+  const auditReference = doc(db, 'auditLogs', `PATROL_CHECKIN_${input.patrol_log_id}`);
+  const shift = currentOperationalShift();
+  await runTransaction(db, async transaction => {
+    if ((await transaction.get(reference)).exists()) throw new Error('Patrol check-in already exists.');
+    transaction.set(reference, sanitizeAndValidateFirestoreData({
+      ...input,
+      shift_id: shift.shiftId,
+      operational_date: shift.operationalDate,
+      site_id: scopedSite,
+      recorded_by_uid: uid,
+      checkin_time: serverTimestamp(),
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    }));
+    transaction.set(auditReference, {
+      audit_id: auditReference.id,
+      operator_id: uid,
+      account_uid: uid,
+      user_name: input.guard_name,
+      operator_name: input.guard_name,
+      site_id: scopedSite,
+      action: 'PatrolCheckin',
+      module_name: 'PatrolLogs',
+      record_id: input.patrol_log_id,
+      old_value: '',
+      new_value: input.area_status,
+      action_result: 'Success',
+      created_at: serverTimestamp(),
+    });
+  });
+  const completed = await getDoc(reference);
+  if (!completed.exists()) throw new Error('Completed Patrol check-in could not be reloaded.');
+  return log(completed.id, completed.data());
 }

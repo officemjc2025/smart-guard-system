@@ -53,6 +53,8 @@ test('diff detects missing, extra, and content mismatch deterministically', () =
   assert.deepEqual(diff.missingIds, ['missing']);
   assert.deepEqual(diff.extraIds, ['extra']);
   assert.deepEqual(diff.mismatchedIds, ['changed']);
-  assert.equal(diff.estimatedWrites, 3);
+  // Staging-only extras are reported but deliberately preserved; only the
+  // missing and mismatched source documents produce writes.
+  assert.equal(diff.estimatedWrites, 2);
   assert.equal(diff.estimatedReads, 6);
 });

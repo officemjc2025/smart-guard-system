@@ -97,3 +97,27 @@ test('Key evidence accepts only canonical same-site media identities', () => {
     /Cross-site/,
   );
 });
+
+test('Patrol and Incident accept only exact same-site media identities', () => {
+  for (const mediaType of ['patrol_photo_1', 'patrol_photo_2']) {
+    assert.doesNotThrow(() => validateNonVehicleMediaUpload(request({
+      moduleName: 'PatrolLogs', mediaType, recordId: 'PL_1',
+    }), actor));
+  }
+  assert.doesNotThrow(() => validateNonVehicleMediaUpload(request({
+    moduleName: 'IncidentReports', mediaType: 'incident_photo', recordId: 'INC_1',
+  }), actor));
+  for (const [moduleName, mediaType] of [
+    ['PatrolLogs', 'patrol_photo_3'],
+    ['PatrolLogs', 'incident_photo'],
+    ['IncidentReports', 'incident_resolution'],
+    ['IncidentReports', 'patrol_photo_1'],
+  ]) {
+    assert.throws(() => validateNonVehicleMediaUpload(request({
+      moduleName, mediaType,
+    }), actor), /Unsupported media type/);
+  }
+  assert.throws(() => validateNonVehicleMediaUpload(request({
+    moduleName: 'IncidentReports', mediaType: 'incident_photo', siteId: 'site-02',
+  }), actor), /Cross-site/);
+});

@@ -26,6 +26,12 @@ export class MediaUploadError extends Error {
   }
 }
 
+export function extractPrivateMediaFileId(reference: string): string {
+  const match = /drive[.]google[.]com\/(?:file\/d\/|open[?]id=)([A-Za-z0-9_-]{10,128})/.exec(reference);
+  if (!match) throw new Error('Private Media reference is invalid.');
+  return match[1];
+}
+
 function validatedMediaUploadUrl(): string {
   if (!MEDIA_UPLOAD_URL) throw new Error(MEDIA_UPLOAD_NOT_CONFIGURED);
   try {

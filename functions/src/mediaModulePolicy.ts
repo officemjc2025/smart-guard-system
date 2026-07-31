@@ -7,11 +7,8 @@ import {
 const EXACT_MEDIA_TYPES: Record<string, ReadonlySet<string>> = {
   ContractorLogs: new Set(['contractor_id', 'contractor_face', 'contractor_activity']),
   KeyLogs: new Set(['key_borrower', 'sig_key', 'key_return', 'sig_key_return']),
-};
-
-const MEDIA_TYPE_PREFIXES: Record<string, readonly string[]> = {
-  PatrolLogs: ['patrol_', 'patrol_abn_'],
-  IncidentReports: ['incident_'],
+  PatrolLogs: new Set(['patrol_photo_1', 'patrol_photo_2']),
+  IncidentReports: new Set(['incident_photo']),
 };
 
 export function validateNonVehicleMediaUpload(
@@ -20,11 +17,7 @@ export function validateNonVehicleMediaUpload(
   resource?: Record<string, unknown>,
 ): void {
   const exactTypes = EXACT_MEDIA_TYPES[request.moduleName];
-  const prefixes = MEDIA_TYPE_PREFIXES[request.moduleName] ?? [];
-  if (
-    !(exactTypes?.has(request.mediaType)
-      || prefixes.some(prefix => request.mediaType.startsWith(prefix)))
-  ) {
+  if (!exactTypes?.has(request.mediaType)) {
     throw new UploadPolicyError('UPLOAD_INVALID_FILE', 'Unsupported media type for this module.', 400);
   }
   if (request.siteId !== actor.siteId) {

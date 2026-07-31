@@ -946,6 +946,280 @@ service cloud.firestore {
                ));
     }
 
+    function validPatrolPoint(data, id) {
+      return data.keys().hasOnly([
+               'patrol_point_id', 'point_name', 'location_detail', 'qr_code_value',
+               'required_interval_minutes', 'area', 'building', 'floor', 'sort_order',
+               'status', 'site_id', 'created_at', 'updated_at'
+             ])
+             && data.keys().hasAll([
+               'patrol_point_id', 'point_name', 'location_detail', 'qr_code_value',
+               'required_interval_minutes', 'status', 'site_id', 'created_at', 'updated_at'
+             ])
+             && data.patrol_point_id == id
+             && data.site_id == activeSiteId()
+             && data.point_name is string && data.point_name.size() > 0 && data.point_name.size() <= 256
+             && data.location_detail is string && data.location_detail.size() <= 1000
+             && data.qr_code_value is string && data.qr_code_value.size() <= 256
+             && data.required_interval_minutes is number && data.required_interval_minutes >= 0 && data.required_interval_minutes <= 10080
+             && data.status in ['Active', 'Inactive']
+             && (data.created_at is timestamp || (data.created_at is string && data.created_at.size() <= 64))
+             && data.updated_at is timestamp
+             && (!('area' in data) || (data.area is string && data.area.size() <= 128))
+             && (!('building' in data) || (data.building is string && data.building.size() <= 128))
+             && (!('floor' in data) || (data.floor is string && data.floor.size() <= 64))
+             && (!('sort_order' in data) || (data.sort_order is number && data.sort_order >= 0 && data.sort_order <= 100000));
+    }
+
+    function validPatrolLogCreate(data, id) {
+      return data.keys().hasOnly([
+               'patrol_log_id', 'patrol_point_id', 'point_name', 'patrol_point_name',
+               'custom_location', 'guard_name', 'shift_type', 'checkin_time',
+               'photo_url', 'incident_photo_url', 'evidence_photo_1_url',
+               'evidence_photo_2_url', 'evidence_photo_1_file_id', 'evidence_photo_2_file_id',
+               'status', 'area_status', 'abnormal_detail',
+               'abnormal_reason', 'captured_at_client', 'recorded_by_uid',
+               'workflow_status', 'shift_id', 'operational_date',
+               'site_id', 'created_at', 'updated_at'
+             ])
+             && data.keys().hasAll([
+               'patrol_log_id', 'patrol_point_id', 'point_name', 'patrol_point_name',
+               'custom_location', 'guard_name', 'shift_type', 'checkin_time',
+               'evidence_photo_1_url', 'evidence_photo_1_file_id', 'status', 'area_status',
+               'recorded_by_uid', 'workflow_status', 'site_id', 'created_at', 'updated_at'
+             ])
+             && data.patrol_log_id == id
+             && data.site_id == activeSiteId()
+             && data.recorded_by_uid == request.auth.uid
+             && data.patrol_point_id is string && data.patrol_point_id.size() <= 128
+             && data.point_name is string && data.point_name.size() > 0 && data.point_name.size() <= 256
+             && data.patrol_point_name is string && data.patrol_point_name.size() > 0 && data.patrol_point_name.size() <= 256
+             && data.custom_location is string && data.custom_location.size() <= 500
+             && data.guard_name is string && data.guard_name.size() > 0 && data.guard_name.size() <= 256
+             && data.shift_type in ['เช้า', 'กลางคืน']
+             && data.status in ['ปกติ', 'ผิดปกติ']
+             && data.area_status in ['normal', 'abnormal']
+             && data.workflow_status == 'completed'
+             && data.shift_id is string && data.shift_id.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}_(DAY|NIGHT)$')
+             && data.operational_date is string && data.operational_date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+             && data.evidence_photo_1_url is string && data.evidence_photo_1_url.matches('^https://drive[.]google[.]com/.*') && data.evidence_photo_1_url.size() <= 4096
+             && data.evidence_photo_1_file_id is string && data.evidence_photo_1_file_id.size() >= 10 && data.evidence_photo_1_file_id.size() <= 128
+             && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.site_id == data.site_id
+             && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.module_name == 'PatrolLogs'
+             && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.record_id == id
+             && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.media_type == 'patrol_photo_1'
+             && validOptionalPatrolPhoto2(data, id)
+             && data.checkin_time == request.time && data.created_at == request.time && data.updated_at == request.time
+             && (!('captured_at_client' in data) || (data.captured_at_client is string && data.captured_at_client.size() <= 64))
+             && (!('abnormal_reason' in data) || (data.abnormal_reason is string && data.abnormal_reason.size() <= 2000))
+             && (data.area_status != 'abnormal' || (data.abnormal_reason is string && data.abnormal_reason.size() > 0));
+    }
+
+    function validOptionalPatrolPhoto2(data, id) {
+      return !data.keys().hasAny([
+               'incident_photo_url', 'evidence_photo_2_url', 'evidence_photo_2_file_id'
+             ])
+             || (
+               data.keys().hasAll([
+                 'incident_photo_url', 'evidence_photo_2_url', 'evidence_photo_2_file_id'
+               ])
+               && data.incident_photo_url == data.evidence_photo_2_url
+               && data.evidence_photo_2_url is string
+               && data.evidence_photo_2_url.matches('^https://drive[.]google[.]com/.*')
+               && data.evidence_photo_2_url.size() <= 4096
+               && data.evidence_photo_1_url != data.evidence_photo_2_url
+               && data.evidence_photo_2_file_id is string
+               && data.evidence_photo_2_file_id.size() >= 10
+               && data.evidence_photo_2_file_id.size() <= 128
+               && data.evidence_photo_1_file_id != data.evidence_photo_2_file_id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.site_id == data.site_id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.module_name == 'PatrolLogs'
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.record_id == id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.media_type == 'patrol_photo_2'
+             );
+    }
+
+    function validIncidentCreate(data, id) {
+      return data.keys().hasOnly([
+               'incident_id', 'incident_datetime', 'reported_at', 'location',
+               'location_type', 'target_unit_id', 'unit_lookup_status', 'patrol_point_id',
+               'location_name_snapshot', 'custom_location', 'incident_type', 'description',
+               'photo_url', 'photo_file_id', 'reported_by', 'reporter_name', 'involved_parties',
+               'damage_details', 'initial_action', 'shift_leader', 'outcome', 'priority',
+               'management_note', 'status', 'incident_status', 'alert_status',
+               'recorded_by_uid', 'site_id',
+               'created_at', 'updated_at'
+             ])
+             && data.keys().hasAll([
+               'incident_id', 'incident_datetime', 'reported_at', 'location',
+               'location_type', 'location_name_snapshot', 'incident_type', 'description',
+               'photo_url', 'photo_file_id', 'reported_by', 'shift_leader', 'priority', 'status',
+               'incident_status', 'alert_status', 'recorded_by_uid',
+               'site_id', 'created_at', 'updated_at'
+             ])
+             && data.incident_id == id
+             && data.site_id == activeSiteId()
+             && data.recorded_by_uid == request.auth.uid
+             && data.incident_datetime is timestamp
+             && data.reported_at == request.time && data.created_at == request.time && data.updated_at == request.time
+             && data.location_type in ['unit', 'patrol_point', 'common_area', 'custom']
+             && data.location is string && data.location.size() > 0 && data.location.size() <= 500
+             && data.location_name_snapshot is string && data.location_name_snapshot.size() > 0 && data.location_name_snapshot.size() <= 500
+             && data.incident_type is string && data.incident_type.size() > 0 && data.incident_type.size() <= 128
+             && data.description is string && data.description.size() > 0 && data.description.size() <= 10000
+             && data.photo_url is string && data.photo_url.matches('^https://drive[.]google[.]com/.*') && data.photo_url.size() <= 4096
+             && data.photo_file_id is string && data.photo_file_id.size() >= 10 && data.photo_file_id.size() <= 128
+             && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.site_id == data.site_id
+             && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.module_name == 'IncidentReports'
+             && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.record_id == id
+             && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.media_type == 'incident_photo'
+             && data.reported_by is string && data.reported_by.size() > 0 && data.reported_by.size() <= 256
+             && data.shift_leader is string && data.shift_leader.size() <= 256
+             && data.priority in ['Low', 'Normal', 'High', 'Emergency']
+             && data.status == 'แจ้งแล้ว'
+             && data.incident_status == 'reported'
+             && data.alert_status == 'active'
+             && (!('target_unit_id' in data) || (data.target_unit_id is string && data.target_unit_id.size() <= 128))
+             && (!('patrol_point_id' in data) || (data.patrol_point_id is string && data.patrol_point_id.size() <= 128))
+             && (!('custom_location' in data) || (data.custom_location is string && data.custom_location.size() <= 500))
+             && (!('reporter_name' in data) || (data.reporter_name is string && data.reporter_name.size() <= 256))
+             && (!('involved_parties' in data) || (data.involved_parties is string && data.involved_parties.size() <= 2000))
+             && (!('damage_details' in data) || (data.damage_details is string && data.damage_details.size() <= 5000))
+             && (!('initial_action' in data) || (data.initial_action is string && data.initial_action.size() <= 5000))
+             && (!('outcome' in data) || (data.outcome is string && data.outcome.size() <= 1000));
+    }
+
+    // Backward-compatible Admin import path. Operational Guard creates must use
+    // validIncidentCreate() and the atomic audit transaction above.
+    function validLegacyIncidentImport(data, id) {
+      return data.keys().hasOnly([
+               'incident_id', 'incident_datetime', 'location', 'target_unit_id',
+               'unit_lookup_status', 'incident_type', 'description', 'photo_url',
+               'reported_by', 'shift_leader', 'management_note', 'status',
+               'severity', 'assigned_to', 'resolved_at', 'site_id', 'created_at', 'updated_at'
+             ])
+             && data.keys().hasAll([
+               'incident_id', 'incident_datetime', 'location', 'incident_type',
+               'description', 'reported_by', 'shift_leader', 'status',
+               'site_id', 'created_at', 'updated_at'
+             ])
+             && data.incident_id == id
+             && data.site_id == activeSiteId()
+             && ((data.incident_datetime is string && data.incident_datetime.size() <= 64)
+               || data.incident_datetime is timestamp)
+             && data.location is string && data.location.size() > 0 && data.location.size() <= 500
+             && data.incident_type is string && data.incident_type.size() > 0 && data.incident_type.size() <= 128
+             && data.description is string && data.description.size() > 0 && data.description.size() <= 10000
+             && data.reported_by is string && data.reported_by.size() > 0 && data.reported_by.size() <= 256
+             && data.shift_leader is string && data.shift_leader.size() <= 256
+             && data.status in ['แจ้งแล้ว', 'กำลังดำเนินการ', 'ปิดงานแล้ว']
+             && data.created_at == request.time && data.updated_at == request.time
+             && (!('photo_url' in data) || (data.photo_url is string && data.photo_url.size() <= 4096))
+             && (!('management_note' in data) || (data.management_note is string && data.management_note.size() <= 5000));
+    }
+
+    function validIncidentUpdate(id) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.site_id == activeSiteId()
+             && request.resource.data.site_id == resource.data.site_id
+             && request.resource.data.incident_id == resource.data.incident_id
+             && request.resource.data.incident_datetime == resource.data.incident_datetime
+             && request.resource.data.created_at == resource.data.created_at
+             && (!('reported_at' in resource.data)
+               || request.resource.data.reported_at == resource.data.reported_at)
+             && (!('recorded_by_uid' in resource.data)
+               || request.resource.data.recorded_by_uid == resource.data.recorded_by_uid)
+             && request.resource.data.updated_at == request.time
+             && changed.hasOnly([
+               'status', 'incident_status', 'alert_status', 'acknowledged_at',
+               'acknowledged_by', 'action_started_at', 'action_started_by',
+               'resolved_at', 'resolved_by', 'closed_at', 'closed_by',
+               'resolution_summary', 'updated_at'
+             ])
+             && (
+               (
+                 (!('incident_status' in resource.data) || resource.data.incident_status == 'reported')
+                 && request.resource.data.incident_status == 'acknowledged'
+                 && request.resource.data.status == resource.data.status
+                 && request.resource.data.alert_status == 'acknowledged'
+                 && request.resource.data.acknowledged_at == request.time
+                 && request.resource.data.acknowledged_by == request.auth.uid
+                 && !('acknowledged_at' in resource.data)
+                 && changed.hasOnly(['incident_status', 'alert_status', 'acknowledged_at', 'acknowledged_by', 'updated_at'])
+                 && existsAfter(/databases/$(database)/documents/auditLogs/$(('INCIDENT_ACKNOWLEDGE_' + id)))
+               )
+               || (
+                 resource.data.incident_status == 'acknowledged'
+                 && request.resource.data.incident_status == 'in_progress'
+                 && request.resource.data.status == 'กำลังดำเนินการ'
+                 && request.resource.data.alert_status == 'acknowledged'
+                 && request.resource.data.action_started_at == request.time
+                 && request.resource.data.action_started_by == request.auth.uid
+                 && !('action_started_at' in resource.data)
+                 && changed.hasOnly(['status', 'incident_status', 'action_started_at', 'action_started_by', 'updated_at'])
+                 && existsAfter(/databases/$(database)/documents/auditLogs/$(('INCIDENT_START_' + id)))
+               )
+               || (
+                 resource.data.incident_status == 'in_progress'
+                 && request.resource.data.incident_status == 'resolved'
+                 && request.resource.data.status == 'ปิดงานแล้ว'
+                 && request.resource.data.alert_status == 'cleared'
+                 && request.resource.data.resolved_at == request.time
+                 && request.resource.data.resolved_by == request.auth.uid
+                 && request.resource.data.resolution_summary is string
+                 && request.resource.data.resolution_summary.size() > 0
+                 && request.resource.data.resolution_summary.size() <= 5000
+                 && !('resolved_at' in resource.data)
+                 && changed.hasOnly(['status', 'incident_status', 'alert_status', 'resolved_at', 'resolved_by', 'resolution_summary', 'updated_at'])
+                 && existsAfter(/databases/$(database)/documents/auditLogs/$(('INCIDENT_RESOLVE_' + id)))
+               )
+               || (
+                 resource.data.incident_status == 'resolved'
+                 && request.resource.data.incident_status == 'closed'
+                 && request.resource.data.status == 'ปิดงานแล้ว'
+                 && request.resource.data.alert_status == 'cleared'
+                 && request.resource.data.closed_at == request.time
+                 && request.resource.data.closed_by == request.auth.uid
+                 && request.resource.data.resolution_summary is string
+                 && request.resource.data.resolution_summary.size() > 0
+                 && request.resource.data.resolution_summary.size() <= 5000
+                 && !('closed_at' in resource.data)
+                 && changed.hasOnly(['incident_status', 'closed_at', 'closed_by', 'resolution_summary', 'updated_at'])
+                 && existsAfter(/databases/$(database)/documents/auditLogs/$(('INCIDENT_CLOSE_' + id)))
+               )
+             );
+    }
+
+    function validOperationalAudit(data, id) {
+      return data.keys().hasOnly([
+               'audit_id', 'operator_id', 'account_uid', 'user_name', 'operator_name',
+               'site_id', 'action', 'module_name', 'record_id', 'old_value',
+               'new_value', 'action_result', 'created_at'
+             ])
+             && data.audit_id == id
+             && data.operator_id == request.auth.uid
+             && data.account_uid == request.auth.uid
+             && data.site_id == activeSiteId()
+             && data.module_name in ['PatrolLogs', 'IncidentReports']
+             && data.action in [
+               'PatrolCheckin', 'IncidentReported', 'Incident:acknowledge',
+               'Incident:start', 'Incident:resolve', 'Incident:close'
+             ]
+             && data.record_id is string && data.record_id.size() > 0 && data.record_id.size() <= 128
+             && data.user_name is string && data.user_name.size() > 0 && data.user_name.size() <= 256
+             && data.operator_name is string && data.operator_name.size() > 0 && data.operator_name.size() <= 256
+             && data.old_value is string && data.old_value.size() <= 64
+             && data.new_value is string && data.new_value.size() <= 64
+             && data.action_result == 'Success'
+             && data.created_at == request.time
+             && ((data.module_name == 'PatrolLogs'
+                    && existsAfter(/databases/$(database)/documents/patrolLogs/$(data.record_id))
+                    && getAfter(/databases/$(database)/documents/patrolLogs/$(data.record_id)).data.site_id == data.site_id)
+               || (data.module_name == 'IncidentReports'
+                    && existsAfter(/databases/$(database)/documents/incidentReports/$(data.record_id))
+                    && getAfter(/databases/$(database)/documents/incidentReports/$(data.record_id)).data.site_id == data.site_id));
+    }
+
     match /loginDirectory/{username} {
       allow get: if isAdmin();
       allow list: if false;
@@ -1114,18 +1388,34 @@ service cloud.firestore {
     }
 
     match /patrolPoints/{id} {
-      allow read: if isActiveUser();
-      allow create, update, delete: if isAdmin();
+      allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow create: if canManageUnits()
+                    && validPatrolPoint(request.resource.data, id)
+                    && request.resource.data.created_at == request.time
+                    && request.resource.data.updated_at == request.time;
+      allow update: if canManageUnits()
+                    && resource.data.site_id == activeSiteId()
+                    && request.resource.data.site_id == resource.data.site_id
+                    && request.resource.data.patrol_point_id == resource.data.patrol_point_id
+                    && validPatrolPoint(request.resource.data, id)
+                    && request.resource.data.created_at == resource.data.created_at
+                    && request.resource.data.updated_at == request.time;
+      allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
     }
 
     match /patrolLogs/{id} {
-      allow read, create, update: if isActiveUser();
-      allow delete: if isAdmin();
+      allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow create: if canProcessVehicleExit() && validPatrolLogCreate(request.resource.data, id);
+      allow update: if false;
+      allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
     }
 
     match /incidentReports/{id} {
-      allow read, create, update: if isActiveUser();
-      allow delete: if isAdmin();
+      allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow create: if (canProcessVehicleExit() && validIncidentCreate(request.resource.data, id))
+                    || (isAdmin() && validLegacyIncidentImport(request.resource.data, id));
+      allow update: if canManageUnits() && validIncidentUpdate(id);
+      allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
     }
 
     match /blacklist/{id} {
@@ -1147,7 +1437,8 @@ service cloud.firestore {
                     && ((request.resource.data.module_name == 'ParkingCards' && validParkingAudit(request.resource.data))
                       || (request.resource.data.module_name == 'units' && validUnitAudit(request.resource.data))
                       || (request.resource.data.module_name == 'KeyLogs' && validKeyAudit(request.resource.data, id))
-                      || !(request.resource.data.module_name in ['ParkingCards', 'units', 'KeyLogs']));
+                      || (request.resource.data.module_name in ['PatrolLogs', 'IncidentReports'] && validOperationalAudit(request.resource.data, id))
+                      || !(request.resource.data.module_name in ['ParkingCards', 'units', 'KeyLogs', 'PatrolLogs', 'IncidentReports']));
       allow update, delete: if false;
     }
 

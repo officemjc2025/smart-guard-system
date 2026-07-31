@@ -31,6 +31,7 @@ import { shouldHydrateAuthProfile } from './services/authFlowPolicy';
 import { writeAuditLog } from './services/auditService';
 import { listSystemSettings } from './services/systemSettingsService';
 import ConfirmModal from './components/ConfirmModal';
+import ReportErrorBoundary from './components/ReportErrorBoundary';
 
 console.log('[Smart Guard Build] v4.0.1 bootstrap-permission fix loaded');
 
@@ -628,6 +629,7 @@ export default function App() {
 
         {/* Content View Area */}
         <main className="flex-1 p-4 sm:p-6 overflow-x-hidden">
+          <ReportErrorBoundary>
           <Suspense fallback={<PageFallback />}>
           {activeTab === 'dashboard' && <DebugPage name="Dashboard"><Dashboard onNavigate={setActiveTab} activeRole={userRole} siteId={currentProfile.site_id} /></DebugPage>}
           {activeTab === 'vehicles' && <DebugPage name="VehicleEntryExit"><VehicleEntryExit guardName={guardName} userRole={userRole} /></DebugPage>}
@@ -635,7 +637,7 @@ export default function App() {
           {activeTab === 'contractors' && <DebugPage name="ContractorLogs"><ContractorLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} /></DebugPage>}
-          {activeTab === 'incidents' && <DebugPage name="IncidentReports"><IncidentReports guardName={guardName} /></DebugPage>}
+          {activeTab === 'incidents' && <DebugPage name="IncidentReports"><IncidentReports guardName={guardName} userRole={userRole} /></DebugPage>}
           {activeTab === 'history' && <DebugPage name="SearchHistory"><SearchHistory /></DebugPage>}
           {activeTab === 'settings' && ['Admin', 'Manager'].includes(userRole) && <DebugPage name="MasterData"><MasterData /></DebugPage>}
           {activeTab === 'admin' && ['Admin', 'Manager'].includes(userRole) && (
@@ -646,6 +648,7 @@ export default function App() {
             /></DebugPage>
           )}
           </Suspense>
+          </ReportErrorBoundary>
         </main>
 
       </div>
