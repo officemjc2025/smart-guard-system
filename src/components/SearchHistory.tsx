@@ -8,13 +8,25 @@ import {
   Search, Calendar, Filter, Clock, Eye, Download, X,
   Car, Users, Key, ShieldCheck, AlertTriangle, RefreshCw
 } from 'lucide-react';
-import { readSheet, fetchDriveImageAsUrl } from '../googleApi';
-import { UnitSearchSelect } from './UnitSearchSelect';
-import { UnitRecord } from '../types';
+import { listVehicleHistory } from '../services/vehicleSessionService';
+import { listContractors } from '../services/contractorService';
+import { listKeyLogs } from '../services/keyService';
+import { listPatrolLogs } from '../services/patrolService';
+import { listIncidents } from '../services/incidentService';
+import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
+import { formatBangkokDateKey, formatThaiDateTime } from '../utils/dateTime';
+import {
+  contractorLifecycle,
+  incidentLifecycle,
+  keyLifecycle,
+  patrolLifecycle,
+  vehicleLifecycle,
+} from '../services/operationalLifecycle';
 
 export default function SearchHistory() {
   const [activeModule, setActiveModule] = useState<'vehicles' | 'contractors' | 'keys' | 'patrols' | 'incidents'>('vehicles');
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   
   // Data Store
   const [vehicles, setVehicles] = useState<any[]>([]);
@@ -28,8 +40,9 @@ export default function SearchHistory() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  const [selectedFilterUnit, setSelectedFilterUnit] = useState<UnitRecord | null>(null);
-  const [unitFilterQuery, setUnitFilterQuery] = useState('');
+  const [lifecycleFilter, setLifecycleFilter] = useState<'all' | 'current' | 'archived' | 'carry-over'>('all');
+  const [shiftFilter, setShiftFilter] = useState<'all' | 'day' | 'night'>('all');
+  const [incidentStateFilter, setIncidentStateFilter] = useState<'all' | 'reported' | 'acknowledged' | 'in_progress' | 'resolved' | 'closed'>('all');
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
@@ -37,7 +50,7 @@ export default function SearchHistory() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [activeModule, query, startDate, endDate, statusFilter, selectedFilterUnit]);
+  }, [activeModule, query, startDate, endDate, statusFilter, lifecycleFilter, shiftFilter, incidentStateFilter]);
 
   // Detailed Modal Viewer State
   const [selectedRecord, setSelectedRecord] = useState<any | null>(null);
@@ -49,13 +62,15 @@ export default function SearchHistory() {
 
   const fetchAllHistory = async () => {
     setLoading(true);
+    setLoadError('');
     try {
+      const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
       const [v, c, k, p, i] = await Promise.all([
-        readSheet('VehicleLogs'),
-        readSheet('ContractorLogs'),
-        readSheet('KeyLogs'),
-        readSheet('PatrolLogs'),
-        readSheet('IncidentReports')
+        listVehicleHistory(siteId),
+        listContractors(siteId),
+        listKeyLogs(siteId),
+        listPatrolLogs(siteId),
+        listIncidents(siteId)
       ]);
 
       // Sort chronological descending (latest first)
@@ -66,6 +81,7 @@ export default function SearchHistory() {
       setIncidents(i.reverse());
     } catch (err) {
       console.error('Failed to load logs history:', err);
+      setLoadError(err instanceof Error ? err.message : 'ไม่สามารถโหลดประวัติได้');
     } finally {
       setLoading(false);
     }
@@ -81,24 +97,25 @@ export default function SearchHistory() {
       'exit_plate_photo_url', 'exit_vehicle_photo_url',
       'id_card_photo_url', 'face_photo_url',
       'signature_image_url', 'borrower_photo_url',
-      'photo_url', 'incident_photo_url'
+      'return_photo_url', 'return_signature_url',
+      'photo_url', 'incident_photo_url', 'evidence_photo_1_url', 'evidence_photo_2_url'
     ];
 
     const resolved: { [key: string]: string } = {};
     for (const field of imageFields) {
       const fileId = record[field];
       if (fileId) {
-        resolved[field] = 'loading';
-        try {
-          const url = await fetchDriveImageAsUrl(fileId);
-          resolved[field] = url;
-        } catch {
-          resolved[field] = '';
-        }
+        resolved[field] = String(fileId);
       }
     }
     setResolvedImages(resolved);
   };
+
+  const lifecycleFor = (item: any) => activeModule === 'vehicles' ? vehicleLifecycle(item)
+    : activeModule === 'contractors' ? contractorLifecycle(item)
+      : activeModule === 'keys' ? keyLifecycle(item)
+        : activeModule === 'patrols' ? patrolLifecycle(item)
+          : incidentLifecycle(item);
 
   // Date and query filtering logic
   const getFilteredData = () => {
@@ -126,33 +143,21 @@ export default function SearchHistory() {
       else if (item.incident_datetime) dateVal = item.incident_datetime;
       else if (item.created_at) dateVal = item.created_at;
 
-      const dateStr = dateVal ? dateVal.split('T')[0] : '';
+      const dateStr = formatBangkokDateKey(dateVal);
       const matchStart = !startDate || dateStr >= startDate;
       const matchEnd = !endDate || dateStr <= endDate;
+      const lifecycle = lifecycleFor(item);
+      const matchLifecycle = lifecycleFilter === 'all'
+        || (lifecycleFilter === 'current' && lifecycle.current)
+        || (lifecycleFilter === 'archived' && lifecycle.archived)
+        || (lifecycleFilter === 'carry-over' && lifecycle.carryOver);
+      const matchShift = shiftFilter === 'all' || lifecycle.shift?.shiftType === shiftFilter;
+      const matchIncidentState = activeModule !== 'incidents'
+        || incidentStateFilter === 'all'
+        || String(item.incident_status || '').toLowerCase() === incidentStateFilter;
 
-      // 4. Room/Unit filter
-      let matchUnit = true;
-      if (selectedFilterUnit) {
-        const uId = selectedFilterUnit.unit_id;
-        const uRoom = selectedFilterUnit.room_number;
-        if (uId) {
-          matchUnit = (
-            item.target_unit_id === uId ||
-            item.target_room === uRoom ||
-            item.room_number === uRoom ||
-            item.location === uRoom
-          );
-        } else if (uRoom) {
-          const cleanRoom = uRoom.toLowerCase().trim();
-          matchUnit = (
-            (item.target_room && item.target_room.toLowerCase().trim() === cleanRoom) ||
-            (item.room_number && item.room_number.toLowerCase().trim() === cleanRoom) ||
-            (item.location && item.location.toLowerCase().trim() === cleanRoom)
-          );
-        }
-      }
-
-      return matchQuery && matchStatus && matchStart && matchEnd && matchUnit;
+      return matchQuery && matchStatus && matchStart && matchEnd
+        && matchLifecycle && matchShift && matchIncidentState;
     });
   };
 
@@ -163,6 +168,12 @@ export default function SearchHistory() {
 
   return (
     <div className="w-full max-w-7xl mx-auto flex flex-col gap-6 px-1 pb-16">
+      {loadError && (
+        <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">
+          โหลดข้อมูลรายงานไม่สำเร็จ: {loadError}
+          <button type="button" onClick={() => void fetchAllHistory()} className="ml-3 underline">ลองใหม่</button>
+        </div>
+      )}
       
       {/* Search Dashboard Title */}
       <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
@@ -175,6 +186,22 @@ export default function SearchHistory() {
       </div>
 
       {/* Module Navigation Cards */}
+      <div className="grid gap-2 rounded-xl border bg-white p-3 sm:grid-cols-3">
+        <select value={lifecycleFilter} onChange={event => setLifecycleFilter(event.target.value as typeof lifecycleFilter)} className="rounded-lg border p-2 text-sm">
+          <option value="all">ทั้งหมด</option><option value="current">Current</option>
+          <option value="archived">Archive</option><option value="carry-over">ค้างจากกะก่อน</option>
+        </select>
+        <select value={shiftFilter} onChange={event => setShiftFilter(event.target.value as typeof shiftFilter)} className="rounded-lg border p-2 text-sm">
+          <option value="all">ทุกกะ</option><option value="day">Day Shift</option><option value="night">Night Shift</option>
+        </select>
+        {activeModule === 'incidents' && (
+          <select value={incidentStateFilter} onChange={event => setIncidentStateFilter(event.target.value as typeof incidentStateFilter)} className="rounded-lg border p-2 text-sm">
+            <option value="all">ทุกสถานะ Incident</option><option value="reported">ยังไม่รับทราบ</option>
+            <option value="acknowledged">รับทราบแล้ว</option><option value="in_progress">กำลังดำเนินการ</option>
+            <option value="resolved">แก้ไขแล้ว</option><option value="closed">ปิดเหตุ</option>
+          </select>
+        )}
+      </div>
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
         <button
           onClick={() => { setActiveModule('vehicles'); setStatusFilter(''); }}
@@ -228,43 +255,22 @@ export default function SearchHistory() {
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
           
           {/* Keyword Query */}
-          <div className="sm:col-span-3 flex flex-col gap-1.5">
+          <div className="sm:col-span-4 flex flex-col gap-1.5">
             <span className="text-xs font-bold text-slate-500">คีย์เวิร์ดที่ต้องการค้นหา</span>
             <div className="relative">
-              <Search className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
+              <Search className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
               <input
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="ชื่อบุคคล ทะเบียนรถ..."
-                className="w-full pl-9 pr-3 py-2.5 border border-slate-300 rounded-xl text-xs font-semibold outline-none focus:border-indigo-600"
+                placeholder="ป้อนข้อมูล ทะเบียนรถ, ชื่อบุคคล, ห้อง..."
+                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-xl text-xs font-semibold outline-none focus:border-indigo-600"
               />
             </div>
           </div>
 
-          {/* Room / Unit Filter */}
-          <div className="sm:col-span-3 flex flex-col gap-1.5 relative">
-            <UnitSearchSelect
-              value={unitFilterQuery}
-              selectedUnitId={selectedFilterUnit?.unit_id}
-              allowManualEntry={true}
-              label="ยูนิตห้องที่ต้องการกรอง"
-              placeholder="ค้นหายูนิต..."
-              required={false}
-              onSelect={(unit) => {
-                if (unit) {
-                  setSelectedFilterUnit(unit);
-                  setUnitFilterQuery(unit.unit_id ? `ห้อง ${unit.room_number}` : unit.room_number);
-                } else {
-                  setSelectedFilterUnit(null);
-                  setUnitFilterQuery('');
-                }
-              }}
-            />
-          </div>
-
           {/* Date Picker Start */}
-          <div className="sm:col-span-2 flex flex-col gap-1.5">
+          <div className="sm:col-span-3 flex flex-col gap-1.5">
             <span className="text-xs font-bold text-slate-500">เริ่มต้นวันที่</span>
             <div className="relative">
               <Calendar className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
@@ -278,7 +284,7 @@ export default function SearchHistory() {
           </div>
 
           {/* Date Picker End */}
-          <div className="sm:col-span-2 flex flex-col gap-1.5">
+          <div className="sm:col-span-3 flex flex-col gap-1.5">
             <span className="text-xs font-bold text-slate-500">สิ้นสุดวันที่</span>
             <div className="relative">
               <Calendar className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
@@ -375,6 +381,7 @@ export default function SearchHistory() {
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-700">
                 {paginatedList.map((item, idx) => {
+                  const lifecycle = lifecycleFor(item);
                   let idVal = '';
                   let titleVal = '';
                   let descVal = '';
@@ -407,10 +414,7 @@ export default function SearchHistory() {
                   return (
                     <tr key={idx} className="hover:bg-indigo-50/10 transition-colors">
                       <td className="py-3 px-5 font-mono text-slate-500 whitespace-nowrap">
-                        {new Date(timeVal).toLocaleString('th-TH', { 
-                          year: 'numeric', month: '2-digit', day: '2-digit',
-                          hour: '2-digit', minute: '2-digit'
-                        })}
+                        {formatThaiDateTime(timeVal)}
                       </td>
                       <td className="py-3 px-5 whitespace-nowrap">
                         <div className="flex flex-col gap-0.5">
@@ -430,6 +434,11 @@ export default function SearchHistory() {
                         }`}>
                           {item.status}
                         </span>
+                        {lifecycle.carryOver && (
+                          <span className="ml-1.5 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-800">
+                            ค้างจากกะก่อน
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-5 text-right whitespace-nowrap">
                         <button
@@ -537,14 +546,14 @@ export default function SearchHistory() {
                     status: '⚙️ สถานะบันทึกในตาราง'
                   };
 
-                  const formattedVal = key.includes('time') && val 
-                    ? new Date(String(val)).toLocaleString('th-TH') 
-                    : String(val);
+                  const formattedVal = key.includes('time') || key.endsWith('_at')
+                    ? formatThaiDateTime(val)
+                    : val === null || val === undefined || val === '' ? '—' : String(val);
 
                   return (
                     <div key={key} className="flex flex-col gap-1">
                       <span className="text-[10px] text-slate-400 uppercase font-bold">{labels[key] || key}</span>
-                      <span className="text-slate-800 font-bold text-sm bg-slate-50 p-2 rounded-lg">{formattedVal || '-'}</span>
+                      <span className="text-slate-800 font-bold text-sm bg-slate-50 p-2 rounded-lg">{formattedVal}</span>
                     </div>
                   );
                 })}
@@ -564,8 +573,12 @@ export default function SearchHistory() {
                       face_photo_url: 'ใบหน้าช่างผู้รับเหมา',
                       signature_image_url: 'ลายเซ็นรับเบิกกุญแจ',
                       borrower_photo_url: 'พยานเบิกจ่ายกุญแจ',
+                      return_photo_url: 'รูปหลักฐานการคืนกุญแจ',
+                      return_signature_url: 'ลายเซ็นผู้คืนกุญแจ',
                       photo_url: 'รูปถ่ายเหตุด่วนภัยคุกคาม',
-                      incident_photo_url: 'ความเสียหายกรณีเดินตรวจ'
+                      incident_photo_url: 'ความเสียหายกรณีเดินตรวจ',
+                      evidence_photo_1_url: 'รูปหลักฐานจุดตรวจ 1',
+                      evidence_photo_2_url: 'รูปหลักฐานจุดตรวจ 2'
                     };
 
                     return (
@@ -575,7 +588,7 @@ export default function SearchHistory() {
                           {url === 'loading' ? (
                             <div className="text-[11px] font-bold text-slate-400 animate-pulse">กำลังดาวน์โหลดภาพจาก Cloud Storage...</div>
                           ) : url ? (
-                            <img src={url} alt={field} className="w-full h-full object-cover" />
+                            <AuthenticatedEvidenceImage mediaReference={String(selectedRecord[field])} alt={field} className="w-full h-full object-cover" />
                           ) : (
                             <span className="text-[10px] text-slate-400">ไม่มีการแนบภาพถ่าย</span>
                           )}

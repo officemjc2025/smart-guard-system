@@ -1,106 +1,109 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import { useState, useEffect } from 'react';
-import { collection, getDocs } from 'firebase/firestore';
+import { useCallback, useEffect, useState } from 'react';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
-import { UnitRecord } from '../types';
+import type { UnitRecord } from '../types';
 
-let cachedUnits: UnitRecord[] | null = null;
-let cachedError: Error | null = null;
-let isFetching = false;
-const listeners = new Set<(units: UnitRecord[], error: Error | null, loading: boolean) => void>();
+const cache = new Map<string, UnitRecord[]>();
+const pendingRequests = new Map<string, Promise<UnitRecord[]>>();
+
+const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
+
+function naturalCompare(left: string, right: string) {
+  return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+}
+
+function unitFromFirestore(id: string, value: unknown): UnitRecord | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const data: Record<string, unknown> = Object.fromEntries(Object.entries(value));
+  const roomNumber = text(data.room_number);
+  if (!roomNumber) return null;
+  const ownerName = text(data.owner_name);
+  const residentName = text(data.resident_name);
+  const phone = text(data.phone);
+  const roomCode = text(data.room_code);
+  const status = text(data.status) === 'Inactive' || data.is_active === false ? 'Inactive' : 'Active';
+  return {
+    firestore_document_id: id,
+    unit_id: text(data.unit_id) || id,
+    site_id: text(data.site_id),
+    building: text(data.building),
+    room_code: roomCode || undefined,
+    room_number: roomNumber,
+    floor: text(data.floor),
+    area: text(data.area) || undefined,
+    ratio: text(data.ratio) || undefined,
+    owner_name: ownerName,
+    resident_name: residentName,
+    phone: phone || undefined,
+    email: text(data.email) || undefined,
+    occupancy_status: text(data.occupancy_status) || status,
+    status,
+    searchable_text: [roomNumber, roomCode, text(data.building), text(data.floor), ownerName, residentName, phone].join(' ').toLowerCase(),
+    search_key: text(data.search_key),
+    is_active: data.is_active !== false,
+    created_at: text(data.created_at),
+    updated_at: text(data.updated_at),
+    source_file_name: text(data.source_file_name) || undefined,
+    import_batch_id: text(data.import_batch_id) || undefined,
+  };
+}
+
+function currentSiteId() {
+  return sessionStorage.getItem('selected_site_id') || 'site-01';
+}
+
+async function loadUnits(includeInactive: boolean): Promise<UnitRecord[]> {
+  const siteId = currentSiteId();
+  const cacheKey = `${siteId}:${includeInactive ? 'all' : 'active'}`;
+  const cachedUnits = cache.get(cacheKey);
+  if (cachedUnits) return cachedUnits;
+  const pendingRequest = pendingRequests.get(cacheKey);
+  if (pendingRequest) return pendingRequest;
+  const unitQuery = includeInactive
+    ? query(collection(db, 'units'), where('site_id', '==', siteId))
+    : query(collection(db, 'units'), where('site_id', '==', siteId), where('status', '==', 'Active'));
+  const request = getDocs(unitQuery)
+    .then(snapshot => snapshot.docs
+      .map(docSnap => unitFromFirestore(docSnap.id, docSnap.data()))
+      .filter((unit): unit is UnitRecord => unit !== null)
+      .sort((a, b) => naturalCompare(a.building, b.building)
+        || naturalCompare(a.floor, b.floor)
+        || naturalCompare(a.room_number, b.room_number)))
+    .then(units => {
+      cache.set(cacheKey, units);
+      return units;
+    })
+    .finally(() => { pendingRequests.delete(cacheKey); });
+  pendingRequests.set(cacheKey, request);
+  return request;
+}
 
 export function clearUnitCache() {
-  cachedUnits = null;
-  cachedError = null;
-  isFetching = false;
-  if (listeners.size > 0) {
-    fetchUnits();
-  }
+  cache.clear();
 }
 
-async function fetchUnits() {
-  if (isFetching) return;
-  isFetching = true;
-  console.log('[Smart Guard Units] Loading units...');
-  listeners.forEach(li => li(cachedUnits || [], null, true));
-  
-  try {
-    const currentSiteId = sessionStorage.getItem('selected_site_id') || 'site-01';
-    const querySnapshot = await getDocs(collection(db, 'units'));
-    const allUnits: UnitRecord[] = [];
-    querySnapshot.forEach(docSnap => {
-      const data = docSnap.data();
-      // Safeguard in case unit_id is missing on document level
-      allUnits.push({
-        ...data,
-        unit_id: data.unit_id || docSnap.id,
-      } as UnitRecord);
-    });
+/** Reads existing Units without mutating Firestore. */
+export function useUnits(options: { includeInactive?: boolean } = {}) {
+  const visibleUnits = (units: UnitRecord[]) => units.filter(unit =>
+    (options.includeInactive || (unit.is_active && unit.status === 'Active')) && unit.site_id === currentSiteId());
+  const initial = cache.get(`${currentSiteId()}:${options.includeInactive ? 'all' : 'active'}`) || [];
+  const [units, setUnits] = useState<UnitRecord[]>(visibleUnits(initial));
+  const [loading, setLoading] = useState(initial.length === 0);
+  const [error, setError] = useState<Error | null>(null);
 
-    // Filtering logic:
-    // - Filter active records only: is_active == true (or missing/undefined -> treated as active)
-    // - site_id == current site (or missing/undefined -> treated as current site)
-    const filtered = allUnits.filter(u => {
-      // is_active == true: if legacy records do not contain is_active, treat them as active
-      if (u.is_active === false) return false;
-      
-      // site_id == current site: if site_id is missing, include them only for the current single-site deployment
-      const currentSiteId = sessionStorage.getItem('selected_site_id') || 'site-01';
-      if (u.site_id && u.site_id !== currentSiteId) return false;
-      
-      return true;
-    });
-
-    cachedUnits = filtered;
-    console.log(`[Smart Guard Units] Loaded ${filtered.length} units`);
-    cachedError = null;
-  } catch (err) {
-    console.error('[useUnits] Error fetching units:', err);
-    cachedError = err instanceof Error ? err : new Error(String(err));
-  } finally {
-    isFetching = false;
-    listeners.forEach(li => li(cachedUnits || [], cachedError, false));
-  }
-}
-
-export function useUnits() {
-  const [units, setUnits] = useState<UnitRecord[]>(cachedUnits || []);
-  const [loading, setLoading] = useState<boolean>(!cachedUnits && isFetching);
-  const [error, setError] = useState<Error | null>(cachedError);
-
-  useEffect(() => {
-    const handleChange = (newUnits: UnitRecord[], newError: Error | null, newLoading: boolean) => {
-      setUnits(newUnits);
-      setError(newError);
-      setLoading(newLoading);
-    };
-
-    listeners.add(handleChange);
-
-    if (cachedUnits === null && !isFetching) {
-      fetchUnits();
-    } else if (cachedUnits !== null) {
-      setUnits(cachedUnits);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const loaded = await loadUnits(Boolean(options.includeInactive));
+      setUnits(visibleUnits(loaded));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason : new Error(String(reason)));
+    } finally {
       setLoading(false);
-      setError(cachedError);
-    } else {
-      setLoading(true);
     }
+  }, [options.includeInactive]);
 
-    return () => {
-      listeners.delete(handleChange);
-    };
-  }, []);
-
-  const refresh = async () => {
-    cachedUnits = null;
-    cachedError = null;
-    await fetchUnits();
-  };
-
+  useEffect(() => { void refresh(); }, [refresh]);
   return { units, loading, error, refresh };
 }

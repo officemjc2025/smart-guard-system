@@ -3,14 +3,14 @@
   "scripts": {
     "lint": "eslint --ext .js,.ts .",
     "build": "tsc",
-    "serve": "npm run build && firebase emulators:start --only functions",
-    "shell": "npm run build && firebase functions:shell",
+    "serve": "npm run build && npx -y firebase-tools@latest emulators:start --only functions",
+    "shell": "npm run build && npx -y firebase-tools@latest functions:shell",
     "start": "npm run shell",
-    "deploy": "firebase deploy --only functions",
+    "deploy": "node --env-file=../.env.staging ../scripts/deploy-staging.mjs functions",
     "test": "jest"
   },
   "engines": {
-    "node": "20"
+    "node": "22"
   },
   "main": "lib/index.js",
   "dependencies": {

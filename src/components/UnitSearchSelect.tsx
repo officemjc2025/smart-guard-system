@@ -1,377 +1,96 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useEffect, useRef } from 'react';
-import { Search, ChevronDown, Check, AlertTriangle, RefreshCw, X } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { Search, X } from 'lucide-react';
 import { useUnits } from '../hooks/useUnits';
-import { UnitRecord } from '../types';
+import type { UnitRecord } from '../types';
 
 interface UnitSearchSelectProps {
-  value?: string; // current room_number or input value
-  selectedUnitId?: string; // currently selected unit_id
+  value: string;
+  selectedUnitId?: string;
   onSelect: (unit: UnitRecord | null) => void;
-  label?: string;
+  label: string;
   placeholder?: string;
   required?: boolean;
-  disabled?: boolean;
-  siteId?: string;
-  error?: string;
   allowManualEntry?: boolean;
+  statusFilter?: string | string[];
 }
 
-function normalizeUnitSearch(value: string | undefined | null): string {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/[\/\-.]/g, '');
-}
+const normalize = (value: string) => value.toLowerCase().replace(/[\s/_.-]/g, '');
 
-export const UnitSearchSelect: React.FC<UnitSearchSelectProps> = ({
-  value = '',
-  selectedUnitId = '',
-  onSelect,
-  label = 'ค้นหาห้องชุด / ยูนิต',
-  placeholder = 'พิมพ์เพื่อค้นหาเลขห้อง, ชื่อเจ้าของ หรือเบอร์โทร...',
-  required = false,
-  disabled = false,
-  error = '',
-  allowManualEntry = false,
-}) => {
-  const { units, loading, error: fetchError, refresh } = useUnits();
-  const [isOpen, setIsOpen] = useState(false);
+export default function UnitSearchSelect({
+  value, selectedUnitId = '', onSelect, label, placeholder, required = false,
+  allowManualEntry = true, statusFilter,
+}: UnitSearchSelectProps) {
+  const { units, loading, error, refresh } = useUnits();
   const [query, setQuery] = useState(value);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const listboxId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { setQuery(value); }, [value]);
+  const matches = useMemo(() => {
+    const needle = normalize(query);
+    const statuses = statusFilter ? new Set(Array.isArray(statusFilter) ? statusFilter : [statusFilter]) : null;
+    return units.filter(unit => (!statuses || statuses.has(unit.status)) && (!needle ||
+      [unit.room_number, unit.building, unit.floor, unit.owner_name, unit.resident_name, unit.phone]
+        .some(field => normalize(field || '').includes(needle)))).slice(0, 50);
+  }, [query, statusFilter, units]);
 
-  const containerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { setActiveIndex(matches.length ? 0 : -1); }, [query, matches.length]);
 
-  // Keep query in sync with value prop if not focused
-  useEffect(() => {
-    if (document.activeElement !== inputRef.current) {
-      setQuery(value);
-    }
-  }, [value]);
-
-  // Click outside listener
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, []);
-
-  // Filter units
-  const filteredUnits = React.useMemo(() => {
-    if (!query.trim()) {
-      return units;
-    }
-
-    const normQ = normalizeUnitSearch(query);
-    return units.filter((u) => {
-      const roomNum = u.room_number || '';
-      const roomCode = u.room_code || '';
-      const unitId = u.unit_id || '';
-      const owner = u.owner_name || '';
-      const phone = u.phone || '';
-      const text = u.searchable_text || '';
-      const key = u.search_key || '';
-
-      // Normalize fields
-      const normRoomNum = normalizeUnitSearch(roomNum);
-      const normRoomCode = normalizeUnitSearch(roomCode);
-      const normUnitId = normalizeUnitSearch(unitId);
-      const normOwner = normalizeUnitSearch(owner);
-      const normPhone = normalizeUnitSearch(phone);
-      const normText = normalizeUnitSearch(text);
-      const normKey = normalizeUnitSearch(key);
-
-      return (
-        normRoomNum.includes(normQ) ||
-        normRoomCode.includes(normQ) ||
-        normUnitId.includes(normQ) ||
-        normOwner.includes(normQ) ||
-        normPhone.includes(normQ) ||
-        normText.includes(normQ) ||
-        normKey.includes(normQ)
-      );
-    });
-  }, [units, query]);
-
-  // Limit matches to first 20
-  const displayedUnits = React.useMemo(() => {
-    return filteredUnits.slice(0, 20);
-  }, [filteredUnits]);
-
-  // Check if current query exactly matches any visible/loaded room number
-  const hasExactMatch = React.useMemo(() => {
-    const normalizedQ = normalizeUnitSearch(query);
-    if (!normalizedQ) return true;
-    return units.some(u => normalizeUnitSearch(u.room_number) === normalizedQ);
-  }, [units, query]);
-
-  // Reset highlighted index when items change
-  useEffect(() => {
-    setHighlightedIndex(0);
-  }, [displayedUnits]);
-
-  // Keyboard navigation
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (disabled) return;
-    if (!isOpen) {
-      if (e.key === 'ArrowDown' || e.key === 'Enter') {
-        setIsOpen(true);
-        e.preventDefault();
-      }
-      return;
-    }
-
-    const totalCount = displayedUnits.length + (allowManualEntry && query.trim() && !hasExactMatch ? 1 : 0);
-
-    switch (e.key) {
-      case 'ArrowDown':
-        setHighlightedIndex((prev) => (prev + 1) % (totalCount || 1));
-        e.preventDefault();
-        break;
-      case 'ArrowUp':
-        setHighlightedIndex((prev) => (prev - 1 + (totalCount || 1)) % (totalCount || 1));
-        e.preventDefault();
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (totalCount === 0) return;
-
-        // Check if the highlighted index belongs to the manual entry fallback
-        if (allowManualEntry && query.trim() && !hasExactMatch && highlightedIndex === displayedUnits.length) {
-          handleSelectManual();
-        } else if (displayedUnits[highlightedIndex]) {
-          handleSelectUnit(displayedUnits[highlightedIndex]);
-        }
-        break;
-      case 'Escape':
-        setIsOpen(false);
-        e.preventDefault();
-        break;
-      case 'Tab':
-        setIsOpen(false);
-        break;
-      default:
-        break;
-    }
-  };
-
-  const handleSelectUnit = (unit: UnitRecord) => {
-    onSelect(unit);
+  const select = (unit: UnitRecord) => {
     setQuery(unit.room_number);
-    setIsOpen(false);
+    setOpen(false);
+    onSelect(unit);
   };
 
-  const handleSelectManual = () => {
-    onSelect({
-      unit_id: '',
-      room_number: query.trim(),
-      room_code: '',
-      floor: '',
-      owner_name: '',
-      phone: '',
-      email: '',
-      occupancy_status: '',
-      searchable_text: '',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    } as any);
-    setIsOpen(false);
+  const manual = () => {
+    const room = query.trim();
+    if (!room) return;
+    onSelect({ firestore_document_id: '', unit_id: '', site_id: '', building: '', room_number: room, floor: '', owner_name: '', resident_name: '', occupancy_status: 'Active', status: 'Active', searchable_text: room, search_key: normalize(room), is_active: true, created_at: '', updated_at: '' });
+    setOpen(false);
   };
 
-  const handleClear = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setQuery('');
-    onSelect(null);
-    inputRef.current?.focus();
-    setIsOpen(true);
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex(index => event.key === 'ArrowDown'
+        ? Math.min(index + 1, matches.length - 1)
+        : Math.max(index - 1, 0));
+    } else if (event.key === 'Enter' && open) {
+      event.preventDefault();
+      if (activeIndex >= 0 && matches[activeIndex]) select(matches[activeIndex]);
+      else if (allowManualEntry) manual();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+    } else if (event.key === 'Tab') {
+      setOpen(false);
+    }
   };
 
-  // Find selected unit label
-  const selectedUnit = units.find(u => u.unit_id === selectedUnitId);
-  const displayLabel = selectedUnit ? `ห้อง ${selectedUnit.room_number}` : query;
-
-  return (
-    <div ref={containerRef} className="relative w-full">
-      {label && (
-        <label className="block text-slate-300 font-bold mb-1.5 text-xs">
-          {label} {required && <span className="text-rose-500">*</span>}
-        </label>
-      )}
-
-      {/* Input Group */}
-      <div className="relative">
-        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-          <Search className="w-5 h-5 text-slate-400" />
-        </div>
-
-        <input
-          ref={inputRef}
-          type="text"
-          value={isOpen ? query : displayLabel}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            if (!isOpen) setIsOpen(true);
-          }}
-          onFocus={() => {
-            setQuery(query); // show what user has been typing
-            setIsOpen(true);
-          }}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          disabled={disabled}
-          autoComplete="off"
-          className={`w-full h-14 pl-12 pr-12 bg-slate-900 border ${
-            error ? 'border-rose-500' : 'border-slate-800'
-          } rounded-2xl text-[17px] text-white placeholder-slate-500 focus:outline-none focus:ring-2 ${
-            error ? 'focus:ring-rose-500/20' : 'focus:ring-indigo-500/20'
-          } focus:border-indigo-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed`}
-        />
-
-        <div className="absolute inset-y-0 right-0 pr-3 flex items-center gap-1">
-          {query && (
-            <button
-              type="button"
-              onClick={handleClear}
-              className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => !disabled && setIsOpen(!isOpen)}
-            className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 transition-colors cursor-pointer"
-          >
-            <ChevronDown className={`w-5 h-5 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-          </button>
-        </div>
-      </div>
-
-      {error && <p className="mt-1 text-xs font-bold text-rose-500">{error}</p>}
-
-      {/* Dropdown Container */}
-      {isOpen && (
-        <div className="absolute z-50 top-full left-0 w-full bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl mt-1.5 max-h-80 overflow-y-auto overflow-x-hidden backdrop-blur-xl">
-          
-          {/* Firestore Fetch Error */}
-          {fetchError && (
-            <div className="p-4 border-b border-rose-500/20 bg-rose-500/5">
-              <div className="flex items-start gap-2.5 text-rose-400">
-                <AlertTriangle className="w-5 h-5 shrink-0 text-rose-500 mt-0.5" />
-                <div className="flex-1">
-                  <p className="text-sm font-bold">เกิดข้อผิดพลาดในการโหลดข้อมูลห้องชุด</p>
-                  <p className="text-xs text-rose-500/80 mt-0.5">{fetchError.message}</p>
-                  <button
-                    type="button"
-                    onClick={() => refresh()}
-                    className="mt-2 text-xs flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-bold transition-colors cursor-pointer"
-                  >
-                    <RefreshCw className="w-3 h-3 animate-pulse" /> ลองใหม่อีกครั้ง
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Loading Indicator */}
-          {loading && (
-            <div className="p-4 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
-              <span>กำลังโหลดข้อมูลห้องชุด...</span>
-            </div>
-          )}
-
-          {/* Results List */}
-          {!loading && (
-            <ul className="divide-y divide-slate-900">
-              {displayedUnits.map((unit, index) => {
-                const isSelected = selectedUnitId === unit.unit_id;
-                const isHighlighted = index === highlightedIndex;
-
-                return (
-                  <li
-                    key={unit.unit_id}
-                    onClick={() => handleSelectUnit(unit)}
-                    className={`px-4 py-3 cursor-pointer transition-colors flex items-center justify-between min-h-[56px] ${
-                      isHighlighted ? 'bg-slate-800/40 text-white' : 'text-slate-300'
-                    } ${isSelected ? 'bg-indigo-600/10' : ''} hover:bg-slate-800/20`}
-                  >
-                    <div className="flex-1 pr-4">
-                      <div className="text-[17px] font-bold text-slate-100 flex items-center gap-2">
-                        <span>ห้อง {unit.room_number}</span>
-                        {unit.floor && (
-                          <span className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-normal">
-                            ชั้น {unit.floor}
-                          </span>
-                        )}
-                        {unit.occupancy_status && (
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-normal ${
-                            unit.occupancy_status === 'ว่าง' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-blue-500/10 text-blue-400'
-                          }`}>
-                            {unit.occupancy_status}
-                          </span>
-                        )}
-                      </div>
-                      
-                      <div className="text-[15px] text-slate-400 mt-0.5">
-                        {unit.owner_name && <span>เจ้าของ: {unit.owner_name}</span>}
-                        {unit.phone && <span className="ml-2.5 pl-2.5 border-l border-slate-800">โทร: {unit.phone}</span>}
-                      </div>
-
-                      {unit.room_code && (
-                        <div className="text-xs text-slate-500 mt-0.5 font-mono">
-                          รหัส: {unit.room_code}
-                        </div>
-                      )}
-                    </div>
-
-                    {isSelected && (
-                      <Check className="w-5 h-5 text-indigo-500 shrink-0 ml-2" />
-                    )}
-                  </li>
-                );
-              })}
-
-              {/* Manual Entry Fallback Action */}
-              {allowManualEntry && query.trim() && !hasExactMatch && (
-                <li
-                  onClick={handleSelectManual}
-                  className={`px-4 py-3 cursor-pointer transition-colors min-h-[56px] border-t border-dashed border-slate-800/60 ${
-                    highlightedIndex === displayedUnits.length ? 'bg-slate-800/40 text-white font-bold' : 'text-indigo-400'
-                  }`}
-                >
-                  <div className="text-[17px] font-bold">
-                    ไม่พบห้อง — ใช้เลขห้องที่พิมพ์
-                  </div>
-                  <div className="text-[15px] text-slate-400 mt-0.5">
-                    กดเลือกเพื่อใช้ห้องชุด "{query.trim()}" และบันทึกแบบป้อนข้อมูลเอง
-                  </div>
-                </li>
-              )}
-
-              {/* Empty State (when manual entry is disabled and no matching units found) */}
-              {displayedUnits.length === 0 && (!allowManualEntry || !query.trim()) && (
-                <div className="p-8 text-center text-slate-500">
-                  <p className="text-[17px] font-bold">ไม่พบข้อมูลห้องชุด</p>
-                  <p className="text-xs text-slate-600 mt-1">กรุณาลองป้อนข้อมูลอื่น หรือติดต่อนิติบุคคลเพื่อลงทะเบียนข้อมูลห้องชุด</p>
-                </div>
-              )}
-            </ul>
-          )}
-        </div>
-      )}
+  return <div ref={rootRef} className="flex flex-col gap-1.5 relative">
+    <label className="text-xs font-bold text-slate-600">{label}{required ? ' *' : ''}</label>
+    <div className="relative">
+      <Search className="absolute left-3 top-3.5 w-4 h-4 text-slate-400" />
+      <input type="text" value={query} required={required} autoComplete="off"
+        onFocus={() => setOpen(true)} onChange={event => { setQuery(event.target.value); setOpen(true); onSelect(null); }}
+        onKeyDown={handleKeyDown} onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        role="combobox" aria-expanded={open} aria-controls={listboxId} aria-autocomplete="list"
+        placeholder={placeholder || 'ค้นหาเลขห้อง รหัสห้อง เจ้าของ หรือเบอร์โทร'}
+        className="w-full p-3.5 pl-9 pr-9 border-2 border-slate-200 rounded-xl outline-none focus:border-indigo-600 text-sm font-semibold" />
+      {query && <button type="button" aria-label="Clear unit" onClick={() => { setQuery(''); onSelect(null); }} className="absolute right-2 top-2.5 p-1 text-slate-400"><X className="w-4 h-4" /></button>}
     </div>
-  );
-};
+    {open && <div id={listboxId} role="listbox" className="absolute z-30 top-full mt-1 w-full max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg">
+      {loading && <p className="p-3 text-xs text-slate-500">กำลังโหลดข้อมูลห้อง...</p>}
+      {error && <button type="button" onClick={() => void refresh()} className="p-3 text-left text-xs text-red-600">โหลดข้อมูลห้องไม่สำเร็จ — กดเพื่อลองใหม่</button>}
+      {!loading && matches.map((unit, index) => <button type="button" role="option" aria-selected={selectedUnitId === unit.unit_id} key={unit.unit_id} onMouseDown={event => event.preventDefault()} onClick={() => select(unit)} className={`block min-h-16 w-full border-b border-slate-100 p-3 text-left text-sm hover:bg-slate-50 ${selectedUnitId === unit.unit_id || activeIndex === index ? 'bg-indigo-50' : ''}`}>
+        <span className="flex items-center justify-between gap-2"><strong>{unit.room_number}</strong><span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{unit.status}</span></span>
+        <span className="block text-xs text-slate-500">{unit.building ? `${unit.building} • ` : ''}{unit.floor ? `ชั้น ${unit.floor}` : ''}</span>
+        <span className="block text-xs text-slate-500">เจ้าของ: {unit.owner_name || '-'} • ผู้พักอาศัย: {unit.resident_name || '-'}</span>
+      </button>)}
+      {!loading && matches.length === 0 && <p className="p-3 text-xs text-slate-500">ไม่พบห้องที่ตรงกัน</p>}
+      {allowManualEntry && query.trim() && <button type="button" onClick={manual} className="block w-full p-3 text-left text-xs font-bold text-indigo-700 hover:bg-indigo-50">ใช้ “{query.trim()}” เป็นข้อมูลที่พิมพ์เอง</button>}
+    </div>}
+  </div>;
+}

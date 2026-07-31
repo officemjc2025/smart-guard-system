@@ -1,10 +1,9 @@
 {
-  "projectId": "amped-impulse-cdw25",
-  "appId": "1:549875129616:web:9ce24e04265d2312dd5995",
-  "apiKey": "AIzaSyAEbvyYh0Q5qWaE3cdYLPAPTnEy8ViopGw",
-  "authDomain": "amped-impulse-cdw25.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-smartguardsystem-e2a4586d-b4ef-4694-9036-1c64c9967e71",
-  "storageBucket": "amped-impulse-cdw25.appspot.com",
-  "messagingSenderId": "549875129616",
-  "measurementId": ""
+  "apiKey": "AIzaSyBUUT6KK7wY9izJM6NvPWJhVTW4-E8qv6Q",
+  "authDomain": "securityprojectv1.firebaseapp.com",
+  "projectId": "securityprojectv1",
+  "storageBucket": "securityprojectv1.firebasestorage.app",
+  "messagingSenderId": "215111084486",
+  "appId": "1:215111084486:web:3c182af2b32f0801c76ac7",
+  "measurementId": "G-EW6HM6XRJV"
 }
