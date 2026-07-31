@@ -8,7 +8,7 @@
       "source": "functions",
       "codebase": "default",
       "predeploy": [
-        "node scripts/predeploy-staging.mjs"
+        "node scripts/predeploy.mjs functions"
       ],
       "ignore": [
         "node_modules",
@@ -24,8 +24,7 @@
   "hosting": {
     "public": "dist",
     "predeploy": [
-      "node scripts/predeploy-staging.mjs",
-      "npm run build:staging"
+      "node scripts/predeploy.mjs hosting"
     ],
     "ignore": [
       "firebase.json",
