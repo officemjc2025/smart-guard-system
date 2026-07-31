@@ -9,6 +9,8 @@ export function csvCell(value: unknown): string {
 export const csvText = (grid: readonly (readonly unknown[])[]) =>
   grid.map(row => row.map(csvCell).join(',')).join('\r\n');
 
+export const csvContent = (grid: readonly (readonly unknown[])[]) => `\uFEFF${csvText(grid)}`;
+
 export async function parseCsvFile(file: File): Promise<string[][]> {
   if (!/\.csv$/i.test(file.name) || !['text/csv', 'application/vnd.ms-excel', ''].includes(file.type)) throw new Error('CSV-only mode: รองรับเฉพาะไฟล์ .csv');
   if (file.size > CSV_LIMITS.maxBytes) throw new Error('ไฟล์ CSV มีขนาดเกิน 5 MB');
@@ -34,7 +36,7 @@ export async function parseCsvFile(file: File): Promise<string[][]> {
 }
 
 export function downloadCsv(grid: readonly (readonly unknown[])[], fileName: string) {
-  const url = URL.createObjectURL(new Blob(['\uFEFF', csvText(grid)], { type: 'text/csv;charset=utf-8' }));
+  const url = URL.createObjectURL(new Blob([csvContent(grid)], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = fileName; link.click();
   URL.revokeObjectURL(url);
 }

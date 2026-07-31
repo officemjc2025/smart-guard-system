@@ -1,8 +1,20 @@
-import { displayCell, filterExportRows, type ExportFilters, type ImportExportModule, type ImportExportRecord } from './validationService';
-import { downloadCsv } from './csvSafe';
+import { filterExportRows, type ExportFilters, type ImportExportModule, type ImportExportRecord } from './validationService';
+import { csvContent, downloadCsv } from './csvSafe';
+import { bangkokExportDate, buildExportGrid, exportFileBase } from './exportData';
+
+export function buildCsvExport(rows: readonly ImportExportRecord[], module: ImportExportModule, filters: ExportFilters = {}) {
+  const filtered = filterExportRows(rows, filters);
+  const { columns, grid } = buildExportGrid(filtered, module);
+  return {
+    columns,
+    rowCount: filtered.length,
+    content: csvContent(grid),
+    fileName: `${exportFileBase(module)}_${bangkokExportDate()}.csv`,
+  };
+}
 
 export function exportCsv(rows: readonly ImportExportRecord[], module: ImportExportModule, filters: ExportFilters = {}) {
   const filtered = filterExportRows(rows, filters);
-  const grid = [module.columns.map(column => column.label), ...filtered.map(row => module.columns.map(column => displayCell(row[column.key])))];
-  downloadCsv(grid, `${module.key}-${new Date().toISOString().slice(0, 10)}.csv`);
+  const { grid } = buildExportGrid(filtered, module);
+  downloadCsv(grid, `${exportFileBase(module)}_${bangkokExportDate()}.csv`);
 }

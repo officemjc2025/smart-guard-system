@@ -10,6 +10,12 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { exportCsv } from '../services/importExport/csvExportService';
+import {
+  buildAllReportsWorkbook,
+  buildModuleWorkbook,
+  downloadExcelWorkbook,
+  type ExcelExportSource,
+} from '../services/excelExportService';
 import { IMPORT_EXPORT_MODULES } from '../services/importExport/modules';
 import {
   filterExportRows,
@@ -56,6 +62,8 @@ export default function ReportsCenter({
 }: ReportsCenterProps) {
   const [activeReport, setActiveReport] = useState<ReportKey>('vehicle');
   const [filters, setFilters] = useState<ExportFilters>({});
+  const [exporting, setExporting] = useState<'csv' | 'excel' | 'all' | null>(null);
+  const [exportError, setExportError] = useState('');
 
   const recordsByReport = useMemo<Record<ReportKey, ImportExportRecord[]>>(
     () => ({
@@ -78,6 +86,32 @@ export default function ReportsCenter({
     .map(row => String(row.building || '').trim())
     .filter(Boolean))].sort(), [records]);
   const Icon = report.icon;
+  const excelSources = useMemo<ExcelExportSource[]>(() => REPORTS.map(item => ({
+    module: item.module,
+    records: recordsByReport[item.key],
+  })), [recordsByReport]);
+  const allFilteredCount = useMemo(() => excelSources.reduce(
+    (total, source) => total + filterExportRows(source.records, filters).length,
+    0,
+  ), [excelSources, filters]);
+
+  const runExport = async (kind: 'csv' | 'excel' | 'all') => {
+    if (exporting) return;
+    setExportError('');
+    setExporting(kind);
+    try {
+      if (kind === 'csv') exportCsv(records, report.module, filters);
+      else if (kind === 'excel') {
+        await downloadExcelWorkbook(buildModuleWorkbook({ module: report.module, records }, filters));
+      } else {
+        await downloadExcelWorkbook(buildAllReportsWorkbook(excelSources, filters));
+      }
+    } catch (reason) {
+      setExportError(reason instanceof Error ? reason.message : 'ไม่สามารถสร้างไฟล์รายงานได้');
+    } finally {
+      setExporting(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-5">
@@ -88,17 +122,21 @@ export default function ReportsCenter({
               <FileSpreadsheet className="h-5 w-5 text-blue-400" />
               <h2 className="text-base font-black text-white">ศูนย์รายงานปฏิบัติการ</h2>
             </div>
-            <p className="mt-1 text-xs text-slate-400">ดูตัวอย่าง กรองข้อมูล และส่งออกรายงานแต่ละโมดูลเป็น CSV</p>
+            <p className="mt-1 text-xs text-slate-400">ดูตัวอย่าง กรองข้อมูล และส่งออกรายงานเป็น CSV หรือ Excel</p>
           </div>
-          <button
-            type="button"
-            disabled={filteredRecords.length === 0}
-            onClick={() => exportCsv(records, report.module, filters)}
-            className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-xs font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Download className="h-4 w-4" /> Export CSV ({filteredRecords.length.toLocaleString()})
-          </button>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <button type="button" disabled={Boolean(exporting) || filteredRecords.length === 0} onClick={() => void runExport('csv')} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-xs font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
+              <Download className="h-4 w-4" /> {exporting === 'csv' ? 'กำลัง Export...' : `Export CSV (${filteredRecords.length.toLocaleString()})`}
+            </button>
+            <button type="button" disabled={Boolean(exporting) || filteredRecords.length === 0} onClick={() => void runExport('excel')} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">
+              <FileSpreadsheet className="h-4 w-4" /> {exporting === 'excel' ? 'กำลัง Export...' : 'Export Excel'}
+            </button>
+            <button type="button" disabled={Boolean(exporting) || allFilteredCount === 0} onClick={() => void runExport('all')} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-violet-600 px-4 text-xs font-bold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-40">
+              <FileSpreadsheet className="h-4 w-4" /> {exporting === 'all' ? 'กำลัง Export...' : 'Export All Excel'}
+            </button>
+          </div>
         </div>
+        {exportError && <div role="alert" className="mt-3 rounded-xl border border-red-800 bg-red-950/60 p-3 text-xs font-bold text-red-200">สร้างไฟล์ไม่สำเร็จ: {exportError}</div>}
       </div>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-5">

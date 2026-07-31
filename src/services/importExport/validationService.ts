@@ -14,6 +14,8 @@ export interface ImportExportModule {
   collectionName: string;
   idField: string;
   roomField?: string;
+  exportFileBase?: string;
+  worksheetName?: string;
   columns: readonly ImportExportColumn[];
 }
 
