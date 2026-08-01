@@ -1529,6 +1529,9 @@ const patrolCheckinTransaction = (
   includePhoto2 = true,
 ) => runTransaction(database, async transaction => {
   const id = `patrol-${suffix}`;
+  if ((await transaction.get(doc(database, `patrolLogs/${id}`))).exists()) {
+    throw new Error('Patrol check-in already exists.');
+  }
   const photo2Fields = includePhoto2 ? {
     incident_photo_url: 'https://drive.google.com/file/d/PATROLPHOTOTWO123/view',
     evidence_photo_2_url: 'https://drive.google.com/file/d/PATROLPHOTOTWO123/view',
@@ -1564,6 +1567,9 @@ const incidentCreateTransaction = (
   actor: { uid: string; operatorName: string } = { uid: 'guard-a', operatorName: 'Guard A' },
 ) => runTransaction(database, async transaction => {
   const id = `incident-${suffix}`;
+  if ((await transaction.get(doc(database, `incidentReports/${id}`))).exists()) {
+    throw new Error('Incident report already exists.');
+  }
   transaction.set(doc(database, `incidentReports/${id}`), {
     incident_id: id, incident_datetime: Timestamp.fromDate(new Date('2026-07-30T10:00:00Z')),
     reported_at: serverTimestamp(), location: 'Lobby', location_type: 'common_area',
@@ -1617,6 +1623,9 @@ const productionIncidentTransaction = (
     omitOutcome?: boolean;
   },
 ) => runTransaction(database, async transaction => {
+  if ((await transaction.get(doc(database, `incidentReports/${input.incidentId}`))).exists()) {
+    throw new Error('Incident report already exists.');
+  }
   const locationType = input.locationType || 'common_area';
   const filled = input.optional === 'filled';
   const incident = {
@@ -1672,6 +1681,50 @@ const seedProductionIncidentMedia = async (input: {
     operator_name: input.operatorName, record_id: input.incidentId, site_id: input.siteId,
     size_bytes: 1024, thumbnail_url: '',
   });
+});
+
+test('Patrol and Incident pre-create gets permit only active authenticated users', async () => {
+  const guard = environment.authenticatedContext('guard-a').firestore();
+  const shiftHead = environment.authenticatedContext('shift-head-a').firestore();
+  const inactive = environment.authenticatedContext('inactive-a').firestore();
+  const anonymous = environment.unauthenticatedContext().firestore();
+
+  await assertSucceeds(getDoc(doc(guard, 'patrolLogs/not-created')));
+  await assertSucceeds(getDoc(doc(shiftHead, 'incidentReports/not-created')));
+  for (const database of [inactive, anonymous]) {
+    await assertFails(getDoc(doc(database, 'patrolLogs/not-created')));
+    await assertFails(getDoc(doc(database, 'incidentReports/not-created')));
+  }
+});
+
+test('Patrol and Incident existing reads and lists remain site-scoped', async () => {
+  await environment.withSecurityRulesDisabled(async context => {
+    const database = context.firestore();
+    await Promise.all([
+      setDoc(doc(database, 'patrolLogs/read-site-a'), { site_id: 'site-a' }),
+      setDoc(doc(database, 'patrolLogs/read-site-b'), { site_id: 'site-b' }),
+      setDoc(doc(database, 'incidentReports/read-site-a'), { site_id: 'site-a' }),
+      setDoc(doc(database, 'incidentReports/read-site-b'), { site_id: 'site-b' }),
+    ]);
+  });
+  const database = environment.authenticatedContext('guard-a').firestore();
+
+  await assertSucceeds(getDoc(doc(database, 'patrolLogs/read-site-a')));
+  await assertSucceeds(getDoc(doc(database, 'incidentReports/read-site-a')));
+  await assertFails(getDoc(doc(database, 'patrolLogs/read-site-b')));
+  await assertFails(getDoc(doc(database, 'incidentReports/read-site-b')));
+  await assertSucceeds(getDocs(query(
+    collection(database, 'patrolLogs'), where('site_id', '==', 'site-a'),
+  )));
+  await assertSucceeds(getDocs(query(
+    collection(database, 'incidentReports'), where('site_id', '==', 'site-a'),
+  )));
+  await assertFails(getDocs(query(
+    collection(database, 'patrolLogs'), where('site_id', '==', 'site-b'),
+  )));
+  await assertFails(getDocs(query(
+    collection(database, 'incidentReports'), where('site_id', '==', 'site-b'),
+  )));
 });
 
 test('Patrol same-site atomic check-in succeeds with one required evidence reference', async () => {

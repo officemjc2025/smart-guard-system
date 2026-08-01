@@ -1404,14 +1404,20 @@ service cloud.firestore {
     }
 
     match /patrolLogs/{id} {
-      allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow get: if isActiveUser()
+                 && (!exists(/databases/$(database)/documents/patrolLogs/$(id))
+                   || resource.data.site_id == activeSiteId());
+      allow list: if isActiveUser() && resource.data.site_id == activeSiteId();
       allow create: if canProcessVehicleExit() && validPatrolLogCreate(request.resource.data, id);
       allow update: if false;
       allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
     }
 
     match /incidentReports/{id} {
-      allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow get: if isActiveUser()
+                 && (!exists(/databases/$(database)/documents/incidentReports/$(id))
+                   || resource.data.site_id == activeSiteId());
+      allow list: if isActiveUser() && resource.data.site_id == activeSiteId();
       allow create: if (canProcessVehicleExit() && validIncidentCreate(request.resource.data, id))
                     || (isAdmin() && validLegacyIncidentImport(request.resource.data, id));
       allow update: if canManageUnits() && validIncidentUpdate(id);
