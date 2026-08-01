@@ -74,15 +74,24 @@ export function validateRuntimeConfiguration(
     throw new Error('Production build cannot target a staging Firebase project.');
   }
   const mediaUploadUrl = String(runtimeEnv.VITE_MEDIA_UPLOAD_URL || '').trim();
+  const privateMediaUrl = String(runtimeEnv.VITE_PRIVATE_MEDIA_URL || '').trim();
   if (mediaUploadUrl) requiredHttpsUrl('VITE_MEDIA_UPLOAD_URL', mediaUploadUrl);
+  if (privateMediaUrl) requiredHttpsUrl('VITE_PRIVATE_MEDIA_URL', privateMediaUrl);
   if (environmentName === 'STAGING' && !mediaUploadUrl) {
     throw new Error('VITE_MEDIA_UPLOAD_URL is required for staging.');
   }
-  if (environmentName === 'STAGING') {
+  if (environmentName === 'STAGING' || environmentName === 'PRODUCTION') {
     const functionsRegion = String(runtimeEnv.VITE_FUNCTIONS_REGION || '').trim();
+    if (!functionsRegion) {
+      throw new Error(`VITE_FUNCTIONS_REGION is required for ${environmentName.toLowerCase()}.`);
+    }
     const expectedMediaUploadUrl = expectedFunctionUrl(projectId, functionsRegion, 'uploadVehicleEvidence');
-    if (mediaUploadUrl !== expectedMediaUploadUrl) {
-      throw new Error(`VITE_MEDIA_UPLOAD_URL must match the configured staging Functions region: ${expectedMediaUploadUrl}`);
+    if (mediaUploadUrl && mediaUploadUrl !== expectedMediaUploadUrl) {
+      throw new Error(`VITE_MEDIA_UPLOAD_URL must match the configured ${environmentName.toLowerCase()} Functions region: ${expectedMediaUploadUrl}`);
+    }
+    const expectedPrivateMediaUrl = expectedFunctionUrl(projectId, functionsRegion, 'getVehicleEvidenceImage');
+    if (privateMediaUrl && privateMediaUrl !== expectedPrivateMediaUrl) {
+      throw new Error(`VITE_PRIVATE_MEDIA_URL must match the configured ${environmentName.toLowerCase()} Functions region: ${expectedPrivateMediaUrl}`);
     }
   }
   return {

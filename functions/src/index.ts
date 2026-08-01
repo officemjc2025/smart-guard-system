@@ -4,7 +4,12 @@ import { defineSecret, defineString } from 'firebase-functions/params';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { onCall, onRequest, HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
 import { Readable } from 'stream';
-import { createOAuthDriveClient, getDriveClient, uploadToDrive } from './drive';
+import {
+  createOAuthDriveClient,
+  getDriveClient,
+  requireGoogleDriveRootFolderId,
+  uploadToDrive,
+} from './drive';
 import { type MediaModule } from './types';
 import { normalizeRole, sanitizeAndValidateId, validateAndDecodeBase64 } from './validation';
 import {
@@ -39,7 +44,7 @@ import {
 
 const firebaseApp = admin.initializeApp();
 const functionsRegion = defineString('FUNCTIONS_REGION', {
-  default: 'us-central1',
+  default: 'asia-southeast1',
   description: 'Per-project Firebase Functions deployment region.',
 });
 setGlobalOptions({ region: functionsRegion });
@@ -591,8 +596,7 @@ export const uploadVehicleEvidence = onRequest(
         }));
         const authenticatedEmail = about.data.user?.emailAddress ?? '';
         if (!authenticatedEmail) throw new Error('Google Drive OAuth did not return an authenticated user.');
-        const configuredId = googleDriveRootFolderId.value().trim();
-        if (!configuredId) throw new Error('GOOGLE_DRIVE_ROOT_FOLDER_ID is not configured.');
+        const configuredId = requireGoogleDriveRootFolderId(googleDriveRootFolderId.value());
         const root = await withTransientDriveRetry(() => drive.files.get({
           fileId: configuredId,
           fields: 'id,name,mimeType,owners(emailAddress),capabilities(canAddChildren)',
@@ -986,8 +990,10 @@ export const archiveBatchToDrive = onCall(
 
     const batchId = sanitizeAndValidateId(request.data.batchId, 'batchId');
     const cursor = archiveCursor(request.data);
-    const rootFolderId = googleDriveRootFolderId.value().trim();
-    if (!rootFolderId) {
+    let rootFolderId: string;
+    try {
+      rootFolderId = requireGoogleDriveRootFolderId(googleDriveRootFolderId.value());
+    } catch {
       throw new HttpsError('failed-precondition', 'GOOGLE_DRIVE_ROOT_FOLDER_ID is not configured.');
     }
 

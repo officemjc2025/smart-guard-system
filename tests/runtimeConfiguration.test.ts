@@ -32,3 +32,19 @@ test('production environment refuses a staging project', () => {
     VITE_EXPECTED_FIREBASE_PROJECT_ID: 'securityprojectv1-staging',
   }), /Production build cannot target/);
 });
+
+test('production validation rejects stale upload and private-media regions', () => {
+  const base = {
+    VITE_APP_ENV: 'PRODUCTION',
+    VITE_EXPECTED_FIREBASE_PROJECT_ID: 'securityprojectv1',
+    VITE_FUNCTIONS_REGION: 'asia-southeast1',
+  };
+  assert.throws(() => validateRuntimeConfiguration(valid, 'production', {
+    ...base,
+    VITE_MEDIA_UPLOAD_URL: 'https://us-central1-securityprojectv1.cloudfunctions.net/uploadVehicleEvidence',
+  }), /must match the configured production Functions region/);
+  assert.throws(() => validateRuntimeConfiguration(valid, 'production', {
+    ...base,
+    VITE_PRIVATE_MEDIA_URL: 'https://us-central1-securityprojectv1.cloudfunctions.net/getVehicleEvidenceImage',
+  }), /must match the configured production Functions region/);
+});

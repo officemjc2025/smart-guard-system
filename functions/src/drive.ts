@@ -16,15 +16,36 @@ export interface GoogleDriveOAuthCredentials {
   refreshToken: string;
 }
 
+export function normalizeGoogleDriveOAuthCredentials(
+  credentials: GoogleDriveOAuthCredentials,
+): GoogleDriveOAuthCredentials {
+  const normalized = {
+    clientId: String(credentials.clientId || '').trim(),
+    clientSecret: String(credentials.clientSecret || '').trim(),
+    refreshToken: String(credentials.refreshToken || '').trim(),
+  };
+  if (!normalized.clientId || !normalized.clientSecret || !normalized.refreshToken) {
+    throw new Error('Google Drive OAuth secrets are not configured.');
+  }
+  return normalized;
+}
+
+export function requireGoogleDriveRootFolderId(value: unknown): string {
+  const rootFolderId = String(value || '').trim();
+  if (!rootFolderId) throw new Error('GOOGLE_DRIVE_ROOT_FOLDER_ID is not configured.');
+  return rootFolderId;
+}
+
 /** Creates a Drive client owned by the configured human OAuth user. */
 export function createOAuthDriveClient(
   credentials: GoogleDriveOAuthCredentials,
 ): drive_v3.Drive {
+  const normalized = normalizeGoogleDriveOAuthCredentials(credentials);
   const oauth2Client = new google.auth.OAuth2(
-    credentials.clientId,
-    credentials.clientSecret,
+    normalized.clientId,
+    normalized.clientSecret,
   );
-  oauth2Client.setCredentials({ refresh_token: credentials.refreshToken });
+  oauth2Client.setCredentials({ refresh_token: normalized.refreshToken });
   return google.drive({ version: 'v3', auth: oauth2Client });
 }
 
@@ -32,18 +53,10 @@ export function createOAuthDriveClient(
 export function getDriveClient(): drive_v3.Drive {
   if (!driveClient) {
     try {
-      const credentials = {
-        clientId: process.env.GOOGLE_DRIVE_CLIENT_ID?.trim() ?? '',
-        clientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET?.trim() ?? '',
-        refreshToken: process.env.GOOGLE_DRIVE_REFRESH_TOKEN?.trim() ?? '',
-      };
-      if (!credentials.clientId || !credentials.clientSecret || !credentials.refreshToken) {
-        throw new Error('Google Drive OAuth secrets are not configured.');
-      }
       driveClient = createOAuthDriveClient({
-        clientId: credentials.clientId,
-        clientSecret: credentials.clientSecret,
-        refreshToken: credentials.refreshToken,
+        clientId: process.env.GOOGLE_DRIVE_CLIENT_ID ?? '',
+        clientSecret: process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? '',
+        refreshToken: process.env.GOOGLE_DRIVE_REFRESH_TOKEN ?? '',
       });
       logger.info('[Google Drive Service] OAuth2 user client initialized.');
     } catch (err: unknown) {
