@@ -14,6 +14,11 @@ import { auth, db } from '../firebase';
 import type { IncidentReportRecord } from '../types';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
 import { buildIncidentWritePayload, safeIncidentWriteDiagnostics } from './incidentWritePayload';
+import { buildRevision, INCIDENT_REVISION_FIELDS, normalizeIncidentCorrectionChanges, validateEvidenceCorrectionPair, type RevisionRecord, type RevisionRole } from './revisionFramework';
+import { createUuid } from '../utils/uuid';
+import { currentOperationalShift } from './operationalShift';
+import { extractPrivateMediaFileId } from './mediaUploadService';
+import { toEpochMillis } from '../utils/dateTime';
 
 export type SiteIncidentRecord = IncidentReportRecord & {
   site_id: string;
@@ -35,18 +40,24 @@ const incident = (id: string, data: Record<string, unknown>): SiteIncidentRecord
   ...data,
   incident_id: String(data.incident_id || id),
   site_id: String(data.site_id || ''),
+  incident_datetime: time(data.incident_datetime),
   created_at: time(data.created_at),
   updated_at: time(data.updated_at),
   resolved_at: data.resolved_at ? time(data.resolved_at) : undefined,
   acknowledged_at: data.acknowledged_at ? time(data.acknowledged_at) : undefined,
   action_started_at: data.action_started_at ? time(data.action_started_at) : undefined,
   closed_at: data.closed_at ? time(data.closed_at) : undefined,
+  last_edited_at: data.last_edited_at ? time(data.last_edited_at) : undefined,
 } as SiteIncidentRecord);
+
+const revision = (data: Record<string, unknown>): RevisionRecord => ({
+  ...data, edited_at: time(data.edited_at),
+} as RevisionRecord);
 
 export async function listIncidents(siteId: string): Promise<SiteIncidentRecord[]> {
   const snapshot = await getDocs(query(collection(db, 'incidentReports'), where('site_id', '==', site(siteId))));
   return snapshot.docs.map(item => incident(item.id, item.data()))
-    .sort((left, right) => right.incident_datetime.localeCompare(left.incident_datetime));
+    .sort((left, right) => toEpochMillis(right.incident_datetime) - toEpochMillis(left.incident_datetime));
 }
 
 export async function listOpenIncidents(siteId: string): Promise<SiteIncidentRecord[]> {
@@ -79,6 +90,7 @@ export async function createIncidentReport(
   if (!input.photo_url) throw new Error('กรุณาแนบรูปหลักฐานเหตุการณ์');
   const reference = doc(db, 'incidentReports', input.incident_id);
   const auditReference = doc(db, 'auditLogs', `INCIDENT_REPORTED_${input.incident_id}`);
+  const shift = currentOperationalShift();
   const payload = buildIncidentWritePayload({
     incident: input,
     incidentDateTime: Timestamp.fromDate(new Date(input.incident_datetime)),
@@ -87,6 +99,8 @@ export async function createIncidentReport(
     uid,
     auditId: auditReference.id,
     serverTimestampValue: serverTimestamp(),
+    shiftId: shift.shiftId,
+    shiftEndAt: Timestamp.fromDate(shift.shiftEnd),
   });
   try {
     await runTransaction(db, async transaction => {
@@ -105,6 +119,65 @@ export async function createIncidentReport(
   const completed = await getDoc(reference);
   if (!completed.exists()) throw new Error('Completed Incident report could not be reloaded.');
   return incident(completed.id, completed.data());
+}
+
+export type IncidentCorrection = Partial<Record<(typeof INCIDENT_REVISION_FIELDS)[number], unknown>>;
+
+export async function listIncidentRevisions(siteId: string, incidentId: string): Promise<RevisionRecord[]> {
+  const snapshot = await getDocs(query(
+    collection(db, `incidentReports/${incidentId}/revisions`),
+    where('site_id', '==', site(siteId)),
+  ));
+  return snapshot.docs.map(item => revision(item.data()))
+    .sort((left, right) => right.revision_number - left.revision_number);
+}
+
+export async function correctIncident(
+  siteId: string, incidentId: string, changes: IncidentCorrection, reason: string,
+): Promise<void> {
+  const scopedSite = site(siteId);
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error('Authenticated account is required.');
+  const normalizedChanges = normalizeIncidentCorrectionChanges(changes, Timestamp.fromDate);
+  validateEvidenceCorrectionPair(normalizedChanges, 'photo_url', 'photo_file_id', extractPrivateMediaFileId);
+  const revisionId = `REV_${createUuid()}`;
+  const reference = doc(db, 'incidentReports', incidentId);
+  await runTransaction(db, async transaction => {
+    const [snapshot, profileSnapshot] = await Promise.all([
+      transaction.get(reference), transaction.get(doc(db, 'users', uid)),
+    ]);
+    if (!snapshot.exists()) throw new Error('Incident report not found.');
+    if (!profileSnapshot.exists()) throw new Error('Active user profile is required.');
+    const current = snapshot.data();
+    const profile = profileSnapshot.data();
+    if (current.site_id !== scopedSite) throw new Error('Incident belongs to another site.');
+    const revisionNumber = Number(current.revision_number || 0) + 1;
+    const auditId = `INCIDENT_CORRECTION_${incidentId}_${revisionNumber}`;
+    const revisionPayload = buildRevision({
+      revision_id: revisionId, revision_number: revisionNumber, record_id: incidentId,
+      module_name: 'IncidentReports', site_id: scopedSite, reason,
+      edited_by_uid: uid, edited_by_name: String(profile.operator_name || ''),
+      edited_by_role: String(profile.role || '') as RevisionRole,
+      edited_at: serverTimestamp(), audit_id: auditId, current, changes: normalizedChanges,
+      allowedFields: INCIDENT_REVISION_FIELDS,
+    });
+    transaction.update(reference, sanitizeAndValidateFirestoreData({
+      ...normalizedChanges, revision_number: revisionNumber, last_revision_id: revisionId,
+      last_edited_at: serverTimestamp(), last_edited_by_uid: uid,
+      last_edited_by_name: String(profile.operator_name || ''), has_corrections: true,
+      updated_at: serverTimestamp(),
+    }));
+    transaction.set(doc(reference, 'revisions', revisionId), revisionPayload);
+    transaction.set(doc(db, 'auditLogs', auditId), {
+      audit_id: auditId, operator_id: uid, account_uid: uid,
+      user_name: String(profile.operator_name || ''), operator_name: String(profile.operator_name || ''),
+      site_id: scopedSite, action: 'IncidentCorrection', module_name: 'IncidentReports',
+      record_id: incidentId, revision_number: revisionNumber,
+      changed_fields: revisionPayload.changed_fields, reason: revisionPayload.reason,
+      old_value: '', new_value: `Revision ${revisionNumber}`, action_result: 'Success',
+      created_at: serverTimestamp(),
+    });
+  });
 }
 
 export async function updateIncident(siteId: string, incidentId: string, updates: IncidentUpdate): Promise<void> {

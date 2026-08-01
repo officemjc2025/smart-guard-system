@@ -7,6 +7,7 @@ import {
   runTransaction,
   serverTimestamp,
   setDoc,
+  Timestamp,
   where,
 } from 'firebase/firestore';
 import { db } from '../firebase';
@@ -14,6 +15,10 @@ import { auth } from '../firebase';
 import type { PatrolLogRecord, PatrolPointRecord } from '../types';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
 import { currentOperationalShift } from './operationalShift';
+import { buildRevision, normalizeCorrectionChanges, PATROL_REVISION_FIELDS, validateEvidenceCorrectionPair, type RevisionRecord, type RevisionRole } from './revisionFramework';
+import { createUuid } from '../utils/uuid';
+import { extractPrivateMediaFileId } from './mediaUploadService';
+import { toEpochMillis } from '../utils/dateTime';
 
 export type SitePatrolPointRecord = PatrolPointRecord & { site_id: string };
 export type SitePatrolLogRecord = PatrolLogRecord & { site_id: string };
@@ -38,8 +43,14 @@ const log = (id: string, data: Record<string, unknown>): SitePatrolLogRecord => 
   ...data,
   patrol_log_id: String(data.patrol_log_id || id),
   site_id: String(data.site_id || ''),
+  checkin_time: time(data.checkin_time),
   created_at: time(data.created_at),
+  last_edited_at: data.last_edited_at ? time(data.last_edited_at) : undefined,
 } as SitePatrolLogRecord);
+
+const revision = (data: Record<string, unknown>): RevisionRecord => ({
+  ...data, edited_at: time(data.edited_at),
+} as RevisionRecord);
 
 export async function listPatrolPoints(siteId: string): Promise<SitePatrolPointRecord[]> {
   const snapshot = await getDocs(query(collection(db, 'patrolPoints'), where('site_id', '==', site(siteId))));
@@ -89,7 +100,7 @@ export function setPatrolPointStatus(
 export async function listPatrolLogs(siteId: string): Promise<SitePatrolLogRecord[]> {
   const snapshot = await getDocs(query(collection(db, 'patrolLogs'), where('site_id', '==', site(siteId))));
   return snapshot.docs.map(item => log(item.id, item.data()))
-    .sort((left, right) => right.checkin_time.localeCompare(left.checkin_time));
+    .sort((left, right) => toEpochMillis(right.checkin_time) - toEpochMillis(left.checkin_time));
 }
 
 export async function createPatrolLog(siteId: string, input: CreatePatrolLogInput): Promise<void> {
@@ -137,11 +148,14 @@ export async function completePatrolCheckin(
       ...input,
       shift_id: shift.shiftId,
       operational_date: shift.operationalDate,
+      shift_end_at: Timestamp.fromDate(shift.shiftEnd),
       site_id: scopedSite,
       recorded_by_uid: uid,
       checkin_time: serverTimestamp(),
       created_at: serverTimestamp(),
       updated_at: serverTimestamp(),
+      revision_number: 0,
+      has_corrections: false,
     }));
     transaction.set(auditReference, {
       audit_id: auditReference.id,
@@ -162,4 +176,64 @@ export async function completePatrolCheckin(
   const completed = await getDoc(reference);
   if (!completed.exists()) throw new Error('Completed Patrol check-in could not be reloaded.');
   return log(completed.id, completed.data());
+}
+
+export type PatrolCorrection = Partial<Record<(typeof PATROL_REVISION_FIELDS)[number], unknown>>;
+
+export async function listPatrolRevisions(siteId: string, patrolId: string): Promise<RevisionRecord[]> {
+  const snapshot = await getDocs(query(
+    collection(db, `patrolLogs/${patrolId}/revisions`),
+    where('site_id', '==', site(siteId)),
+  ));
+  return snapshot.docs.map(item => revision(item.data()))
+    .sort((left, right) => right.revision_number - left.revision_number);
+}
+
+export async function correctPatrolLog(
+  siteId: string, patrolId: string, changes: PatrolCorrection, reason: string,
+): Promise<void> {
+  const scopedSite = site(siteId);
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error('Authenticated account is required.');
+  const normalizedChanges = normalizeCorrectionChanges(changes);
+  validateEvidenceCorrectionPair(normalizedChanges, 'evidence_photo_1_url', 'evidence_photo_1_file_id', extractPrivateMediaFileId);
+  validateEvidenceCorrectionPair(normalizedChanges, 'evidence_photo_2_url', 'evidence_photo_2_file_id', extractPrivateMediaFileId);
+  const revisionId = `REV_${createUuid()}`;
+  const reference = doc(db, 'patrolLogs', patrolId);
+  await runTransaction(db, async transaction => {
+    const [snapshot, profileSnapshot] = await Promise.all([
+      transaction.get(reference), transaction.get(doc(db, 'users', uid)),
+    ]);
+    if (!snapshot.exists()) throw new Error('Patrol log not found.');
+    if (!profileSnapshot.exists()) throw new Error('Active user profile is required.');
+    const current = snapshot.data();
+    const profile = profileSnapshot.data();
+    if (current.site_id !== scopedSite) throw new Error('Patrol log belongs to another site.');
+    const revisionNumber = Number(current.revision_number || 0) + 1;
+    const auditId = `PATROL_CORRECTION_${patrolId}_${revisionNumber}`;
+    const revisionPayload = buildRevision({
+      revision_id: revisionId, revision_number: revisionNumber, record_id: patrolId,
+      module_name: 'PatrolLogs', site_id: scopedSite, reason,
+      edited_by_uid: uid, edited_by_name: String(profile.operator_name || ''),
+      edited_by_role: String(profile.role || '') as RevisionRole,
+      edited_at: serverTimestamp(), audit_id: auditId, current, changes: normalizedChanges,
+      allowedFields: PATROL_REVISION_FIELDS,
+    });
+    transaction.update(reference, sanitizeAndValidateFirestoreData({
+      ...normalizedChanges, revision_number: revisionNumber, last_revision_id: revisionId,
+      last_edited_at: serverTimestamp(), last_edited_by_uid: uid,
+      last_edited_by_name: String(profile.operator_name || ''), has_corrections: true,
+      updated_at: serverTimestamp(),
+    }));
+    transaction.set(doc(reference, 'revisions', revisionId), revisionPayload);
+    transaction.set(doc(db, 'auditLogs', auditId), {
+      audit_id: auditId, operator_id: uid, account_uid: uid,
+      user_name: String(profile.operator_name || ''), operator_name: String(profile.operator_name || ''),
+      site_id: scopedSite, action: 'PatrolCorrection', module_name: 'PatrolLogs',
+      record_id: patrolId, revision_number: revisionNumber,
+      changed_fields: revisionPayload.changed_fields, reason: revisionPayload.reason,
+      old_value: '', new_value: `Revision ${revisionNumber}`, action_result: 'Success',
+      created_at: serverTimestamp(),
+    });
+  });
 }

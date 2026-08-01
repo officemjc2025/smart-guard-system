@@ -11,6 +11,7 @@ import { auth, db } from '../firebase';
 import type { AuditLogRecord } from '../types';
 import { createUuid } from '../utils/uuid';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
+import { toEpochMillis } from '../utils/dateTime';
 
 export interface SiteAuditLogRecord extends AuditLogRecord {
   site_id: string;
@@ -46,7 +47,7 @@ const audit = (id: string, data: Record<string, unknown>): SiteAuditLogRecord =>
 export async function listAuditLogs(siteId: string): Promise<SiteAuditLogRecord[]> {
   const snapshot = await getDocs(query(collection(db, 'auditLogs'), where('site_id', '==', site(siteId))));
   return snapshot.docs.map(item => audit(item.id, item.data()))
-    .sort((left, right) => right.created_at.localeCompare(left.created_at));
+    .sort((left, right) => toEpochMillis(right.created_at) - toEpochMillis(left.created_at));
 }
 
 export async function listAuditLogsForRecord(

@@ -1935,3 +1935,172 @@ test('Incident rejects cross-site, arbitrary mutation, missing photo, and client
     description: 'forged', updated_at: serverTimestamp(),
   }));
 });
+
+const seedRevisionTarget = async (moduleName: 'IncidentReports' | 'PatrolLogs', id: string, input: {
+  siteId?: string; owner?: string; createdAt?: Timestamp; omitAbnormalReason?: boolean;
+  incidentStatus?: 'reported' | 'acknowledged';
+} = {}) => environment.withSecurityRulesDisabled(async context => {
+  const siteId = input.siteId || 'site-a';
+  const createdAt = input.createdAt || Timestamp.now();
+  const common = {
+    site_id: siteId, recorded_by_uid: input.owner || 'guard-a', created_at: createdAt,
+    updated_at: createdAt, revision_number: 0, has_corrections: false,
+  };
+  await setDoc(doc(context.firestore(), `${moduleName === 'IncidentReports' ? 'incidentReports' : 'patrolLogs'}/${id}`),
+    moduleName === 'IncidentReports' ? {
+      ...common, incident_id: id, incident_datetime: createdAt, reported_at: createdAt,
+      incident_type: 'อุปกรณ์ชำรุด', location: 'Lobby', description: 'ข้อมูลเดิม',
+      priority: 'Normal', incident_status: input.incidentStatus || 'reported', status: 'แจ้งแล้ว',
+      photo_url: 'https://drive.google.com/file/d/OLDINCIDENTPHOTO/view', photo_file_id: 'OLDINCIDENTPHOTO',
+    } : {
+      ...common, patrol_log_id: id, checkin_time: createdAt, shift_id: '2026-08-01_DAY',
+      patrol_point_name: 'Lobby', custom_location: '',
+      ...(!input.omitAbnormalReason ? { abnormal_reason: 'รายละเอียดเดิม' } : {}),
+      evidence_photo_1_url: 'https://drive.google.com/file/d/OLDPATROLPHOTO/view',
+      evidence_photo_1_file_id: 'OLDPATROLPHOTO',
+    });
+});
+
+const correctionTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  moduleName: 'IncidentReports' | 'PatrolLogs', id: string,
+  actor: { uid: string; name: string; role: string },
+  options: {
+    omitRevision?: boolean; omitUpdate?: boolean; immutable?: boolean;
+    photo?: 'valid' | 'url-only' | 'id-only' | 'mismatch'; claimedBefore?: unknown;
+  } = {},
+) => runTransaction(database, async transaction => {
+  const collectionName = moduleName === 'IncidentReports' ? 'incidentReports' : 'patrolLogs';
+  const reference = doc(database, `${collectionName}/${id}`);
+  const snapshot = await transaction.get(reference);
+  const revisionNumber = Number(snapshot.get('revision_number') || 0) + 1;
+  const revisionId = `REV_${id}_${revisionNumber}`;
+  const auditId = `${moduleName === 'IncidentReports' ? 'INCIDENT' : 'PATROL'}_CORRECTION_${id}_${revisionNumber}`;
+  const fields = options.photo === 'url-only' ? ['photo_url']
+    : options.photo === 'id-only' ? ['photo_file_id']
+      : options.photo ? ['photo_url', 'photo_file_id']
+    : [moduleName === 'IncidentReports' ? 'description' : 'abnormal_reason'];
+  const nextValues = options.photo ? {
+    ...(options.photo !== 'id-only' ? { photo_url: `https://drive.google.com/file/d/${options.photo === 'mismatch' ? 'WRONGINCIDENTPHOTO' : 'NEWINCIDENTPHOTO'}/view` } : {}),
+    ...(options.photo !== 'url-only' ? { photo_file_id: 'NEWINCIDENTPHOTO' } : {}),
+  } : { [fields[0]]: `ข้อมูลที่แก้ไขแล้ว ${revisionNumber}` };
+  if (!options.omitUpdate) transaction.update(reference, {
+    ...nextValues,
+    ...(options.immutable ? { site_id: 'site-b' } : {}),
+    revision_number: revisionNumber, last_revision_id: revisionId,
+    last_edited_at: serverTimestamp(), last_edited_by_uid: actor.uid,
+    last_edited_by_name: actor.name, has_corrections: true, updated_at: serverTimestamp(),
+  });
+  if (!options.omitRevision) transaction.set(doc(reference, 'revisions', revisionId), {
+    revision_id: revisionId, revision_number: revisionNumber, record_id: id, module_name: moduleName,
+    site_id: snapshot.get('site_id'), changed_fields: fields,
+    before: Object.fromEntries(fields.map(field => [field,
+      options.claimedBefore !== undefined ? options.claimedBefore : snapshot.get(field) ?? null,
+    ])), after: nextValues,
+    reason: 'แก้ไขข้อมูลที่บันทึกไม่ถูกต้อง', edited_by_uid: actor.uid,
+    edited_by_name: actor.name, edited_by_role: actor.role, edited_at: serverTimestamp(), audit_id: auditId,
+  });
+  transaction.set(doc(database, `auditLogs/${auditId}`), {
+    audit_id: auditId, operator_id: actor.uid, account_uid: actor.uid,
+    user_name: actor.name, operator_name: actor.name, site_id: snapshot.get('site_id'),
+    action: moduleName === 'IncidentReports' ? 'IncidentCorrection' : 'PatrolCorrection',
+    module_name: moduleName, record_id: id, revision_number: revisionNumber,
+    changed_fields: fields, reason: 'แก้ไขข้อมูลที่บันทึกไม่ถูกต้อง',
+    old_value: '', new_value: `Revision ${revisionNumber}`, action_result: 'Success', created_at: serverTimestamp(),
+  });
+});
+
+test('immutable correction transaction permits Guard owner, Manager, Admin and current ShiftHead', async () => {
+  for (const input of [
+    { uid: 'guard-a', name: 'Guard A', role: 'Guard', module: 'IncidentReports' as const },
+    { uid: 'manager-a', name: 'Manager A', role: 'Manager', module: 'IncidentReports' as const },
+    { uid: 'admin-a', name: 'Admin A', role: 'Admin', module: 'PatrolLogs' as const },
+    { uid: 'shift-a', name: 'Shift A', role: 'ShiftHead', module: 'PatrolLogs' as const },
+  ]) {
+    const id = `revision-${input.uid}`;
+    await seedRevisionTarget(input.module, id);
+    await assertSucceeds(correctionTransaction(
+      environment.authenticatedContext(input.uid).firestore(), input.module, id, input,
+    ));
+    const parent = await getDoc(doc(environment.authenticatedContext(input.uid).firestore(),
+      `${input.module === 'IncidentReports' ? 'incidentReports' : 'patrolLogs'}/${id}`));
+    assert.equal(parent.get('revision_number'), 1);
+    assert.equal(parent.get('has_corrections'), true);
+  }
+});
+
+test('corrections deny timeout, inactive, cross-site, immutable identity, and incomplete atomic writes', async () => {
+  const expired = Timestamp.fromMillis(Date.now() - 31 * 60 * 1000);
+  for (const [id, input] of [
+    ['expired', { createdAt: expired }], ['inactive', {}], ['cross-site-revision', { siteId: 'site-b' }],
+    ['immutable-revision', {}], ['missing-revision', {}], ['missing-update', {}],
+    ['unknown-role-revision', {}], ['guard-acknowledged', { incidentStatus: 'acknowledged' }],
+  ] as const) await seedRevisionTarget('IncidentReports', id, input);
+  await assertFails(correctionTransaction(environment.authenticatedContext('guard-a').firestore(), 'IncidentReports', 'expired', { uid: 'guard-a', name: 'Guard A', role: 'Guard' }));
+  await assertFails(correctionTransaction(environment.authenticatedContext('inactive-a').firestore(), 'IncidentReports', 'inactive', { uid: 'inactive-a', name: 'Inactive A', role: 'Guard' }));
+  await assertFails(correctionTransaction(environment.authenticatedContext('guard-a').firestore(), 'IncidentReports', 'cross-site-revision', { uid: 'guard-a', name: 'Guard A', role: 'Guard' }));
+  await assertFails(correctionTransaction(environment.authenticatedContext('guard-a').firestore(), 'IncidentReports', 'immutable-revision', { uid: 'guard-a', name: 'Guard A', role: 'Guard' }, { immutable: true }));
+  await assertFails(correctionTransaction(environment.authenticatedContext('guard-a').firestore(), 'IncidentReports', 'missing-revision', { uid: 'guard-a', name: 'Guard A', role: 'Guard' }, { omitRevision: true }));
+  await assertFails(correctionTransaction(environment.authenticatedContext('guard-a').firestore(), 'IncidentReports', 'missing-update', { uid: 'guard-a', name: 'Guard A', role: 'Guard' }, { omitUpdate: true }));
+  await assertFails(correctionTransaction(environment.authenticatedContext('unknown-a').firestore(), 'IncidentReports', 'unknown-role-revision', { uid: 'unknown-a', name: 'Unknown A', role: 'Supervisor' }));
+  await assertFails(correctionTransaction(environment.authenticatedContext('guard-a').firestore(), 'IncidentReports', 'guard-acknowledged', { uid: 'guard-a', name: 'Guard A', role: 'Guard' }));
+});
+
+test('revision documents are append-only and cannot be overwritten or deleted', async () => {
+  const id = 'append-only';
+  const actor = { uid: 'manager-a', name: 'Manager A', role: 'Manager' };
+  const database = environment.authenticatedContext(actor.uid).firestore();
+  await seedRevisionTarget('IncidentReports', id);
+  await assertSucceeds(correctionTransaction(database, 'IncidentReports', id, actor));
+  await assertSucceeds(correctionTransaction(database, 'IncidentReports', id, actor));
+  assert.equal((await getDoc(doc(database, `incidentReports/${id}`))).get('revision_number'), 2);
+  const revisionReference = doc(database, `incidentReports/${id}/revisions/REV_${id}_1`);
+  await assertFails(updateDoc(revisionReference, { reason: 'แก้ประวัติย้อนหลัง' }));
+  await assertFails(deleteDoc(revisionReference));
+});
+
+test('photo correction preserves existing evidence in revision and validates new media registry identity', async () => {
+  const id = 'photo-revision';
+  const actor = { uid: 'manager-a', name: 'Manager A', role: 'Manager' };
+  await seedRevisionTarget('IncidentReports', id);
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), 'mediaUploads/NEWINCIDENTPHOTO'), {
+      site_id: 'site-a', module_name: 'IncidentReports', record_id: id, media_type: 'incident_photo',
+      media_url: 'https://drive.google.com/file/d/NEWINCIDENTPHOTO/view',
+    });
+  });
+  const database = environment.authenticatedContext(actor.uid).firestore();
+  await assertSucceeds(correctionTransaction(database, 'IncidentReports', id, actor, { photo: 'valid' }));
+  const revision = await getDoc(doc(database, `incidentReports/${id}/revisions/REV_${id}_1`));
+  assert.equal(revision.get('before.photo_file_id'), 'OLDINCIDENTPHOTO');
+  assert.equal(revision.get('after.photo_file_id'), 'NEWINCIDENTPHOTO');
+});
+
+test('evidence correction rules deny URL-only, file-ID-only, and mismatched pairs', async () => {
+  const actor = { uid: 'manager-a', name: 'Manager A', role: 'Manager' };
+  const database = environment.authenticatedContext(actor.uid).firestore();
+  for (const mode of ['url-only', 'id-only', 'mismatch'] as const) {
+    const id = `photo-${mode}`;
+    await seedRevisionTarget('IncidentReports', id);
+    await environment.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'mediaUploads/NEWINCIDENTPHOTO'), {
+        site_id: 'site-a', module_name: 'IncidentReports', record_id: id,
+        media_type: 'incident_photo', media_url: 'https://drive.google.com/file/d/NEWINCIDENTPHOTO/view',
+      });
+    });
+    await assertFails(correctionTransaction(database, 'IncidentReports', id, actor, { photo: mode }));
+  }
+});
+
+test('optional Patrol abnormal_reason revision safely validates absent and present before values', async () => {
+  const actor = { uid: 'manager-a', name: 'Manager A', role: 'Manager' };
+  const database = environment.authenticatedContext(actor.uid).firestore();
+  await seedRevisionTarget('PatrolLogs', 'abnormal-absent-valid', { omitAbnormalReason: true });
+  await assertSucceeds(correctionTransaction(database, 'PatrolLogs', 'abnormal-absent-valid', actor, { claimedBefore: null }));
+  await seedRevisionTarget('PatrolLogs', 'abnormal-absent-false', { omitAbnormalReason: true });
+  await assertFails(correctionTransaction(database, 'PatrolLogs', 'abnormal-absent-false', actor, { claimedBefore: 'ข้อมูลที่ไม่มีจริง' }));
+  await seedRevisionTarget('PatrolLogs', 'abnormal-present-valid');
+  await assertSucceeds(correctionTransaction(database, 'PatrolLogs', 'abnormal-present-valid', actor));
+  await seedRevisionTarget('PatrolLogs', 'abnormal-present-false');
+  await assertFails(correctionTransaction(database, 'PatrolLogs', 'abnormal-present-false', actor, { claimedBefore: 'ข้อมูลผิด' }));
+});

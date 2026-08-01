@@ -6,7 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Camera, Check, MapPin, RefreshCw, ShieldAlert, ShieldCheck, X } from 'lucide-react';
 import type { PatrolLogRecord, PatrolPointRecord } from '../types';
-import { completePatrolCheckin, listPatrolLogs, listActivePatrolPoints } from '../services/patrolService';
+import { completePatrolCheckin, listPatrolLogs, listActivePatrolPoints, listPatrolRevisions } from '../services/patrolService';
 import { validatePatrolCheckinDraft } from '../services/patrolPolicy';
 import { extractPrivateMediaFileId, uploadImageToDrive } from '../services/mediaUploadService';
 import { createUuid } from '../utils/uuid';
@@ -14,8 +14,10 @@ import { stampEvidenceImage } from '../utils/evidenceStamp';
 import { formatThaiDateTime } from '../utils/dateTime';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 import { patrolLifecycle } from '../services/operationalLifecycle';
+import OperationalCorrectionDialog from './OperationalCorrectionDialog';
+import RevisionHistoryPanel from './RevisionHistoryPanel';
 
-interface PatrolLogsProps { guardName: string }
+interface PatrolLogsProps { guardName: string; userRole: string }
 type PhotoSlot = 1 | 2;
 
 export default function PatrolLogs({ guardName }: PatrolLogsProps) {
@@ -33,6 +35,8 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
   const [patrolLogId, setPatrolLogId] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [correction, setCorrection] = useState<PatrolLogRecord | null>(null);
+  const [history, setHistory] = useState<PatrolLogRecord | null>(null);
   const submitFlight = useRef<Promise<void> | null>(null);
   const previewUrls = useRef<Set<string>>(new Set());
 
@@ -223,8 +227,12 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
               </div>
             ))}
           </div>
+          {log.has_corrections && <p className="mt-2 text-xs font-bold text-amber-700">Edited · Revision {log.revision_number} · {log.last_edited_by_name} · {formatThaiDateTime(log.last_edited_at)}</p>}
+          <div className="mt-2 flex gap-3"><button onClick={() => setCorrection(log)} className="text-xs font-bold text-indigo-600">แก้ไขพร้อม Revision</button><button onClick={() => setHistory(log)} className="text-xs font-bold text-slate-600">ประวัติการแก้ไข</button></div>
         </article>)}</div>
       </section>
+      {correction && <OperationalCorrectionDialog module="PatrolLogs" record={correction} siteId={siteId} operatorName={guardName} onClose={() => setCorrection(null)} onSaved={reload} />}
+      {history && <RevisionHistoryPanel title={history.patrol_log_id} load={() => listPatrolRevisions(siteId, history.patrol_log_id)} onClose={() => setHistory(null)} />}
     </div>
   );
 }

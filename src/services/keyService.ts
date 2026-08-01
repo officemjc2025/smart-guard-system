@@ -13,6 +13,7 @@ import { auth, db } from '../firebase';
 import type { KeyLogRecord } from '../types';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
 import { normalizeOptionalIdentityNumber } from './keyIdentityPolicy';
+import { toEpochMillis } from '../utils/dateTime';
 import {
   type UploadedKeyReturnEvidence,
   validateUploadedKeyReturnEvidence,
@@ -65,7 +66,7 @@ const keyRecord = (id: string, data: Record<string, unknown>): KeyRecord => ({
 export async function listKeyLogs(siteId: string): Promise<SiteKeyLogRecord[]> {
   const snapshot = await getDocs(query(collection(db, 'keyLogs'), where('site_id', '==', site(siteId))));
   return snapshot.docs.map(item => keyLog(item.id, item.data()))
-    .sort((left, right) => right.checkout_time.localeCompare(left.checkout_time));
+    .sort((left, right) => toEpochMillis(right.checkout_time) - toEpochMillis(left.checkout_time));
 }
 
 export async function listCheckedOutKeys(siteId: string): Promise<SiteKeyLogRecord[]> {

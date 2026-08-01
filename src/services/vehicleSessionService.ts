@@ -33,6 +33,7 @@ import { firestoreQueueMetricTransition } from './vehicleSessionMetricsFirestore
 import { assertExpectedSessionVersion } from './vehicleSessionVersionService';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { FUNCTIONS_REGION } from '../config/firebaseFunctions';
+import { toEpochMillis } from '../utils/dateTime';
 
 const SESSION_COLLECTION = 'vehicleSessions';
 const LOCK_DURATION_MS = 5 * 60 * 1000;
@@ -146,7 +147,7 @@ export async function listVehicleHistory(siteId: string): Promise<VehicleLogReco
   ));
   return snapshot.docs
     .map(vehicleLogFromSnapshot)
-    .sort((left, right) => right.entry_time.localeCompare(left.entry_time));
+    .sort((left, right) => toEpochMillis(right.entry_time) - toEpochMillis(left.entry_time));
 }
 
 async function findCard(rawValue: string, siteId: string): Promise<ParkingCardRecord> {

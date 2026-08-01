@@ -15,6 +15,10 @@ function asDate(value: unknown): Date | null {
   return Number.isNaN(candidate.getTime()) ? null : candidate;
 }
 
+export function toEpochMillis(value: unknown): number {
+  return asDate(value)?.getTime() ?? 0;
+}
+
 export function formatThaiDate(value: unknown, fallback = '—'): string {
   const date = asDate(value);
   if (!date) return fallback;

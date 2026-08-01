@@ -636,7 +636,7 @@ export default function App() {
           {activeTab === 'vehicleOperations' && <DebugPage name="VehicleOperations"><VehicleOperations siteId={currentProfile.site_id} operatorName={guardName} role={userRole} onOpenVehicleSession={() => setActiveTab('vehicles')} /></DebugPage>}
           {activeTab === 'contractors' && <DebugPage name="ContractorLogs"><ContractorLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} /></DebugPage>}
-          {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} /></DebugPage>}
+          {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} userRole={userRole} /></DebugPage>}
           {activeTab === 'incidents' && <DebugPage name="IncidentReports"><IncidentReports guardName={guardName} userRole={userRole} /></DebugPage>}
           {activeTab === 'history' && <DebugPage name="SearchHistory"><SearchHistory /></DebugPage>}
           {activeTab === 'settings' && ['Admin', 'Manager'].includes(userRole) && <DebugPage name="MasterData"><MasterData /></DebugPage>}

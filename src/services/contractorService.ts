@@ -18,6 +18,7 @@ import type {
   ContractorLogRecord,
 } from '../types';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
+import { toEpochMillis } from '../utils/dateTime';
 
 export type SiteContractorRecord = ContractorLogRecord & { site_id: string };
 export type CreateContractorInput = Omit<SiteContractorRecord, 'site_id' | 'created_at' | 'updated_at'>;
@@ -38,8 +39,8 @@ const contractorFromData = (id: string, data: Record<string, unknown>): SiteCont
   ...data,
   contractor_log_id: String(data.contractor_log_id || id),
   site_id: String(data.site_id || ''),
-  entry_time: String(data.entry_time || ''),
-  exit_time: data.exit_time ? String(data.exit_time) : undefined,
+  entry_time: timestampText(data.entry_time),
+  exit_time: data.exit_time ? timestampText(data.exit_time) : undefined,
   created_at: timestampText(data.created_at),
   updated_at: timestampText(data.updated_at),
 } as SiteContractorRecord);
@@ -51,7 +52,7 @@ export async function listContractors(siteId: string): Promise<SiteContractorRec
   ));
   return snapshot.docs
     .map(item => contractorFromData(item.id, item.data()))
-    .sort((left, right) => right.entry_time.localeCompare(left.entry_time));
+    .sort((left, right) => toEpochMillis(right.entry_time) - toEpochMillis(left.entry_time));
 }
 
 export async function listActiveContractors(siteId: string): Promise<SiteContractorRecord[]> {

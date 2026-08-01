@@ -979,8 +979,9 @@ service cloud.firestore {
                'evidence_photo_2_url', 'evidence_photo_1_file_id', 'evidence_photo_2_file_id',
                'status', 'area_status', 'abnormal_detail',
                'abnormal_reason', 'captured_at_client', 'recorded_by_uid',
-               'workflow_status', 'shift_id', 'operational_date',
-               'site_id', 'created_at', 'updated_at'
+               'workflow_status', 'shift_id', 'shift_end_at', 'operational_date',
+               'site_id', 'created_at', 'updated_at',
+               'revision_number', 'has_corrections'
              ])
              && data.keys().hasAll([
                'patrol_log_id', 'patrol_point_id', 'point_name', 'patrol_point_name',
@@ -1000,7 +1001,10 @@ service cloud.firestore {
              && data.status in ['ปกติ', 'ผิดปกติ']
              && data.area_status in ['normal', 'abnormal']
              && data.workflow_status == 'completed'
+             && (!('revision_number' in data) || data.revision_number == 0)
+             && (!('has_corrections' in data) || data.has_corrections == false)
              && data.shift_id is string && data.shift_id.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}_(DAY|NIGHT)$')
+             && (!('shift_end_at' in data) || data.shift_end_at is timestamp)
              && data.operational_date is string && data.operational_date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
              && data.evidence_photo_1_url is string && data.evidence_photo_1_url.matches('^https://drive[.]google[.]com/.*') && data.evidence_photo_1_url.size() <= 4096
              && data.evidence_photo_1_file_id is string && data.evidence_photo_1_file_id.size() >= 10 && data.evidence_photo_1_file_id.size() <= 128
@@ -1048,7 +1052,7 @@ service cloud.firestore {
                'damage_details', 'initial_action', 'shift_leader', 'outcome', 'priority',
                'management_note', 'status', 'incident_status', 'alert_status',
                'recorded_by_uid', 'site_id',
-               'created_at', 'updated_at'
+               'created_at', 'updated_at', 'revision_number', 'has_corrections', 'shift_id', 'shift_end_at'
              ])
              && data.keys().hasAll([
                'incident_id', 'incident_datetime', 'reported_at', 'location',
@@ -1079,6 +1083,10 @@ service cloud.firestore {
              && data.status == 'แจ้งแล้ว'
              && data.incident_status == 'reported'
              && data.alert_status == 'active'
+             && (!('shift_id' in data) || data.shift_id.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}_(DAY|NIGHT)$'))
+             && (!('shift_end_at' in data) || data.shift_end_at is timestamp)
+             && (!('revision_number' in data) || data.revision_number == 0)
+             && (!('has_corrections' in data) || data.has_corrections == false)
              && (!('target_unit_id' in data) || (data.target_unit_id is string && data.target_unit_id.size() <= 128))
              && (!('patrol_point_id' in data) || (data.patrol_point_id is string && data.patrol_point_id.size() <= 128))
              && (!('custom_location' in data) || (data.custom_location is string && data.custom_location.size() <= 500))
@@ -1188,6 +1196,204 @@ service cloud.firestore {
                  && existsAfter(/databases/$(database)/documents/auditLogs/$(('INCIDENT_CLOSE_' + id)))
                )
              );
+    }
+
+    function correctionWindowMinutes() {
+      let path = /databases/$(database)/documents/systemSettings/revisionPolicy;
+      return exists(path)
+             && get(path).data.guard_timeout_minutes is int
+             && get(path).data.guard_timeout_minutes >= 1
+             && get(path).data.guard_timeout_minutes <= 1440
+        ? get(path).data.guard_timeout_minutes : 30;
+    }
+
+    function canCorrectRecord(data, moduleName) {
+      return isActiveUser()
+             && data.site_id == activeSiteId()
+             && (
+               ownProfile().role in ['Manager', 'Admin']
+               || (ownProfile().role == 'ShiftHead'
+                 && (('shift_end_at' in data && request.time < data.shift_end_at)
+                   || (!('shift_end_at' in data) && request.time <= data.created_at + duration.value(12, 'h'))))
+               || (ownProfile().role == 'Guard'
+                 && data.recorded_by_uid == request.auth.uid
+                 && request.time <= data.created_at + duration.value(correctionWindowMinutes(), 'm')
+                 && (moduleName != 'IncidentReports'
+                   || (!('incident_status' in data) || data.incident_status == 'reported'))
+                 && (moduleName != 'PatrolLogs'
+                   || request.time <= data.created_at + duration.value(12, 'h')))
+             );
+    }
+
+    function validCorrectionMetadata(data, changed, moduleName, recordId) {
+      let oldNumber = ('revision_number' in resource.data) ? resource.data.revision_number : 0;
+      return 'revision_number' in data
+             && 'last_revision_id' in data
+             && data.revision_number == oldNumber + 1
+             && data.last_revision_id is string && data.last_revision_id.size() > 0 && data.last_revision_id.size() <= 128
+             && data.last_edited_at == request.time
+             && data.last_edited_by_uid == request.auth.uid
+             && data.last_edited_by_name == ownProfile().operator_name
+             && data.has_corrections == true
+             && data.updated_at == request.time
+             && ((moduleName == 'IncidentReports'
+                   && existsAfter(/databases/$(database)/documents/incidentReports/$(recordId)/revisions/$(data.last_revision_id)))
+               || (moduleName == 'PatrolLogs'
+                   && existsAfter(/databases/$(database)/documents/patrolLogs/$(recordId)/revisions/$(data.last_revision_id))));
+    }
+
+    function validIncidentCorrection(id) {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      return canCorrectRecord(resource.data, 'IncidentReports')
+             && data.site_id == resource.data.site_id
+             && data.incident_id == resource.data.incident_id
+             && data.created_at == resource.data.created_at
+             && data.reported_at == resource.data.reported_at
+             && data.recorded_by_uid == resource.data.recorded_by_uid
+             && changed.hasOnly([
+               'incident_datetime', 'incident_type', 'location', 'description', 'priority',
+               'photo_url', 'photo_file_id', 'remarks', 'revision_number', 'last_revision_id',
+               'last_edited_at', 'last_edited_by_uid', 'last_edited_by_name', 'has_corrections', 'updated_at'
+             ])
+             && changed.hasAny(['incident_datetime', 'incident_type', 'location', 'description', 'priority', 'photo_url', 'photo_file_id', 'remarks'])
+             && (!changed.hasAny(['incident_datetime']) || data.incident_datetime is timestamp)
+             && (!changed.hasAny(['description']) || (data.description is string && data.description.size() > 0 && data.description.size() <= 10000))
+             && (!changed.hasAny(['location']) || (data.location is string && data.location.size() > 0 && data.location.size() <= 500))
+             && (!changed.hasAny(['incident_type']) || (data.incident_type is string && data.incident_type.size() > 0 && data.incident_type.size() <= 128))
+             && (!changed.hasAny(['priority']) || data.priority in ['Low', 'Normal', 'High', 'Emergency'])
+             && (!changed.hasAny(['remarks']) || (data.remarks is string && data.remarks.size() <= 5000))
+             && changed.hasAny(['photo_url']) == changed.hasAny(['photo_file_id'])
+             && (!changed.hasAny(['photo_url']) || (data.photo_url is string && data.photo_url.matches('^https://drive[.]google[.]com/.*')))
+             && (!changed.hasAny(['photo_file_id']) || (
+               data.photo_file_id is string
+               && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.site_id == data.site_id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.module_name == 'IncidentReports'
+               && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.record_id == id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.media_type == 'incident_photo'
+               && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.media_url == data.photo_url))
+             && validCorrectionMetadata(data, changed, 'IncidentReports', id);
+    }
+
+    function validPatrolCorrection(id) {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      return canCorrectRecord(resource.data, 'PatrolLogs')
+             && data.site_id == resource.data.site_id
+             && data.patrol_log_id == resource.data.patrol_log_id
+             && data.created_at == resource.data.created_at
+             && data.checkin_time == resource.data.checkin_time
+             && data.recorded_by_uid == resource.data.recorded_by_uid
+             && changed.hasOnly([
+               'patrol_point_name', 'custom_location', 'abnormal_reason', 'remarks',
+               'evidence_photo_1_url', 'evidence_photo_1_file_id', 'evidence_photo_2_url', 'evidence_photo_2_file_id',
+               'revision_number', 'last_revision_id', 'last_edited_at', 'last_edited_by_uid',
+               'last_edited_by_name', 'has_corrections', 'updated_at'
+             ])
+             && changed.hasAny(['patrol_point_name', 'custom_location', 'abnormal_reason', 'remarks', 'evidence_photo_1_url', 'evidence_photo_1_file_id', 'evidence_photo_2_url', 'evidence_photo_2_file_id'])
+             && (!changed.hasAny(['patrol_point_name']) || (data.patrol_point_name is string && data.patrol_point_name.size() > 0 && data.patrol_point_name.size() <= 256))
+             && (!changed.hasAny(['custom_location']) || (data.custom_location is string && data.custom_location.size() <= 500))
+             && (!changed.hasAny(['abnormal_reason']) || (data.abnormal_reason is string && data.abnormal_reason.size() <= 2000))
+             && (!changed.hasAny(['remarks']) || (data.remarks is string && data.remarks.size() <= 5000))
+             && changed.hasAny(['evidence_photo_1_url']) == changed.hasAny(['evidence_photo_1_file_id'])
+             && changed.hasAny(['evidence_photo_2_url']) == changed.hasAny(['evidence_photo_2_file_id'])
+             && (!changed.hasAny(['evidence_photo_1_url']) || data.evidence_photo_1_url.matches('^https://drive[.]google[.]com/.*'))
+             && (!changed.hasAny(['evidence_photo_2_url']) || data.evidence_photo_2_url.matches('^https://drive[.]google[.]com/.*'))
+             && (!changed.hasAny(['evidence_photo_1_file_id']) || (
+               get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.site_id == data.site_id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.module_name == 'PatrolLogs'
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.record_id == id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.media_type == 'patrol_photo_1'
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_1_file_id)).data.media_url == data.evidence_photo_1_url))
+             && (!changed.hasAny(['evidence_photo_2_file_id']) || (
+               get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.site_id == data.site_id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.module_name == 'PatrolLogs'
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.record_id == id
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.media_type == 'patrol_photo_2'
+               && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.media_url == data.evidence_photo_2_url))
+             && validCorrectionMetadata(data, changed, 'PatrolLogs', id);
+    }
+
+    function validIncidentRevisionValues(data, recordId) {
+      let old = get(/databases/$(database)/documents/incidentReports/$(recordId)).data;
+      let current = getAfter(/databases/$(database)/documents/incidentReports/$(recordId)).data;
+      return (!data.changed_fields.hasAny(['incident_datetime']) || (data.before.incident_datetime == old.incident_datetime && data.after.incident_datetime == current.incident_datetime))
+             && (!data.changed_fields.hasAny(['incident_type']) || (data.before.incident_type == old.incident_type && data.after.incident_type == current.incident_type))
+             && (!data.changed_fields.hasAny(['location']) || (data.before.location == old.location && data.after.location == current.location))
+             && (!data.changed_fields.hasAny(['description']) || (data.before.description == old.description && data.after.description == current.description))
+             && (!data.changed_fields.hasAny(['priority']) || (data.before.priority == old.priority && data.after.priority == current.priority))
+             && (!data.changed_fields.hasAny(['photo_url']) || (data.before.photo_url == old.photo_url && data.after.photo_url == current.photo_url))
+             && (!data.changed_fields.hasAny(['photo_file_id']) || (data.before.photo_file_id == old.photo_file_id && data.after.photo_file_id == current.photo_file_id))
+             && (!data.changed_fields.hasAny(['remarks']) || (
+               ((!('remarks' in old) && data.before.remarks == null) || data.before.remarks == old.remarks)
+               && data.after.remarks == current.remarks));
+    }
+
+    function validPatrolRevisionValues(data, recordId) {
+      let old = get(/databases/$(database)/documents/patrolLogs/$(recordId)).data;
+      let current = getAfter(/databases/$(database)/documents/patrolLogs/$(recordId)).data;
+      return (!data.changed_fields.hasAny(['patrol_point_name']) || (data.before.patrol_point_name == old.patrol_point_name && data.after.patrol_point_name == current.patrol_point_name))
+             && (!data.changed_fields.hasAny(['custom_location']) || (data.before.custom_location == old.custom_location && data.after.custom_location == current.custom_location))
+             && (!data.changed_fields.hasAny(['abnormal_reason']) || (
+               ((!('abnormal_reason' in old) && data.before.abnormal_reason == null)
+                 || (('abnormal_reason' in old) && data.before.abnormal_reason == old.abnormal_reason))
+               && data.after.abnormal_reason == current.abnormal_reason))
+             && (!data.changed_fields.hasAny(['evidence_photo_1_url']) || (data.before.evidence_photo_1_url == old.evidence_photo_1_url && data.after.evidence_photo_1_url == current.evidence_photo_1_url))
+             && (!data.changed_fields.hasAny(['evidence_photo_1_file_id']) || (data.before.evidence_photo_1_file_id == old.evidence_photo_1_file_id && data.after.evidence_photo_1_file_id == current.evidence_photo_1_file_id))
+             && (!data.changed_fields.hasAny(['evidence_photo_2_url']) || (((!('evidence_photo_2_url' in old) && data.before.evidence_photo_2_url == null) || data.before.evidence_photo_2_url == old.evidence_photo_2_url) && data.after.evidence_photo_2_url == current.evidence_photo_2_url))
+             && (!data.changed_fields.hasAny(['evidence_photo_2_file_id']) || (((!('evidence_photo_2_file_id' in old) && data.before.evidence_photo_2_file_id == null) || data.before.evidence_photo_2_file_id == old.evidence_photo_2_file_id) && data.after.evidence_photo_2_file_id == current.evidence_photo_2_file_id))
+             && (!data.changed_fields.hasAny(['remarks']) || (((!('remarks' in old) && data.before.remarks == null) || data.before.remarks == old.remarks) && data.after.remarks == current.remarks));
+    }
+
+    function validRevisionCreate(data, revisionId, recordId, moduleName) {
+      return data.keys().hasOnly([
+               'revision_id', 'revision_number', 'record_id', 'module_name', 'site_id', 'changed_fields',
+               'before', 'after', 'reason', 'edited_by_uid', 'edited_by_name', 'edited_by_role', 'edited_at', 'audit_id'
+             ])
+             && data.revision_id == revisionId && data.record_id == recordId && data.module_name == moduleName
+             && data.site_id == activeSiteId()
+             && ((moduleName == 'IncidentReports'
+                   && data.site_id == getAfter(/databases/$(database)/documents/incidentReports/$(recordId)).data.site_id
+                   && data.revision_number == getAfter(/databases/$(database)/documents/incidentReports/$(recordId)).data.revision_number
+                   && getAfter(/databases/$(database)/documents/incidentReports/$(recordId)).data.last_revision_id == revisionId)
+               || (moduleName == 'PatrolLogs'
+                   && data.site_id == getAfter(/databases/$(database)/documents/patrolLogs/$(recordId)).data.site_id
+                   && data.revision_number == getAfter(/databases/$(database)/documents/patrolLogs/$(recordId)).data.revision_number
+                   && getAfter(/databases/$(database)/documents/patrolLogs/$(recordId)).data.last_revision_id == revisionId))
+             && data.changed_fields is list && data.changed_fields.size() > 0
+             && data.before is map && data.after is map
+             && data.before.keys().hasOnly(data.changed_fields) && data.before.keys().hasAll(data.changed_fields)
+             && data.after.keys().hasOnly(data.changed_fields) && data.after.keys().hasAll(data.changed_fields)
+             && ((moduleName == 'IncidentReports' && validIncidentRevisionValues(data, recordId))
+               || (moduleName == 'PatrolLogs' && validPatrolRevisionValues(data, recordId)))
+             && data.reason is string && data.reason.size() > 0 && data.reason.size() <= 2000
+             && data.edited_by_uid == request.auth.uid
+             && data.edited_by_name == ownProfile().operator_name
+             && data.edited_by_role == ownProfile().role
+             && data.edited_at == request.time
+             && data.audit_id is string
+             && existsAfter(/databases/$(database)/documents/auditLogs/$(data.audit_id));
+    }
+
+    function validCorrectionAudit(data, id) {
+      return data.keys().hasOnly([
+               'audit_id', 'operator_id', 'account_uid', 'user_name', 'operator_name', 'site_id',
+               'action', 'module_name', 'record_id', 'revision_number', 'changed_fields', 'reason',
+               'old_value', 'new_value', 'action_result', 'created_at'
+             ])
+             && data.audit_id == id && data.operator_id == request.auth.uid && data.account_uid == request.auth.uid
+             && data.site_id == activeSiteId() && data.action in ['IncidentCorrection', 'PatrolCorrection']
+             && data.module_name in ['IncidentReports', 'PatrolLogs']
+             && data.revision_number is int && data.revision_number > 0
+             && data.changed_fields is list && data.changed_fields.size() > 0
+             && data.reason is string && data.reason.size() > 0 && data.reason.size() <= 2000
+             && data.action_result == 'Success' && data.created_at == request.time
+             && ((data.module_name == 'IncidentReports'
+                   && getAfter(/databases/$(database)/documents/incidentReports/$(data.record_id)).data.revision_number == data.revision_number
+                   && getAfter(/databases/$(database)/documents/incidentReports/$(data.record_id)/revisions/$(getAfter(/databases/$(database)/documents/incidentReports/$(data.record_id)).data.last_revision_id)).data.audit_id == id)
+               || (data.module_name == 'PatrolLogs'
+                   && getAfter(/databases/$(database)/documents/patrolLogs/$(data.record_id)).data.revision_number == data.revision_number
+                   && getAfter(/databases/$(database)/documents/patrolLogs/$(data.record_id)/revisions/$(getAfter(/databases/$(database)/documents/patrolLogs/$(data.record_id)).data.last_revision_id)).data.audit_id == id));
     }
 
     function validOperationalAudit(data, id) {
@@ -1409,8 +1615,14 @@ service cloud.firestore {
                    || resource.data.site_id == activeSiteId());
       allow list: if isActiveUser() && resource.data.site_id == activeSiteId();
       allow create: if canProcessVehicleExit() && validPatrolLogCreate(request.resource.data, id);
-      allow update: if false;
+      allow update: if validPatrolCorrection(id);
       allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
+
+      match /revisions/{revisionId} {
+        allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+        allow create: if validRevisionCreate(request.resource.data, revisionId, id, 'PatrolLogs');
+        allow update, delete: if false;
+      }
     }
 
     match /incidentReports/{id} {
@@ -1420,8 +1632,14 @@ service cloud.firestore {
       allow list: if isActiveUser() && resource.data.site_id == activeSiteId();
       allow create: if (canProcessVehicleExit() && validIncidentCreate(request.resource.data, id))
                     || (isAdmin() && validLegacyIncidentImport(request.resource.data, id));
-      allow update: if canManageUnits() && validIncidentUpdate(id);
+      allow update: if (canManageUnits() && validIncidentUpdate(id)) || validIncidentCorrection(id);
       allow delete: if isAdmin() && resource.data.site_id == activeSiteId();
+
+      match /revisions/{revisionId} {
+        allow read: if isActiveUser() && resource.data.site_id == activeSiteId();
+        allow create: if validRevisionCreate(request.resource.data, revisionId, id, 'IncidentReports');
+        allow update, delete: if false;
+      }
     }
 
     match /blacklist/{id} {
@@ -1444,6 +1662,7 @@ service cloud.firestore {
                       || (request.resource.data.module_name == 'units' && validUnitAudit(request.resource.data))
                       || (request.resource.data.module_name == 'KeyLogs' && validKeyAudit(request.resource.data, id))
                       || (request.resource.data.module_name in ['PatrolLogs', 'IncidentReports'] && validOperationalAudit(request.resource.data, id))
+                      || (request.resource.data.action in ['IncidentCorrection', 'PatrolCorrection'] && validCorrectionAudit(request.resource.data, id))
                       || !(request.resource.data.module_name in ['ParkingCards', 'units', 'KeyLogs', 'PatrolLogs', 'IncidentReports']));
       allow update, delete: if false;
     }

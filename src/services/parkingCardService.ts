@@ -23,6 +23,7 @@ import { appendSessionActivityInTransaction } from './vehicleSessionActivityServ
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { FUNCTIONS_REGION } from '../config/firebaseFunctions';
 import { createUuid } from '../utils/uuid';
+import { toEpochMillis } from '../utils/dateTime';
 import {
   isAllowedParkingCardTransition,
   normalizeParkingCardIdentifier,
@@ -761,7 +762,7 @@ export async function getParkingCardHistory(card: ParkingCardRecord) {
     ...history.docs.map(item => ({ id: item.id, kind: 'History', date: String(item.data().occurred_at?.toDate?.()?.toISOString?.() || item.data().created_at?.toDate?.()?.toISOString?.() || ''), action: text(item.data().event_type), operator: text(item.data().operator_name), oldValue: text(item.data().previous_state), newValue: text(item.data().new_state), relatedVehicleLog: text(item.data().vehicle_log_id), relatedReplacementCard: text(item.data().replacement_card_id), detail: text(item.data().reason) })),
     ...audits.docs.map(item => ({ id: item.id, kind: 'Audit', date: text(item.data().created_at) || String(item.data().timestamp?.toDate?.()?.toISOString?.() || ''), action: text(item.data().action), operator: text(item.data().operator_name) || text(item.data().user_name), oldValue: text(item.data().old_value), newValue: text(item.data().new_value), relatedVehicleLog: text(item.data().vehicle_log_id), relatedReplacementCard: text(item.data().replacement_card_id), detail: text(item.data().reason) })),
     ...vehicles.docs.map(item => ({ id: item.id, kind: 'Vehicle', date: text(item.data().entry_time), action: `Vehicle ${text(item.data().status)}`, operator: text(item.data().operator_name) || text(item.data().recorded_by), oldValue: '', newValue: text(item.data().status), relatedVehicleLog: text(item.data().log_id) || item.id, relatedReplacementCard: '', detail: `${text(item.data().vehicle_plate)} • ${text(item.data().entry_time)}` })),
-  ].sort((left, right) => right.date.localeCompare(left.date));
+  ].sort((left, right) => toEpochMillis(right.date) - toEpochMillis(left.date));
 }
 
 export async function bulkDisableParkingCards(cards: readonly ParkingCardRecord[], operatorName: string) {

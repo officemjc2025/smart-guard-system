@@ -8,6 +8,8 @@ export interface IncidentWritePayloadInput {
   uid: string;
   auditId: string;
   serverTimestampValue: unknown;
+  shiftId?: string;
+  shiftEndAt?: unknown;
 }
 
 export function buildIncidentWritePayload(input: IncidentWritePayloadInput) {
@@ -18,6 +20,9 @@ export function buildIncidentWritePayload(input: IncidentWritePayloadInput) {
     recorded_by_uid: input.uid,
     incident_status: 'reported',
     alert_status: 'active',
+    revision_number: 0,
+    has_corrections: false,
+    ...(input.shiftId && input.shiftEndAt ? { shift_id: input.shiftId, shift_end_at: input.shiftEndAt } : {}),
     reported_at: input.serverTimestampValue,
     created_at: input.serverTimestampValue,
     updated_at: input.serverTimestampValue,

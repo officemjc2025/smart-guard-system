@@ -322,15 +322,23 @@ export interface PatrolLogRecord {
   recorded_by_uid?: string;
   workflow_status?: 'completed';
   shift_id?: string;
+  shift_end_at?: string;
   operational_date?: string;
   photo_url?: string;
   status: 'ปกติ' | 'ผิดปกติ' | 'ต้องติดตาม';
   abnormal_detail?: string;
   incident_photo_url?: string;
   note?: string;
+  remarks?: string;
   created_at: string;
   login_email?: string;
   operator_name?: string;
+  revision_number?: number;
+  last_revision_id?: string;
+  last_edited_at?: string;
+  last_edited_by_uid?: string;
+  last_edited_by_name?: string;
+  has_corrections?: boolean;
 }
 
 export interface IncidentReportRecord {
@@ -352,6 +360,7 @@ export interface IncidentReportRecord {
   involved_parties?: string;
   damage_details?: string;
   initial_action?: string;
+  remarks?: string;
   outcome?: string;
   priority?: 'Low' | 'Normal' | 'High' | 'Emergency';
   incident_status?: 'reported' | 'acknowledged' | 'in_progress' | 'resolved' | 'closed';
@@ -366,6 +375,14 @@ export interface IncidentReportRecord {
   closed_at?: string;
   closed_by?: string;
   recorded_by_uid?: string;
+  revision_number?: number;
+  last_revision_id?: string;
+  last_edited_at?: string;
+  last_edited_by_uid?: string;
+  last_edited_by_name?: string;
+  has_corrections?: boolean;
+  shift_id?: string;
+  shift_end_at?: string;
   reported_by: string;
   shift_leader: string;
   management_note?: string;

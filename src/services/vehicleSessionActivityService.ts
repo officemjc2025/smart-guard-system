@@ -20,6 +20,7 @@ import {
 import { auth, db } from '../firebase';
 import type { VehicleSessionActivity, VehicleSessionStage, VehicleSessionStatus } from '../types';
 import { sanitizeAndValidateFirestoreData, type FirestoreWriteData } from './firestoreData';
+import { toEpochMillis } from '../utils/dateTime';
 
 export interface SessionActivityInput {
   sessionId: string;
@@ -209,5 +210,5 @@ export function mergeLegacyAndSubcollectionActivities(
       : String(item.created_at || ''),
     clientEventId: item.client_event_id,
   }));
-  return [...merged.values()].sort((left, right) => left.at.localeCompare(right.at));
+  return [...merged.values()].sort((left, right) => toEpochMillis(left.at) - toEpochMillis(right.at));
 }
