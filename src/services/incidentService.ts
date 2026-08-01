@@ -13,6 +13,7 @@ import {
 import { auth, db } from '../firebase';
 import type { IncidentReportRecord } from '../types';
 import { sanitizeAndValidateFirestoreData } from './firestoreData';
+import { buildIncidentWritePayload, safeIncidentWriteDiagnostics } from './incidentWritePayload';
 
 export type SiteIncidentRecord = IncidentReportRecord & {
   site_id: string;
@@ -78,35 +79,29 @@ export async function createIncidentReport(
   if (!input.photo_url) throw new Error('กรุณาแนบรูปหลักฐานเหตุการณ์');
   const reference = doc(db, 'incidentReports', input.incident_id);
   const auditReference = doc(db, 'auditLogs', `INCIDENT_REPORTED_${input.incident_id}`);
-  await runTransaction(db, async transaction => {
-    if ((await transaction.get(reference)).exists()) throw new Error('Incident report already exists.');
-    transaction.set(reference, sanitizeAndValidateFirestoreData({
-      ...input,
-      incident_datetime: Timestamp.fromDate(new Date(input.incident_datetime)),
-      site_id: scopedSite,
-      recorded_by_uid: uid,
-      incident_status: 'reported',
-      alert_status: 'active',
-      reported_at: serverTimestamp(),
-      created_at: serverTimestamp(),
-      updated_at: serverTimestamp(),
-    }));
-    transaction.set(auditReference, {
-      audit_id: auditReference.id,
-      operator_id: uid,
-      account_uid: uid,
-      user_name: input.reported_by,
-      operator_name: input.reported_by,
-      site_id: scopedSite,
-      action: 'IncidentReported',
-      module_name: 'IncidentReports',
-      record_id: input.incident_id,
-      old_value: '',
-      new_value: input.status,
-      action_result: 'Success',
-      created_at: serverTimestamp(),
-    });
+  const payload = buildIncidentWritePayload({
+    incident: input,
+    incidentDateTime: Timestamp.fromDate(new Date(input.incident_datetime)),
+    incidentId: input.incident_id,
+    siteId: scopedSite,
+    uid,
+    auditId: auditReference.id,
+    serverTimestampValue: serverTimestamp(),
   });
+  try {
+    await runTransaction(db, async transaction => {
+      if ((await transaction.get(reference)).exists()) throw new Error('Incident report already exists.');
+      transaction.set(reference, payload.incident);
+      transaction.set(auditReference, payload.audit);
+    });
+  } catch (error) {
+    console.error('[Incident Firestore Write Failed]', {
+      ...safeIncidentWriteDiagnostics(payload),
+      code: typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code) : 'unknown',
+    });
+    throw error;
+  }
   const completed = await getDoc(reference);
   if (!completed.exists()) throw new Error('Completed Incident report could not be reloaded.');
   return incident(completed.id, completed.data());

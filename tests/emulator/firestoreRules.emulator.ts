@@ -24,6 +24,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
+import { buildIncidentWritePayload } from '../../src/services/incidentWritePayload';
 
 const projectId = 'securityprojectv1-staging';
 let environment: RulesTestEnvironment;
@@ -400,6 +401,9 @@ beforeEach(async () => {
       }),
       setDoc(doc(database, 'users/inactive-a'), {
         status: 'Inactive', role: 'Guard', site_id: 'site-a', operator_name: 'Inactive A',
+      }),
+      setDoc(doc(database, 'users/inactive-shift-a'), {
+        status: 'Inactive', role: 'ShiftHead', site_id: 'site-01', operator_name: 'Inactive Shift A',
       }),
       setDoc(doc(database, 'users/admin-b'), {
         status: 'Active', role: 'Admin', site_id: 'site-b', operator_name: 'Admin B',
@@ -1557,6 +1561,7 @@ const incidentCreateTransaction = (
   siteId: string,
   suffix: string,
   overrides: Record<string, unknown> = {},
+  actor: { uid: string; operatorName: string } = { uid: 'guard-a', operatorName: 'Guard A' },
 ) => runTransaction(database, async transaction => {
   const id = `incident-${suffix}`;
   transaction.set(doc(database, `incidentReports/${id}`), {
@@ -1565,14 +1570,14 @@ const incidentCreateTransaction = (
     location_name_snapshot: 'Lobby', incident_type: 'อุปกรณ์ชำรุด',
     description: 'พบอุปกรณ์ชำรุด', photo_url: 'https://drive.google.com/file/d/INCIDENTPHOTO123/view',
     photo_file_id: `INCIDENTPHOTO${suffix}`,
-    reported_by: 'Guard A', shift_leader: '', priority: 'Normal', status: 'แจ้งแล้ว',
+    reported_by: actor.operatorName, shift_leader: '', priority: 'Normal', status: 'แจ้งแล้ว',
     incident_status: 'reported', alert_status: 'active',
-    recorded_by_uid: 'guard-a', site_id: siteId,
+    recorded_by_uid: actor.uid, site_id: siteId,
     created_at: serverTimestamp(), updated_at: serverTimestamp(), ...overrides,
   });
   transaction.set(doc(database, `auditLogs/INCIDENT_REPORTED_${id}`), {
-    audit_id: `INCIDENT_REPORTED_${id}`, operator_id: 'guard-a', account_uid: 'guard-a',
-    user_name: 'Guard A', operator_name: 'Guard A', site_id: siteId,
+    audit_id: `INCIDENT_REPORTED_${id}`, operator_id: actor.uid, account_uid: actor.uid,
+    user_name: actor.operatorName, operator_name: actor.operatorName, site_id: siteId,
     action: 'IncidentReported', module_name: 'IncidentReports', record_id: id,
     old_value: '', new_value: 'แจ้งแล้ว', action_result: 'Success',
     created_at: serverTimestamp(),
@@ -1598,6 +1603,76 @@ const seedOperationalMedia = async (siteId: string, suffix: string) => {
     ]);
   });
 };
+
+const productionIncidentTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  input: {
+    incidentId: string;
+    fileId: string;
+    uid: string;
+    operatorName: string;
+    siteId: string;
+    locationType?: 'unit' | 'patrol_point' | 'common_area' | 'custom';
+    optional?: 'blank' | 'filled';
+    omitOutcome?: boolean;
+  },
+) => runTransaction(database, async transaction => {
+  const locationType = input.locationType || 'common_area';
+  const filled = input.optional === 'filled';
+  const incident = {
+    incident_id: input.incidentId,
+    incident_datetime: '2026-07-30T10:00:00.000Z',
+    location: locationType === 'unit' ? 'A-101'
+      : locationType === 'patrol_point' ? 'Lobby checkpoint'
+        : locationType === 'custom' ? 'Custom location' : 'Lobby',
+    location_type: locationType,
+    location_name_snapshot: locationType === 'unit' ? 'A-101'
+      : locationType === 'patrol_point' ? 'Lobby checkpoint'
+        : locationType === 'custom' ? 'Custom location' : 'Lobby',
+    target_unit_id: locationType === 'unit' ? 'UNIT_A101' : undefined,
+    unit_lookup_status: locationType === 'unit' ? 'matched' : undefined,
+    patrol_point_id: locationType === 'patrol_point' ? 'POINT_LOBBY' : undefined,
+    custom_location: locationType === 'custom' ? 'Custom location' : undefined,
+    incident_type: 'อุปกรณ์ชำรุด',
+    description: 'พบอุปกรณ์ชำรุด',
+    photo_url: `https://drive.google.com/file/d/${input.fileId}/view`,
+    photo_file_id: input.fileId,
+    reported_by: input.operatorName,
+    reporter_name: filled ? 'Reporter' : undefined,
+    involved_parties: filled ? 'Asset' : undefined,
+    damage_details: filled ? 'Damage' : undefined,
+    initial_action: filled ? 'Initial response' : undefined,
+    shift_leader: filled ? 'Shift leader' : '',
+    ...(!input.omitOutcome ? { outcome: 'อยู่ระหว่างดำเนินการ' } : {}),
+    priority: 'Normal',
+    status: 'แจ้งแล้ว',
+  };
+  const auditId = `INCIDENT_REPORTED_${input.incidentId}`;
+  const payload = buildIncidentWritePayload({
+    incident,
+    incidentDateTime: Timestamp.fromDate(new Date(incident.incident_datetime)),
+    incidentId: input.incidentId,
+    siteId: input.siteId,
+    uid: input.uid,
+    auditId,
+    serverTimestampValue: serverTimestamp(),
+  });
+  transaction.set(doc(database, `incidentReports/${input.incidentId}`), payload.incident);
+  transaction.set(doc(database, `auditLogs/${auditId}`), payload.audit);
+});
+
+const seedProductionIncidentMedia = async (input: {
+  fileId: string; incidentId: string; uid: string; siteId: string; operatorName: string;
+}) => environment.withSecurityRulesDisabled(async context => {
+  await setDoc(doc(context.firestore(), `mediaUploads/${input.fileId}`), {
+    actor_role: 'ShiftHead', auth_uid: input.uid, created_at: Timestamp.now(),
+    file_id: input.fileId, folder_id: 'folder-production-shape', media_type: 'incident_photo',
+    media_url: `https://drive.google.com/file/d/${input.fileId}/view`, mime_type: 'image/jpeg',
+    module: 'Incident', module_name: 'IncidentReports', operator_id: 'operator-sup001',
+    operator_name: input.operatorName, record_id: input.incidentId, site_id: input.siteId,
+    size_bytes: 1024, thumbnail_url: '',
+  });
+});
 
 test('Patrol same-site atomic check-in succeeds with one required evidence reference', async () => {
   const database = environment.authenticatedContext('guard-a').firestore();
@@ -1648,6 +1723,117 @@ test('Incident same-site atomic create preserves separate event and server repor
   assert.ok(record.get('incident_datetime') instanceof Timestamp);
   assert.ok(record.get('reported_at') instanceof Timestamp);
   assert.notDeepEqual(record.get('incident_datetime'), record.get('reported_at'));
+});
+
+test('Production-shaped ShiftHead can atomically create same-site Incident after media upload', async () => {
+  const actor = { uid: 'shift-head-a', operatorName: 'JK-Secure' };
+  const database = environment.authenticatedContext(actor.uid).firestore();
+  await seedOperationalMedia('site-01', 'shift-head-production');
+  await assertSucceeds(incidentCreateTransaction(
+    database,
+    'site-01',
+    'shift-head-production',
+    {
+      reporter_name: 'Reporter', involved_parties: 'Asset', damage_details: 'Damage',
+      initial_action: 'Initial response', outcome: 'อยู่ระหว่างดำเนินการ',
+    },
+    actor,
+  ));
+  const record = await getDoc(doc(database, 'incidentReports/incident-shift-head-production'));
+  assert.equal(record.get('recorded_by_uid'), actor.uid);
+  assert.equal(record.get('site_id'), 'site-01');
+  assert.equal(record.get('photo_file_id'), 'INCIDENTPHOTOshift-head-production');
+});
+
+test('exact Production UID and media shape pass through the real sanitized payload builder', async () => {
+  const input = {
+    uid: '3CoAkSEPwVTX7jHTP25iT4o0tD62', operatorName: 'Ekkalak', siteId: 'site-01',
+    incidentId: 'INC_32f048e7-6e80-425f-a238-3a0325d26af5',
+    fileId: '1BYeMco-gl9gkMjc4uPLIdRW-IVZt_CXO',
+  };
+  await environment.withSecurityRulesDisabled(async context => {
+    await setDoc(doc(context.firestore(), `users/${input.uid}`), {
+      operator_id: 'operator-sup001', account_id: 'account-sup001', username: 'sup001',
+      operator_name: input.operatorName, role: 'ShiftHead', status: 'Active',
+      site_id: input.siteId, auth_provider: 'anonymous',
+    });
+  });
+  await seedProductionIncidentMedia(input);
+  await assertSucceeds(productionIncidentTransaction(
+    environment.authenticatedContext(input.uid).firestore(),
+    { ...input, optional: 'blank' },
+  ));
+});
+
+test('real Incident payload builder accepts every UI location and optional-field variant', async () => {
+  const uid = 'shift-head-a';
+  const operatorName = 'JK-Secure';
+  const siteId = 'site-01';
+  for (const [locationType, optional, omitOutcome] of [
+    ['common_area', 'blank', false],
+    ['common_area', 'filled', false],
+    ['unit', 'blank', false],
+    ['patrol_point', 'blank', false],
+    ['custom', 'blank', false],
+    ['common_area', 'blank', true],
+  ] as const) {
+    const suffix = `${locationType}-${optional}-${omitOutcome ? 'no-outcome' : 'outcome'}`;
+    const incidentId = `INC_${suffix}`;
+    const fileId = `INCIDENTPHOTO${suffix}`;
+    await seedProductionIncidentMedia({ fileId, incidentId, uid, siteId, operatorName });
+    await assertSucceeds(productionIncidentTransaction(
+      environment.authenticatedContext(uid).firestore(),
+      { incidentId, fileId, uid, operatorName, siteId, locationType, optional, omitOutcome },
+    ));
+  }
+});
+
+test('Incident create role/site/identity policy preserves least privilege for every canonical role', async () => {
+  for (const actor of [
+    { uid: 'guard-a', operatorName: 'Guard A', siteId: 'site-a', suffix: 'guard-role' },
+    { uid: 'shift-a', operatorName: 'Shift A', siteId: 'site-a', suffix: 'shift-role' },
+    { uid: 'manager-a', operatorName: 'Manager A', siteId: 'site-a', suffix: 'manager-role' },
+    { uid: 'admin-a', operatorName: 'Admin A', siteId: 'site-a', suffix: 'admin-role' },
+  ]) {
+    await seedOperationalMedia(actor.siteId, actor.suffix);
+    await assertSucceeds(incidentCreateTransaction(
+      environment.authenticatedContext(actor.uid).firestore(),
+      actor.siteId,
+      actor.suffix,
+      {},
+      actor,
+    ));
+  }
+
+  for (const actor of [
+    { uid: 'inactive-shift-a', operatorName: 'Inactive Shift A', suffix: 'inactive-shift-role' },
+    { uid: 'legacy-a', operatorName: 'Legacy A', suffix: 'legacy-shift-role' },
+    { uid: 'unknown-a', operatorName: 'Unknown A', suffix: 'unknown-role' },
+  ]) {
+    await seedOperationalMedia('site-01', actor.suffix);
+    await assertFails(incidentCreateTransaction(
+      environment.authenticatedContext(actor.uid).firestore(),
+      'site-01',
+      actor.suffix,
+      {},
+      actor,
+    ));
+  }
+});
+
+test('ShiftHead Incident create denies cross-site, identity spoofing, and extra fields', async () => {
+  const actor = { uid: 'shift-head-a', operatorName: 'JK-Secure' };
+  const database = environment.authenticatedContext(actor.uid).firestore();
+  for (const suffix of ['shift-cross-site', 'shift-spoof', 'shift-extra']) {
+    await seedOperationalMedia(suffix === 'shift-cross-site' ? 'site-a' : 'site-01', suffix);
+  }
+  await assertFails(incidentCreateTransaction(database, 'site-a', 'shift-cross-site', {}, actor));
+  await assertFails(incidentCreateTransaction(
+    database, 'site-01', 'shift-spoof', { recorded_by_uid: 'admin-a' }, actor,
+  ));
+  await assertFails(incidentCreateTransaction(
+    database, 'site-01', 'shift-extra', { role: 'ShiftHead' }, actor,
+  ));
 });
 
 test('Incident acknowledgement requires Manager/Admin, same-site atomic audit, and preserves first timestamp', async () => {

@@ -89,6 +89,7 @@ test('visible Patrol stamp declares device time while canonical time remains ser
 test('Incident uses active site, exact media identity, structured event time, atomic create, and private viewer', async () => {
   const component = await readFile(new URL('../src/components/IncidentReports.tsx', import.meta.url), 'utf8');
   const service = await readFile(new URL('../src/services/incidentService.ts', import.meta.url), 'utf8');
+  const payload = await readFile(new URL('../src/services/incidentWritePayload.ts', import.meta.url), 'utf8');
   assert.match(component, /mediaType: 'incident_photo'/);
   assert.match(component, /recordId, siteId/);
   assert.doesNotMatch(component, /siteId: 'smart-guard'/);
@@ -97,8 +98,10 @@ test('Incident uses active site, exact media identity, structured event time, at
   assert.match(component, /AuthenticatedEvidenceImage/);
   assert.match(component, /submitFlight\.current/);
   assert.ok(component.indexOf('uploadImageToDrive(') < component.indexOf('createIncidentReport('));
-  assert.match(service, /incident_datetime: Timestamp\.fromDate/);
-  assert.match(service, /reported_at: serverTimestamp\(\)/);
-  assert.match(service, /transaction\.set\(auditReference/);
+  assert.match(service, /incidentDateTime: Timestamp\.fromDate/);
+  assert.match(service, /serverTimestampValue: serverTimestamp\(\)/);
+  assert.match(service, /transaction\.set\(auditReference, payload\.audit\)/);
+  assert.match(payload, /incident_datetime: input\.incidentDateTime/);
+  assert.match(payload, /reported_at: input\.serverTimestampValue/);
   assert.match(service, /resolved_at: serverTimestamp\(\)/);
 });
