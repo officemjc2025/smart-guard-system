@@ -1922,6 +1922,94 @@ test('Incident acknowledgement requires Manager/Admin, same-site atomic audit, a
   }));
 });
 
+type IncidentLifecycleAction = 'acknowledge' | 'start' | 'resolve' | 'close';
+const incidentLifecycleTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>,
+  id: string,
+  actor: { uid: string; name: string },
+  action: IncidentLifecycleAction,
+  extra: Record<string, unknown> = {},
+) => runTransaction(database, async transaction => {
+  const incidentReference = doc(database, `incidentReports/${id}`);
+  const snapshot = await transaction.get(incidentReference);
+  const current = String(snapshot.get('incident_status') || 'reported');
+  const next = action === 'acknowledge' ? 'acknowledged'
+    : action === 'start' ? 'in_progress' : action === 'resolve' ? 'resolved' : 'closed';
+  const updates = action === 'acknowledge' ? {
+    incident_status: next, alert_status: 'acknowledged',
+    acknowledged_at: serverTimestamp(), acknowledged_by: actor.uid,
+  } : action === 'start' ? {
+    incident_status: next, status: 'กำลังดำเนินการ',
+    action_started_at: serverTimestamp(), action_started_by: actor.uid,
+  } : action === 'resolve' ? {
+    incident_status: next, status: 'ปิดงานแล้ว', alert_status: 'cleared',
+    resolved_at: serverTimestamp(), resolved_by: actor.uid, resolution_summary: 'แก้ไขเรียบร้อย',
+  } : {
+    incident_status: next, status: 'ปิดงานแล้ว', alert_status: 'cleared',
+    closed_at: serverTimestamp(), closed_by: actor.uid, resolution_summary: 'ปิดเหตุเรียบร้อย',
+  };
+  const auditId = `INCIDENT_${action.toUpperCase()}_${id}`;
+  transaction.update(incidentReference, { ...updates, ...extra, updated_at: serverTimestamp() });
+  transaction.set(doc(database, `auditLogs/${auditId}`), {
+    audit_id: auditId, operator_id: actor.uid, account_uid: actor.uid,
+    user_name: actor.name, operator_name: actor.name, site_id: 'site-a',
+    action: `Incident:${action}`, module_name: 'IncidentReports', record_id: id,
+    old_value: current, new_value: next, action_result: 'Success', created_at: serverTimestamp(),
+  });
+});
+
+test('Manager and Admin exact runtime lifecycle payloads complete every legal Incident transition', async () => {
+  for (const actor of [
+    { uid: 'manager-a', name: 'Manager A' },
+    { uid: 'admin-a', name: 'Admin A' },
+  ]) {
+    const suffix = `lifecycle-${actor.uid}`;
+    await seedOperationalMedia('site-a', suffix);
+    await assertSucceeds(incidentCreateTransaction(
+      environment.authenticatedContext('guard-a').firestore(), 'site-a', suffix,
+    ));
+    const database = environment.authenticatedContext(actor.uid).firestore();
+    for (const action of ['acknowledge', 'start', 'resolve', 'close'] as const) {
+      await assertSucceeds(incidentLifecycleTransaction(database, `incident-${suffix}`, actor, action));
+    }
+  }
+});
+
+test('Incident lifecycle denies illegal jump, client timestamp, arbitrary field and legacy Admin review payload', async () => {
+  const suffix = 'lifecycle-invalid';
+  await seedOperationalMedia('site-a', suffix);
+  const guard = environment.authenticatedContext('guard-a').firestore();
+  await assertSucceeds(incidentCreateTransaction(guard, 'site-a', suffix));
+  const manager = environment.authenticatedContext('manager-a').firestore();
+  const id = `incident-${suffix}`;
+  await assertFails(incidentLifecycleTransaction(manager, id, { uid: 'manager-a', name: 'Manager A' }, 'resolve'));
+  await assertFails(incidentLifecycleTransaction(manager, id, { uid: 'manager-a', name: 'Manager A' }, 'acknowledge', { assigned_to: 'guard-a' }));
+  await assertFails(incidentLifecycleTransaction(manager, id, { uid: 'manager-a', name: 'Manager A' }, 'acknowledge', { resolved_at: Timestamp.fromDate(new Date(0)) }));
+  await assertFails(updateDoc(doc(manager, `incidentReports/${id}`), {
+    status: 'ปิดงานแล้ว', management_note: 'legacy note', assigned_to: 'guard-a',
+    severity: 'High', resolved_at: new Date().toISOString(), updated_at: serverTimestamp(),
+  }));
+});
+
+test('Incident manager lifecycle denies Guard, ShiftHead, inactive and cross-site accounts', async () => {
+  const suffix = 'lifecycle-role-deny';
+  await seedOperationalMedia('site-a', suffix);
+  await assertSucceeds(incidentCreateTransaction(
+    environment.authenticatedContext('guard-a').firestore(), 'site-a', suffix,
+  ));
+  const id = `incident-${suffix}`;
+  for (const actor of [
+    { uid: 'guard-a', name: 'Guard A' },
+    { uid: 'shift-a', name: 'Shift A' },
+    { uid: 'inactive-a', name: 'Inactive A' },
+    { uid: 'admin-b', name: 'Admin B' },
+  ]) {
+    await assertFails(incidentLifecycleTransaction(
+      environment.authenticatedContext(actor.uid).firestore(), id, actor, 'acknowledge',
+    ));
+  }
+});
+
 test('Incident rejects cross-site, arbitrary mutation, missing photo, and client-owned reported_at', async () => {
   const database = environment.authenticatedContext('guard-a').firestore();
   for (const suffix of ['cross-site', 'missing-photo', 'client-time', 'tamper']) {

@@ -13,7 +13,7 @@ const ADAPTERS: Readonly<Record<string, ExplicitImportAdapter>> = Object.freeze(
   operators: 'operators',
   keys: 'keys',
   blacklist: 'blacklist',
-  'incident-reports': 'incidents',
+  'incident-reports': 'workflowDenied',
   'vehicle-logs': 'workflowDenied',
   'contractor-logs': 'workflowDenied',
   'patrol-logs': 'workflowDenied',

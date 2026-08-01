@@ -180,6 +180,10 @@ export async function correctIncident(
   });
 }
 
+/**
+ * Legacy compatibility path used by Incident import tooling.
+ * Active lifecycle UI must use transitionIncident(); factual corrections use correctIncident().
+ */
 export async function updateIncident(siteId: string, incidentId: string, updates: IncidentUpdate): Promise<void> {
   const scopedSite = site(siteId);
   const reference = doc(db, 'incidentReports', incidentId);

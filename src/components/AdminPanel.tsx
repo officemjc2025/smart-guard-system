@@ -40,7 +40,7 @@ import {
 import { exportCsv } from '../services/importExport/csvExportService';
 import { listAuditLogs, writeAuditLog } from '../services/auditService';
 import { createBlacklistEntry, listBlacklist, setBlacklistStatus } from '../services/blacklistService';
-import { listIncidents, updateIncident } from '../services/incidentService';
+import { listIncidents, transitionIncident, type IncidentAction } from '../services/incidentService';
 import { createKey, listKeyLogs, listKeys, setKeyStatus, type SiteKeyLogRecord } from '../services/keyService';
 import { createPatrolPoint, listPatrolLogs, listPatrolPoints, setPatrolPointStatus, type SitePatrolLogRecord } from '../services/patrolService';
 import { listContractors, type SiteContractorRecord } from '../services/contractorService';
@@ -128,7 +128,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
   const [pointForm, setPointForm] = useState({ point_name: '', location_detail: '', required_interval_minutes: 60 });
   const [keyForm, setKeyForm] = useState({ room_number: '', key_type: 'ห้องพัก', key_label: '', note: '' });
   const [blacklistForm, setBlacklistForm] = useState({ type: 'ทะเบียนรถ', vehicle_plate: '', id_card_number: '', name: '', reason: '', severity: 'เฝ้าระวังพิเศษ' });
-  const [incidentForm, setIncidentForm] = useState({ status: 'แจ้งแล้ว', management_note: '', assigned_to: '', severity: 'Medium' });
+  const [incidentForm, setIncidentForm] = useState<{ action: IncidentAction; resolution_summary: string }>({ action: 'acknowledge', resolution_summary: '' });
 
   // Role Access Checks
   const isManager = currentUser.role === 'Manager';
@@ -600,35 +600,21 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
     }
   };
 
-  // Incident Review (Managers are allowed to update status and assign responsible person)
+  // Incident Review uses the canonical lifecycle transaction; legacy metadata stays read-only.
   const handleUpdateIncident = async (e: React.FormEvent, incidentId: string) => {
     e.preventDefault();
     try {
       setLoading(true);
-      const original = incidentList.find(i => i.incident_id === incidentId);
-      const isClosing = incidentForm.status === 'ปิดงานแล้ว';
-      const updatePayload: any = {
-        status: incidentForm.status,
-        management_note: incidentForm.management_note,
-        assigned_to: incidentForm.assigned_to,
-        severity: incidentForm.severity,
-        updated_at: new Date().toISOString()
-      };
-      if (isClosing) {
-        updatePayload.resolved_at = new Date().toISOString();
-      }
-      await updateIncident(sessionStorage.getItem('selected_site_id') || 'site-01', incidentId, updatePayload);
-      await writeAuditLog(
-        currentUser.name, 
-        'ทบทวนรายงานเหตุผิดปกติ', 
-        'IncidentReports', 
-        incidentId, 
-        original ? original.status : '', 
-        `${incidentForm.status} | Assigned: ${incidentForm.assigned_to}`
+      if (!incidentList.some(item => item.incident_id === incidentId)) throw new Error('ไม่พบ Incident ที่เลือก');
+      if (!['Manager', 'Admin'].includes(currentUser.role)) throw new Error('ไม่มีสิทธิ์จัดการ Incident lifecycle');
+      await transitionIncident(
+        sessionStorage.getItem('selected_site_id') || 'site-01', incidentId,
+        incidentForm.action, currentUser.name, incidentForm.resolution_summary,
       );
       setEditingId(null);
-      showToast('success', 'อัปเดตรายงานเหตุการณ์ผิดปกติเรียบร้อย!');
-      fetchData();
+      setIncidentForm({ action: 'acknowledge', resolution_summary: '' });
+      showToast('success', 'อัปเดต Incident lifecycle และ Audit เรียบร้อยแล้ว');
+      await fetchData();
     } catch (err: any) {
       showToast('error', err.message);
     } finally {
@@ -832,7 +818,7 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
         {activeTab === 'cards' && <div className="mb-4 flex flex-col items-end gap-1"><ImportExportDialog module={IMPORT_EXPORT_MODULES.ParkingCards} records={cardList} canImport={isAdmin && parkingCardAuditReady} commitImport={preview => importParkingCards(preview, currentUser.name)} onImported={fetchData} enableJson currentRole={currentUser.role} onExport={(format, count) => logParkingCardExport(currentUser.name, format, count)} />{isAdmin && !parkingCardAuditReady && <span className="text-[10px] font-bold text-amber-400">กรุณาตรวจสอบข้อมูลบัตรเดิมก่อน Import</span>}</div>}
         {activeTab === 'keys' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Keys} records={keyList} canImport={isAdmin} onImported={fetchData} /></div>}
         {activeTab === 'blacklist' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.Blacklist} records={blacklist} canImport={isAdmin} onImported={fetchData} /></div>}
-        {activeTab === 'incidents' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.IncidentReports} records={incidentList} canImport={isAdmin} onImported={fetchData} /></div>}
+        {activeTab === 'incidents' && <div className="mb-4 flex justify-end"><ImportExportDialog module={IMPORT_EXPORT_MODULES.IncidentReports} records={incidentList} canImport={false} onImported={fetchData} /></div>}
 
         {activeTab === 'units' && (
           <UnitManagementPanel operatorName={currentUser.name} canImport={isAdmin} />
@@ -1847,53 +1833,34 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
             {editingId && (
               <form onSubmit={e => handleUpdateIncident(e, editingId)} className="bg-slate-950 border border-slate-800 p-5 rounded-2xl flex flex-col gap-4 border-l-4 border-l-amber-500">
                 <h4 className="text-xs font-bold text-blue-400 uppercase tracking-wider">ทบทวนและลงบันทึกคำสั่งจัดการอุบัติภัย: #{editingId}</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="text-[10px] text-slate-400 font-bold block mb-1">ความคืบหน้าของสถานการณ์</label>
+                    <label className="text-[10px] text-slate-400 font-bold block mb-1">ขั้นตอน Lifecycle ถัดไป</label>
                     <select
-                      value={incidentForm.status}
-                      onChange={e => setIncidentForm({ ...incidentForm, status: e.target.value })}
+                      value={incidentForm.action}
+                      onChange={e => setIncidentForm({ ...incidentForm, action: e.target.value as IncidentAction })}
                       className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none"
                     >
-                      <option value="แจ้งแล้ว">แจ้งแล้ว (Reported)</option>
-                      <option value="กำลังดำเนินการ">กำลังดำเนินการ (In Progress)</option>
-                      <option value="ปิดงานแล้ว">ปิดงานแล้วสมบูรณ์ (Resolved & Closed)</option>
+                      <option value="acknowledge">รับทราบเหตุ (Reported → Acknowledged)</option>
+                      <option value="start">เริ่มดำเนินการ (Acknowledged → In Progress)</option>
+                      <option value="resolve">แก้ไขเหตุแล้ว (In Progress → Resolved)</option>
+                      <option value="close">ปิดเหตุ (Resolved → Closed)</option>
                     </select>
                   </div>
                   <div>
-                    <label className="text-[10px] text-slate-400 font-bold block mb-1">ความรุนแรงของอุบัติภัย</label>
-                    <select
-                      value={incidentForm.severity}
-                      onChange={e => setIncidentForm({ ...incidentForm, severity: e.target.value })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none"
-                    >
-                      <option value="Low">Low (รบกวนความเงียบสงบ)</option>
-                      <option value="Medium">Medium (ชำรุดเสียหายเล็กน้อย)</option>
-                      <option value="High">High (อันตรายต่อชีวิตและทรัพย์สิน)</option>
-                      <option value="Critical">Critical (ภัยพิบัติร้ายแรง ด่วนที่สุด)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-400 font-bold block mb-1">ผู้ได้รับมอบหมายหลักแก้ไขสถานการณ์</label>
+                    <label className="text-[10px] text-slate-400 font-bold block mb-1">สรุปการแก้ไข/ปิดเหตุ</label>
                     <input
                       type="text"
-                      value={incidentForm.assigned_to}
-                      onChange={e => setIncidentForm({ ...incidentForm, assigned_to: e.target.value })}
+                      value={incidentForm.resolution_summary}
+                      onChange={e => setIncidentForm({ ...incidentForm, resolution_summary: e.target.value })}
                       className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none"
-                      placeholder="เช่น หัวหน้าช่างอาคาร หรือ รปภ. วิชัย"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-400 font-bold block mb-1">บันทึกความคิดเห็นจากนิติบุคคล / ฝ่ายบริหาร</label>
-                    <input
-                      type="text"
-                      value={incidentForm.management_note}
-                      onChange={e => setIncidentForm({ ...incidentForm, management_note: e.target.value })}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-blue-500 outline-none"
-                      placeholder="ข้อชี้แนะ หรือแนวทางการเยียวยาแก้ไข"
+                      placeholder="จำเป็นสำหรับ Resolve และ Close"
                     />
                   </div>
                 </div>
+                <p className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-[11px] text-amber-300">
+                  ความรุนแรง ผู้รับมอบหมาย และบันทึกฝ่ายบริหารเป็นข้อมูล Legacy แบบอ่านอย่างเดียว และไม่ใช่ส่วนหนึ่งของ Incident lifecycle contract ปัจจุบัน
+                </p>
                 <div className="flex justify-end gap-2 mt-2">
                   <button
                     type="button"
@@ -1974,10 +1941,10 @@ export default function AdminPanel({ currentUser, loginEmail = '', authorization
                               onClick={() => {
                                 setEditingId(inc.incident_id);
                                 setIncidentForm({
-                                  status: inc.status,
-                                  management_note: inc.management_note || '',
-                                  assigned_to: (inc as any).assigned_to || '',
-                                  severity: (inc as any).severity || 'Medium'
+                                  action: inc.incident_status === 'resolved' ? 'close'
+                                    : inc.incident_status === 'in_progress' ? 'resolve'
+                                      : inc.incident_status === 'acknowledged' ? 'start' : 'acknowledge',
+                                  resolution_summary: '',
                                 });
                               }}
                               className="px-2.5 py-1 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 rounded-lg text-[10px] font-bold border border-blue-500/20 cursor-pointer"
