@@ -24,6 +24,14 @@ export type SiteContractorRecord = ContractorLogRecord & { site_id: string };
 export type CreateContractorInput = Omit<SiteContractorRecord, 'site_id' | 'created_at' | 'updated_at'>;
 export type ContractorUpdate = Partial<Omit<SiteContractorRecord, 'contractor_log_id' | 'site_id' | 'created_at'>>;
 
+export interface ContractorAuditInput {
+  audit_id: string;
+  user_name: string;
+  action: string;
+  old_value?: string;
+  new_value?: string;
+}
+
 const requireSiteId = (siteId: string) => {
   const value = siteId.trim();
   if (!value) throw new Error('siteId is required.');
@@ -75,6 +83,38 @@ export async function createContractor(siteId: string, input: CreateContractorIn
   }));
 }
 
+export async function createContractorWithAudit(
+  siteId: string,
+  input: CreateContractorInput,
+  audit: ContractorAuditInput,
+): Promise<void> {
+  const scopedSiteId = requireSiteId(siteId);
+  const uid = requireCurrentUid();
+  if (!input.contractor_log_id.trim()) throw new Error('contractor_log_id is required.');
+  if (!audit.audit_id.trim()) throw new Error('audit_id is required.');
+
+  const contractorReference = doc(db, 'contractorLogs', input.contractor_log_id);
+  const auditReference = doc(db, 'auditLogs', audit.audit_id);
+
+  await runTransaction(db, async transaction => {
+    transaction.set(contractorReference, sanitizeAndValidateFirestoreData({
+      ...input,
+      site_id: scopedSiteId,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    }));
+    transaction.set(auditReference, sanitizeAndValidateFirestoreData({
+      ...audit,
+      module_name: 'ContractorLogs',
+      record_id: input.contractor_log_id,
+      site_id: scopedSiteId,
+      operator_id: uid,
+      account_uid: uid,
+      created_at: serverTimestamp(),
+    }));
+  });
+}
+
 export async function updateContractor(
   siteId: string,
   contractorId: string,
@@ -112,6 +152,44 @@ export async function updateContractorWorkspaceRecord(
     transaction.update(reference, sanitizeAndValidateFirestoreData({
       ...updates,
       updated_at: serverTimestamp(),
+    }));
+  });
+}
+
+export async function updateContractorWorkspaceWithAudit(
+  siteId: string,
+  contractorId: string,
+  updates: ContractorUpdate,
+  audit: ContractorAuditInput,
+): Promise<void> {
+  const scopedSiteId = requireSiteId(siteId);
+  const uid = requireCurrentUid();
+  if (!audit.audit_id.trim()) throw new Error('audit_id is required.');
+
+  const contractorReference = doc(db, 'contractorLogs', contractorId);
+  const auditReference = doc(db, 'auditLogs', audit.audit_id);
+
+  await runTransaction(db, async transaction => {
+    const snapshot = await transaction.get(contractorReference);
+    if (!snapshot.exists()) throw new Error('Contractor log not found.');
+    if (snapshot.get('site_id') !== scopedSiteId) throw new Error('Contractor log belongs to another site.');
+    if (snapshot.get('status') !== 'กำลังปฏิบัติงาน') throw new Error('Contractor record is already completed.');
+    if (String(snapshot.get('workspace_lock_uid') || '') !== uid) {
+      throw new Error('Contractor Workspace lock is required.');
+    }
+
+    transaction.update(contractorReference, sanitizeAndValidateFirestoreData({
+      ...updates,
+      updated_at: serverTimestamp(),
+    }));
+    transaction.set(auditReference, sanitizeAndValidateFirestoreData({
+      ...audit,
+      module_name: 'ContractorLogs',
+      record_id: contractorId,
+      site_id: scopedSiteId,
+      operator_id: uid,
+      account_uid: uid,
+      created_at: serverTimestamp(),
     }));
   });
 }

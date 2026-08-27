@@ -26,10 +26,11 @@ import {
   appendContractorActivity,
   completeContractor,
   createContractor,
+  createContractorWithAudit,
   getContractor,
   listContractors,
   releaseContractorWorkspace,
-  updateContractorWorkspaceRecord,
+  updateContractorWorkspaceWithAudit,
 } from '../services/contractorService';
 import { listActiveBlacklist } from '../services/blacklistService';
 import { createAuditLog } from '../services/auditService';
@@ -141,7 +142,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
               { moduleName: 'ContractorLogs', recordId: item.localId, siteId: item.siteId, uploadedBy: item.guardName, mediaType: 'contractor_face' },
             )
             : '';
-          await createContractor(item.siteId, {
+          await createContractorWithAudit(item.siteId, {
             contractor_log_id: item.localId,
             ...item.form,
             target_unit_id: item.form.target_unit_id || undefined,
@@ -159,13 +160,10 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
               site_id: item.siteId,
               contractor_id: item.localId,
             }],
-          });
-          await createAuditLog(item.siteId, {
+          }, {
             audit_id: `AUD_${createUuid()}`,
             user_name: item.guardName,
             action: 'ซิงก์ผู้รับเหมาเข้าจาก Offline',
-            module_name: 'ContractorLogs',
-            record_id: item.localId,
             old_value: 'Offline',
             new_value: item.form.contractor_name,
           });
@@ -325,19 +323,16 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
       };
 
       if (workspace.contractorId) {
-        await updateContractorWorkspaceRecord(siteId, contractorId, baseData);
-        contractorSaved = true;
-        const latest = await getContractor(siteId, contractorId);
-        setWorkspace(activateContractorWorkspace(latest));
-        await createAuditLog(siteId, {
+        await updateContractorWorkspaceWithAudit(siteId, contractorId, baseData, {
           audit_id: `AUD_${createUuid()}`,
           user_name: guardName,
           action: 'แก้ไขข้อมูลผู้รับเหมา',
-          module_name: 'ContractorLogs',
-          record_id: contractorId,
           old_value: workspace.record?.contractor_name || '',
           new_value: entryForm.contractor_name,
         });
+        contractorSaved = true;
+        const latest = await getContractor(siteId, contractorId);
+        setWorkspace(activateContractorWorkspace(latest));
         setWorkspace(previous => beginContractorWorkspaceRelease(previous));
         try {
           await releaseContractorWorkspace(siteId, contractorId);
@@ -349,7 +344,7 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
         resetWorkspace({ type: 'success', text: `อัปเดต ${entryForm.contractor_name} สำเร็จ` });
       } else {
         const now = new Date().toISOString();
-        await createContractor(siteId, {
+        await createContractorWithAudit(siteId, {
           contractor_log_id: contractorId,
           ...baseData,
           entry_time: now,
@@ -364,17 +359,14 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
             site_id: siteId,
             contractor_id: contractorId,
           }],
-        });
-        contractorSaved = true;
-        await createAuditLog(siteId, {
+        }, {
           audit_id: `AUD_${createUuid()}`,
           user_name: guardName,
           action: 'ลงทะเบียนผู้รับเหมาเข้าทำงาน',
-          module_name: 'ContractorLogs',
-          record_id: contractorId,
           old_value: '',
           new_value: entryForm.contractor_name,
         });
+        contractorSaved = true;
         resetWorkspace({ type: 'success', text: `ลงทะเบียน ${entryForm.contractor_name} สำเร็จ และเพิ่มเข้าคิวแล้ว` });
       }
       await loadData();
