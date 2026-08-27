@@ -468,11 +468,23 @@ export function validateVehicleExitIntegrity(card: ParkingCardRecord, log: Vehic
 }
 
 async function applyVehicleSessionAnalytics(sessionId: string, siteId: string, workflow: string) {
-  const callable = httpsCallable<Record<string, unknown>, unknown>(
-    getFunctions(undefined, FUNCTIONS_REGION),
-    'applyVehicleSessionAnalyticsUpdate',
-  );
-  await callable({ sessionId, siteId, workflow });
+  try {
+    const callable = httpsCallable<Record<string, unknown>, unknown>(
+      getFunctions(undefined, FUNCTIONS_REGION),
+      'applyVehicleSessionAnalyticsUpdate',
+    );
+    await callable({ sessionId, siteId, workflow });
+  } catch (error) {
+    console.warn('[Vehicle Analytics Best-Effort Failure]', {
+      sessionId,
+      siteId,
+      workflow,
+      code:
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String(error.code)
+          : 'unknown',
+    });
+  }
 }
 
 export async function completeVehicleExit(log: VehicleLogRecord, input: VehicleExitInput, context: VehicleExitAccountContext) {
