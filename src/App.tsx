@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import {
   Shield, LogOut, Loader2, Home, Car, Users, Key,
-  MapPin, AlertTriangle, Search, Settings, RefreshCw
+  MapPin, AlertTriangle, Search, Settings, RefreshCw, ClipboardList, MoreHorizontal
 } from 'lucide-react';
 import {
   auth,
@@ -32,6 +32,7 @@ import { writeAuditLog } from './services/auditService';
 import { listSystemSettings } from './services/systemSettingsService';
 import ConfirmModal from './components/ConfirmModal';
 import ReportErrorBoundary from './components/ReportErrorBoundary';
+import MobileMoreMenu from './components/work-center/MobileMoreMenu';
 
 console.log('[Smart Guard Build] v4.0.1 bootstrap-permission fix loaded');
 
@@ -42,11 +43,12 @@ const ContractorLogs = lazy(() => import('./components/ContractorLogs'));
 const KeyLogs = lazy(() => import('./components/KeyLogs'));
 const PatrolLogs = lazy(() => import('./components/PatrolLogs'));
 const IncidentReports = lazy(() => import('./components/IncidentReports'));
+const WorkCenter = lazy(() => import('./components/WorkCenter'));
 const SearchHistory = lazy(() => import('./components/SearchHistory'));
 const MasterData = lazy(() => import('./components/MasterData'));
 const AdminPanel = lazy(() => import('./components/AdminPanel'));
 
-export type TabType = 'dashboard' | 'vehicles' | 'vehicleOperations' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'history' | 'settings' | 'admin';
+export type TabType = 'dashboard' | 'vehicles' | 'vehicleOperations' | 'contractors' | 'keys' | 'patrol' | 'incidents' | 'workCenter' | 'history' | 'settings' | 'admin';
 type Role = 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
 
 function DebugPage({ name, children }: { name: string; children: ReactNode }) {
@@ -86,6 +88,7 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginBusy, setLoginBusy] = useState(false);
   const [isLogoutModalOpen, setIsLogoutModalOpen] = useState(false);
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
   const [isSetupRoute, setIsSetupRoute] = useState(() => window.location.pathname === '/setup');
   const [setupStatus, setSetupStatus] = useState<'checking' | 'available' | 'error'>('checking');
   const [bootstrapPin, setBootstrapPin] = useState('');
@@ -584,6 +587,16 @@ export default function App() {
             แจ้งเหตุการณ์ผิดปกติ (Incident Report)
           </button>
 
+          <button
+            onClick={() => setActiveTab('workCenter')}
+            className={`w-full p-3.5 rounded-xl font-bold text-xs flex items-center gap-3 transition-all cursor-pointer ${
+              activeTab === 'workCenter' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-800/50 hover:text-white'
+            }`}
+          >
+            <ClipboardList className="w-4.5 h-4.5" />
+            งานติดตาม (Work Center)
+          </button>
+
           <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-5 mb-2 block px-2">ตรวจสอบย้อนหลัง & ตั้งค่า</span>
 
           <button
@@ -638,6 +651,7 @@ export default function App() {
           {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} /></DebugPage>}
           {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} userRole={userRole} /></DebugPage>}
           {activeTab === 'incidents' && <DebugPage name="IncidentReports"><IncidentReports guardName={guardName} userRole={userRole} /></DebugPage>}
+          {activeTab === 'workCenter' && <DebugPage name="WorkCenter"><WorkCenter siteId={currentProfile.site_id} operatorUid={firebaseUser?.uid || ''} operatorName={guardName} role={userRole} onNavigate={setActiveTab} /></DebugPage>}
           {activeTab === 'history' && <DebugPage name="SearchHistory"><SearchHistory /></DebugPage>}
           {activeTab === 'settings' && ['Admin', 'Manager'].includes(userRole) && <DebugPage name="MasterData"><MasterData /></DebugPage>}
           {activeTab === 'admin' && ['Admin', 'Manager'].includes(userRole) && (
@@ -653,7 +667,7 @@ export default function App() {
 
       </div>
 
-      {/* Mobile Bottom Navigation Bar (Thumb ergonomic) */}
+      {/* Mobile Bottom Navigation Bar (Thumb ergonomic - 5 key buttons) */}
       <nav className="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 flex justify-around text-white z-40 lg:hidden py-2 px-1">
         
         <button
@@ -677,23 +691,13 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('contractors')}
+          onClick={() => setActiveTab('workCenter')}
           className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
-            activeTab === 'contractors' ? 'text-blue-400' : 'text-slate-400'
+            activeTab === 'workCenter' ? 'text-blue-400' : 'text-slate-400'
           }`}
         >
-          <Users className="w-5 h-5" />
-          <span>ช่างรับเหมา</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('keys')}
-          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
-            activeTab === 'keys' ? 'text-blue-400' : 'text-slate-400'
-          }`}
-        >
-          <Key className="w-5 h-5" />
-          <span>กุญแจ</span>
+          <ClipboardList className="w-5 h-5" />
+          <span>งานติดตาม</span>
         </button>
 
         <button
@@ -707,50 +711,29 @@ export default function App() {
         </button>
 
         <button
-          onClick={() => setActiveTab('incidents')}
+          onClick={() => setIsMobileMoreOpen(true)}
           className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
-            activeTab === 'incidents' ? 'text-blue-400' : 'text-slate-400'
+            ['contractors', 'keys', 'incidents', 'vehicleOperations', 'history', 'settings', 'admin'].includes(activeTab)
+              ? 'text-blue-400 font-extrabold'
+              : 'text-slate-400'
           }`}
         >
-          <AlertTriangle className="w-5 h-5" />
-          <span>แจ้งเหตุ</span>
+          <MoreHorizontal className="w-5 h-5" />
+          <span>เพิ่มเติม</span>
         </button>
-
-        <button
-          onClick={() => setActiveTab('history')}
-          className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
-            activeTab === 'history' ? 'text-blue-400' : 'text-slate-400'
-          }`}
-        >
-          <Search className="w-5 h-5" />
-          <span>สืบค้น</span>
-        </button>
-
-        {['Admin', 'Manager'].includes(userRole) && (
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
-              activeTab === 'settings' ? 'text-blue-400 font-extrabold' : 'text-slate-400'
-            }`}
-          >
-            <Settings className="w-5 h-5" />
-            <span>ตั้งค่า</span>
-          </button>
-        )}
-
-        {['Admin', 'Manager'].includes(userRole) && (
-          <button
-            onClick={() => setActiveTab('admin')}
-            className={`flex flex-col items-center gap-1 p-1 text-[10px] font-bold ${
-              activeTab === 'admin' ? 'text-blue-400 font-extrabold' : 'text-slate-400'
-            }`}
-          >
-            <Shield className="w-5 h-5 text-blue-500" />
-            <span>แผงแอดมิน</span>
-          </button>
-        )}
 
       </nav>
+
+      <MobileMoreMenu
+        isOpen={isMobileMoreOpen}
+        onClose={() => setIsMobileMoreOpen(false)}
+        activeTab={activeTab}
+        onSelectTab={tab => {
+          setActiveTab(tab);
+          setIsMobileMoreOpen(false);
+        }}
+        userRole={userRole}
+      />
 
       <ConfirmModal
         isOpen={isLogoutModalOpen}

@@ -6,14 +6,18 @@
 import { useState, useEffect } from 'react';
 import { 
   Car, Users, Key, ShieldCheck, AlertTriangle, 
-  ArrowUpRight, ArrowDownLeft, RefreshCw, Clock, Ban
+  ArrowUpRight, ArrowDownLeft, RefreshCw, Clock, Ban,
+  ClipboardList, ArrowRight
 } from 'lucide-react';
 import type { TabType } from '../App';
+import { auth } from '../firebase';
 import {
   getDashboardSummary,
   subscribeDashboardSummary,
   type DashboardSummary,
 } from '../services/dashboardService';
+import { subscribeWorkItems } from '../services/workItemService';
+import { calculateWorkCenterKpis } from '../services/workItemPolicy';
 import {
   firebaseErrorCode,
   firebaseErrorMessage,
@@ -34,6 +38,16 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
   const [loadError, setLoadError] = useState('');
 
   const [recentIncidents, setRecentIncidents] = useState<DashboardSummary['recentIncidents']>([]);
+  const [workItemsKpis, setWorkItemsKpis] = useState({
+    totalOpen: 0,
+    myOpen: 0,
+    unassigned: 0,
+    inProgress: 0,
+    waiting: 0,
+    overdue: 0,
+    resolved: 0,
+    closed: 0,
+  });
 
   const fetchStats = async () => {
     if (!canLoadDashboard({ role: activeRole, site_id: siteId, status: 'Active' })) return;
@@ -82,6 +96,20 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
       setLoading(false);
     });
   }, [activeRole, siteId]);
+
+  useEffect(() => {
+    if (!siteId) return;
+    const uid = auth.currentUser?.uid || '';
+    const unsub = subscribeWorkItems(
+      siteId,
+      items => {
+        setWorkItemsKpis(calculateWorkCenterKpis(items, uid));
+      },
+      undefined,
+      err => console.warn('Dashboard WorkItems subscription error:', err)
+    );
+    return () => unsub();
+  }, [siteId]);
 
   // Format date helper
   const formatTime = (isoString: unknown) => {
@@ -238,6 +266,36 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
           <p className="text-xs font-bold text-amber-700">เหตุกำลังดำเนินการ</p>
           <p className="mt-1 text-2xl font-black text-amber-800">{data.incidentsInProgress}</p>
         </div>
+      </div>
+
+      {/* Work Center Quick Banner */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 rounded-2xl p-5 text-white shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-indigo-900/50">
+        <div className="flex items-center gap-3.5">
+          <div className="p-3 bg-white/10 rounded-2xl backdrop-blur-sm text-blue-300">
+            <ClipboardList className="w-6 h-6" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-bold text-white">ศูนย์งานติดตาม (Work Center)</h2>
+              {workItemsKpis.overdue > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-extrabold bg-red-500 text-white animate-pulse">
+                  เกินกำหนด {workItemsKpis.overdue} งาน
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-blue-200 mt-0.5">
+              งานเปิดทั้งหมด {workItemsKpis.totalOpen} งาน • ของฉัน {workItemsKpis.myOpen} งาน • ยังไม่มอบหมาย {workItemsKpis.unassigned} งาน • รอ/กำลังทำ {workItemsKpis.inProgress + workItemsKpis.waiting} งาน
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={() => onNavigate('workCenter')}
+          className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 active:scale-98 text-white text-xs sm:text-sm font-bold rounded-xl shadow transition-all flex items-center justify-center gap-2 cursor-pointer w-full md:w-auto"
+        >
+          <span>เปิดศูนย์งานติดตาม</span>
+          <ArrowRight className="w-4 h-4" />
+        </button>
       </div>
 
       {/* Row: Analytics Gauge & Recent Incidents */}

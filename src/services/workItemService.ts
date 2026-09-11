@@ -4,6 +4,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db, type SmartGuardRole } from '../firebase';
 import { createUuid } from '../utils/uuid';
+import { listEligibleQueueOperators } from './vehicleAssignmentService';
 export { isAllowedWorkItemTransition } from './workItemPolicy';
 
 export type WorkItemStatus = 'Open' | 'Acknowledged' | 'InProgress' | 'Waiting' | 'Resolved' | 'Closed';
@@ -83,7 +84,30 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<string
 }
 export async function getWorkItem(id: string) { const s = await getDoc(doc(db, 'workItems', id)); if (!s.exists()) return null; const a = activeActor(); assertSite(a, s.data().site_id); return s.data() as WorkItem; }
 export async function listOpenWorkItems(siteId: string, assignedTo?: string) { const a = activeActor(); assertSite(a, siteId); const constraints = [where('site_id', '==', siteId), where('status', 'in', ['Open', 'Acknowledged', 'InProgress', 'Waiting', 'Resolved']), ...(assignedTo ? [where('assigned_to', '==', assignedTo)] : []), orderBy('updated_at', 'desc')]; const s = await getDocs(query(collection(db, 'workItems'), ...constraints)); return s.docs.map(d => d.data() as WorkItem); }
-export function subscribeWorkItems(siteId: string, callback: (items: WorkItem[]) => void, assignedTo?: string): Unsubscribe { const a = activeActor(); assertSite(a, siteId); const constraints = [where('site_id', '==', siteId), ...(assignedTo ? [where('assigned_to', '==', assignedTo)] : []), orderBy('updated_at', 'desc')]; return onSnapshot(query(collection(db, 'workItems'), ...constraints), s => callback(s.docs.map(d => d.data() as WorkItem))); }
+export function subscribeWorkItems(siteId: string, callback: (items: WorkItem[]) => void, assignedTo?: string, onError?: (error: Error) => void): Unsubscribe {
+  const a = activeActor(); assertSite(a, siteId);
+  const constraints = [where('site_id', '==', siteId), ...(assignedTo ? [where('assigned_to', '==', assignedTo)] : []), orderBy('updated_at', 'desc')];
+  return onSnapshot(
+    query(collection(db, 'workItems'), ...constraints),
+    s => callback(s.docs.map(d => d.data() as WorkItem)),
+    err => onError?.(err instanceof Error ? err : new Error(String(err)))
+  );
+}
+
+export interface AssigneeOption {
+  uid: string;
+  name: string;
+  role: string;
+}
+
+export async function listEligibleAssignees(siteId: string): Promise<AssigneeOption[]> {
+  const operators = await listEligibleQueueOperators(siteId);
+  return operators.map(op => ({
+    uid: op.uid,
+    name: op.name,
+    role: op.role,
+  }));
+}
 export async function acknowledgeWorkItem(id: string, expectedVersion?: number) { const a = activeActor(); return transact(id, a, 'Acknowledged', '', i => { if (i.status !== 'Open') throw new Error('Only Open Work Items can be acknowledged.'); if (i.assigned_to && i.assigned_to !== a.uid && !canManage(a)) throw new Error('Work Item is assigned to another operator.'); return { status: 'Acknowledged', acknowledged_at: serverTimestamp() as unknown as Timestamp, acknowledged_by: a.uid, assigned_to: i.assigned_to || a.uid, assigned_by: i.assigned_to ? i.assigned_by : a.uid }; }, expectedVersion); }
 export async function startWorkItem(id: string, expectedVersion?: number) { const a = activeActor(); return transact(id, a, 'Started', '', i => { if (i.status !== 'Acknowledged' || !canOperate(a, i)) throw new Error('Work Item cannot be started by this operator.'); return { status: 'InProgress', started_at: serverTimestamp() as unknown as Timestamp, started_by: a.uid }; }, expectedVersion); }
 export async function setWorkItemWaiting(id: string, note: string, expectedVersion?: number) { const a = activeActor(); return transact(id, a, 'Waiting', ensureText(note, 'note'), i => { if (i.status !== 'InProgress' || !canOperate(a, i)) throw new Error('Only assigned InProgress work can wait.'); return { status: 'Waiting' }; }, expectedVersion); }
