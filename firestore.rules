@@ -1225,7 +1225,7 @@ service cloud.firestore {
              );
     }
 
-    function validCorrectionMetadata(data, changed, moduleName, recordId) {
+    function validCorrectionMetadata(data, moduleName, recordId) {
       let oldNumber = ('revision_number' in resource.data) ? resource.data.revision_number : 0;
       return 'revision_number' in data
              && 'last_revision_id' in data
@@ -1272,7 +1272,7 @@ service cloud.firestore {
                && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.record_id == id
                && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.media_type == 'incident_photo'
                && get(/databases/$(database)/documents/mediaUploads/$(data.photo_file_id)).data.media_url == data.photo_url))
-             && validCorrectionMetadata(data, changed, 'IncidentReports', id);
+             && validCorrectionMetadata(data, 'IncidentReports', id);
     }
 
     function validPatrolCorrection(id) {
@@ -1311,7 +1311,7 @@ service cloud.firestore {
                && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.record_id == id
                && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.media_type == 'patrol_photo_2'
                && get(/databases/$(database)/documents/mediaUploads/$(data.evidence_photo_2_file_id)).data.media_url == data.evidence_photo_2_url))
-             && validCorrectionMetadata(data, changed, 'PatrolLogs', id);
+             && validCorrectionMetadata(data, 'PatrolLogs', id);
     }
 
     function validIncidentRevisionValues(data, recordId) {
@@ -1656,15 +1656,291 @@ service cloud.firestore {
       allow read: if isAdmin()
                   || (canManageParkingCards() && resource.data.module_name == 'ParkingCards' && resource.data.site_id == activeSiteId())
                   || (canProcessVehicleExit() && resource.data.module_name == 'VehicleSessions' && resource.data.site_id == activeSiteId());
+      // Work Item mutations already validate three documents in one atomic commit.
+      // Route this module before the legacy audit alternatives so their large
+      // validators are not evaluated as part of that commit's expression budget.
       allow create: if isActiveUser()
                     && request.resource.data.audit_id == id
-                    && ((request.resource.data.module_name == 'ParkingCards' && validParkingAudit(request.resource.data))
-                      || (request.resource.data.module_name == 'units' && validUnitAudit(request.resource.data))
-                      || (request.resource.data.module_name == 'KeyLogs' && validKeyAudit(request.resource.data, id))
-                      || (request.resource.data.module_name in ['PatrolLogs', 'IncidentReports'] && validOperationalAudit(request.resource.data, id))
-                      || (request.resource.data.action in ['IncidentCorrection', 'PatrolCorrection'] && validCorrectionAudit(request.resource.data, id))
-                      || !(request.resource.data.module_name in ['ParkingCards', 'units', 'KeyLogs', 'PatrolLogs', 'IncidentReports']));
+                    && (request.resource.data.module_name == 'WorkItems'
+                      ? validWorkItemAudit(request.resource.data, id)
+                      : ((request.resource.data.module_name == 'ParkingCards' && validParkingAudit(request.resource.data))
+                        || (request.resource.data.module_name == 'units' && validUnitAudit(request.resource.data))
+                        || (request.resource.data.module_name == 'KeyLogs' && validKeyAudit(request.resource.data, id))
+                        || (request.resource.data.module_name in ['PatrolLogs', 'IncidentReports'] && validOperationalAudit(request.resource.data, id))
+                        || (request.resource.data.action in ['IncidentCorrection', 'PatrolCorrection'] && validCorrectionAudit(request.resource.data, id))
+                        || !(request.resource.data.module_name in ['ParkingCards', 'units', 'KeyLogs', 'PatrolLogs', 'IncidentReports', 'WorkItems'])));
       allow update, delete: if false;
+    }
+
+    function validWorkProfile(profile) {
+      return profile.status == 'Active'
+        && profile.role in ['Guard','ShiftHead','Manager','Admin']
+        && profile.site_id is string && profile.site_id.size() > 0;
+    }
+
+    function validWorkItem(data, id, profile) {
+      return data.keys().hasOnly(['work_item_id','site_id','source_module','source_record_id','source_label','title','description','status','priority','assigned_to','assigned_by','opened_by','opened_by_name','next_action','due_at','resolution_summary','acknowledged_at','acknowledged_by','started_at','started_by','resolved_at','resolved_by','closed_at','closed_by','last_activity_at','last_activity_id','last_audit_id','created_at','updated_at','version'])
+        && data.keys().hasAll(['work_item_id','site_id','source_module','source_record_id','source_label','title','description','status','priority','assigned_to','assigned_by','opened_by','opened_by_name','next_action','due_at','resolution_summary','acknowledged_at','acknowledged_by','started_at','started_by','resolved_at','resolved_by','closed_at','closed_by','last_activity_at','last_activity_id','last_audit_id','created_at','updated_at','version'])
+        && data.work_item_id == id && data.site_id == profile.site_id
+        && data.source_module in ['Vehicle','Contractor','Key','Patrol','Incident','General']
+        && data.status in ['Open','Acknowledged','InProgress','Waiting','Resolved','Closed']
+        && data.priority in ['Low','Normal','High','Emergency']
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 256
+        && data.description is string && data.description.size() <= 5000
+        && data.source_record_id is string && data.source_record_id.size() <= 256 && data.source_label is string && data.source_label.size() <= 512
+        && data.assigned_to is string && data.assigned_by is string && data.opened_by is string
+        && data.opened_by_name is string && data.next_action is string && data.next_action.size() <= 1000
+        && (data.due_at == null || data.due_at is timestamp)
+        && data.resolution_summary is string && data.resolution_summary.size() <= 5000
+        && data.last_activity_id is string && data.last_activity_id.size() > 0 && data.last_activity_id.size() <= 256
+        && data.last_audit_id is string && data.last_audit_id.size() > 0 && data.last_audit_id.size() <= 256
+        && data.version is int && data.version > 0
+        && data.created_at is timestamp && data.updated_at is timestamp && data.last_activity_at is timestamp;
+    }
+
+    function validWorkActivityAction(data, parent) {
+      let action = data.action;
+      let statusMatches = (action == 'Created' && parent.version == 1 && parent.status == 'Open' && data.from_status == '' && data.to_status == 'Open')
+        || (action == 'Acknowledged' && parent.status == 'Acknowledged' && data.from_status == 'Open' && data.to_status == 'Acknowledged')
+        || (action == 'Started' && parent.status == 'InProgress' && data.from_status == 'Acknowledged' && data.to_status == 'InProgress')
+        || (action == 'Waiting' && parent.status == 'Waiting' && data.from_status == 'InProgress' && data.to_status == 'Waiting')
+        || (action == 'Resumed' && parent.status == 'InProgress' && data.from_status == 'Waiting' && data.to_status == 'InProgress')
+        || (action == 'Resolved' && parent.status == 'Resolved' && data.from_status == 'InProgress' && data.to_status == 'Resolved')
+        || (action == 'Reopened' && parent.status == 'InProgress' && data.from_status == 'Resolved' && data.to_status == 'InProgress')
+        || (action == 'Closed' && parent.status == 'Closed' && data.from_status == 'Resolved' && data.to_status == 'Closed')
+        || (action in ['Assigned','Transferred','Released','PriorityChanged','DueDateChanged','NoteAdded'] && data.from_status == parent.status && data.to_status == parent.status);
+      let noteMatches = action in ['Waiting','Reopened','NoteAdded'] ? data.note.size() > 0 : data.note == '';
+      return statusMatches && noteMatches;
+    }
+
+    function validWorkItemActivity(data, id, workId) {
+      let profile = ownProfile();
+      let parent = getAfter(/databases/$(database)/documents/workItems/$(workId)).data;
+      return data.keys().hasOnly(['activity_id','work_item_id','site_id','action','actor_uid','actor_name','actor_role','from_status','to_status','note','created_at','schema_version'])
+        && data.activity_id == id && data.work_item_id == workId && data.site_id == profile.site_id
+        && data.action in ['Created','Acknowledged','Started','Waiting','Resumed','Assigned','Transferred','Released','PriorityChanged','DueDateChanged','NoteAdded','Resolved','Reopened','Closed']
+        && data.actor_uid == request.auth.uid && data.actor_name == profile.operator_name && data.actor_role == profile.role
+        && data.from_status is string && data.to_status is string && data.note is string && data.note.size() <= 5000
+        && data.created_at == request.time && data.schema_version == 1
+        && parent.work_item_id == workId && parent.site_id == data.site_id && parent.last_activity_id == id
+        && validWorkActivityAction(data, parent);
+    }
+
+    function validWorkAuditAction(data, parent) {
+      let action = data.action;
+      return (action == 'WorkItem:Create' && parent.version == 1 && parent.status == 'Open' && data.old_value == '' && data.new_value == 'Open')
+        || (action == 'WorkItem:Acknowledged' && parent.status == 'Acknowledged' && data.old_value == 'Open' && data.new_value == 'Acknowledged')
+        || (action == 'WorkItem:Started' && parent.status == 'InProgress' && data.old_value == 'Acknowledged' && data.new_value == 'InProgress')
+        || (action == 'WorkItem:Waiting' && parent.status == 'Waiting' && data.old_value == 'InProgress' && data.new_value == 'Waiting')
+        || (action == 'WorkItem:Resumed' && parent.status == 'InProgress' && data.old_value == 'Waiting' && data.new_value == 'InProgress')
+        || (action == 'WorkItem:Resolved' && parent.status == 'Resolved' && data.old_value == 'InProgress' && data.new_value == 'Resolved')
+        || (action == 'WorkItem:Reopened' && parent.status == 'InProgress' && data.old_value == 'Resolved' && data.new_value == 'InProgress')
+        || (action == 'WorkItem:Closed' && parent.status == 'Closed' && data.old_value == 'Resolved' && data.new_value == 'Closed')
+        || (action in ['WorkItem:Assigned','WorkItem:Transferred','WorkItem:Released','WorkItem:Priority','WorkItem:DueDate','WorkItem:NoteAdded'] && data.old_value == parent.status && data.new_value == parent.status);
+    }
+
+    function validWorkItemAudit(data, id) {
+      let profile = ownProfile();
+      let parent = getAfter(/databases/$(database)/documents/workItems/$(data.record_id)).data;
+      return data.keys().hasOnly(['audit_id','operator_id','account_uid','user_name','operator_name','site_id','action','module_name','record_id','old_value','new_value','action_result','created_at'])
+        && data.audit_id == id && data.operator_id == request.auth.uid && data.account_uid == request.auth.uid
+        && data.user_name == profile.operator_name && data.operator_name == profile.operator_name
+        && data.site_id == profile.site_id && data.module_name == 'WorkItems'
+        && data.old_value is string && data.new_value is string
+        && data.action_result == 'Success' && data.created_at == request.time
+        && id.matches('^WORKITEM_' + data.record_id + '_V[1-9][0-9]*$')
+        && parent.work_item_id == data.record_id && parent.site_id == data.site_id && parent.last_audit_id == id
+        && validWorkAuditAction(data, parent);
+    }
+
+    function validVehicleWorkSource(data) {
+      return data.source_record_id.size() > 0 && exists(/databases/$(database)/documents/vehicleSessions/$(data.source_record_id)) && get(/databases/$(database)/documents/vehicleSessions/$(data.source_record_id)).data.site_id == data.site_id;
+    }
+
+    function validContractorWorkSource(data) {
+      return data.source_record_id.size() > 0 && exists(/databases/$(database)/documents/contractorLogs/$(data.source_record_id)) && get(/databases/$(database)/documents/contractorLogs/$(data.source_record_id)).data.site_id == data.site_id;
+    }
+
+    function validKeyWorkSource(data) {
+      return data.source_record_id.size() > 0 && exists(/databases/$(database)/documents/keyLogs/$(data.source_record_id)) && get(/databases/$(database)/documents/keyLogs/$(data.source_record_id)).data.site_id == data.site_id;
+    }
+
+    function validPatrolWorkSource(data) {
+      return data.source_record_id.size() > 0 && exists(/databases/$(database)/documents/patrolLogs/$(data.source_record_id)) && get(/databases/$(database)/documents/patrolLogs/$(data.source_record_id)).data.site_id == data.site_id;
+    }
+
+    function validIncidentWorkSource(data) {
+      return data.source_record_id.size() > 0 && exists(/databases/$(database)/documents/incidentReports/$(data.source_record_id)) && get(/databases/$(database)/documents/incidentReports/$(data.source_record_id)).data.site_id == data.site_id;
+    }
+
+    function validWorkSource(data) {
+      return (data.source_module == 'General' && data.source_record_id == '')
+        || (data.source_module == 'Vehicle' && validVehicleWorkSource(data))
+        || (data.source_module == 'Contractor' && validContractorWorkSource(data))
+        || (data.source_module == 'Key' && validKeyWorkSource(data))
+        || (data.source_module == 'Patrol' && validPatrolWorkSource(data))
+        || (data.source_module == 'Incident' && validIncidentWorkSource(data));
+    }
+
+    function validNonEmptyWorkAssignee(uid, siteId) {
+      let target = get(/databases/$(database)/documents/users/$(uid)).data;
+      return exists(/databases/$(database)/documents/users/$(uid))
+        && target.status == 'Active'
+        && target.role in ['Guard','ShiftHead','Manager','Admin']
+        && target.site_id == siteId;
+    }
+
+    function validWorkAssignee(uid, siteId) {
+      return uid == '' || validNonEmptyWorkAssignee(uid, siteId);
+    }
+
+    function hasWorkCompanionReferences(data) {
+      return data.keys().hasAll(['last_activity_id', 'last_audit_id'])
+        && data.last_activity_id is string && data.last_activity_id.size() > 0 && data.last_activity_id.size() <= 256
+        && data.last_audit_id is string && data.last_audit_id.size() > 0 && data.last_audit_id.size() <= 256;
+    }
+
+    function validWorkMutationBase(id) {
+      return request.resource.data.work_item_id == id
+        && request.resource.data.work_item_id == resource.data.work_item_id
+        && request.resource.data.site_id == resource.data.site_id
+        && request.resource.data.source_module == resource.data.source_module
+        && request.resource.data.source_record_id == resource.data.source_record_id
+        && request.resource.data.source_label == resource.data.source_label
+        && request.resource.data.title == resource.data.title
+        && request.resource.data.description == resource.data.description
+        && request.resource.data.opened_by == resource.data.opened_by
+        && request.resource.data.opened_by_name == resource.data.opened_by_name
+        && request.resource.data.next_action == resource.data.next_action
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.created_at == resource.data.created_at
+        && request.resource.data.updated_at == request.time
+        && request.resource.data.last_activity_at == request.time
+        && request.resource.data.last_activity_id != resource.data.last_activity_id
+        && request.resource.data.last_audit_id != resource.data.last_audit_id
+        && request.resource.data.last_activity_id.matches('^WORKITEM_ACTIVITY_' + id + '_V[1-9][0-9]*$')
+        && request.resource.data.last_audit_id.matches('^WORKITEM_' + id + '_V[1-9][0-9]*$');
+    }
+
+    function canOperateWork(profile) {
+      return resource.data.assigned_to == request.auth.uid || profile.role in ['ShiftHead','Manager','Admin'];
+    }
+
+    function validWorkLifecycle(data) {
+      let validStatus = (resource.data.status == data.status)
+        || (resource.data.status == 'Open' && data.status == 'Acknowledged')
+        || (resource.data.status == 'Acknowledged' && data.status == 'InProgress')
+        || (resource.data.status == 'InProgress' && data.status in ['Waiting', 'Resolved'])
+        || (resource.data.status == 'Waiting' && data.status == 'InProgress')
+        || (resource.data.status == 'Resolved' && data.status in ['InProgress', 'Closed']);
+
+      let validAck = (resource.data.status == 'Open' && data.status == 'Acknowledged')
+        ? (data.acknowledged_at == request.time && data.acknowledged_by == request.auth.uid)
+        : (data.acknowledged_at == resource.data.acknowledged_at && data.acknowledged_by == resource.data.acknowledged_by);
+
+      let validStart = (resource.data.status == 'Acknowledged' && data.status == 'InProgress')
+        ? (data.started_at == request.time && data.started_by == request.auth.uid)
+        : (data.started_at == resource.data.started_at && data.started_by == resource.data.started_by);
+
+      let validResolve = (resource.data.status == 'InProgress' && data.status == 'Resolved')
+        ? (data.resolved_at == request.time && data.resolved_by == request.auth.uid && data.resolution_summary.size() > 0)
+        : (resource.data.status == 'Resolved' && data.status == 'InProgress')
+          ? (data.resolved_at == null && data.resolved_by == '')
+          : (data.resolved_at == resource.data.resolved_at && data.resolved_by == resource.data.resolved_by);
+
+      let validClose = (resource.data.status == 'Resolved' && data.status == 'Closed')
+        ? (data.closed_at == request.time && data.closed_by == request.auth.uid && data.resolution_summary.size() > 0)
+        : (data.closed_at == resource.data.closed_at && data.closed_by == resource.data.closed_by);
+
+      let validSummary = (data.status in ['Resolved', 'Closed'])
+        ? (data.resolution_summary.size() > 0)
+        : (data.resolution_summary == resource.data.resolution_summary);
+
+      return validStatus && validAck && validStart && validResolve && validClose && validSummary;
+    }
+
+    function validWorkFields(data, manager, operates) {
+      let validPriority = (data.priority == resource.data.priority)
+        || (manager && data.status == resource.data.status && data.priority in ['Low','Normal','High','Emergency']);
+
+      let validDue = (data.due_at == resource.data.due_at)
+        || (manager && data.status == resource.data.status && (data.due_at == null || data.due_at is timestamp));
+
+      let validAssignment = (resource.data.status == 'Open' && data.status == 'Acknowledged')
+        ? ((resource.data.assigned_to == '' && data.assigned_to == request.auth.uid && data.assigned_by == request.auth.uid)
+           || (resource.data.assigned_to != '' && (resource.data.assigned_to == request.auth.uid || manager) && data.assigned_to == resource.data.assigned_to && data.assigned_by == resource.data.assigned_by))
+        : (data.assigned_to != resource.data.assigned_to)
+          ? (data.status == resource.data.status && data.assigned_by == request.auth.uid
+             && ((data.assigned_to != '' && manager && validWorkAssignee(data.assigned_to, data.site_id))
+                 || (data.assigned_to == '' && (resource.data.assigned_to == request.auth.uid || manager))))
+          : (data.assigned_by == resource.data.assigned_by);
+
+      let validAuthority = (data.status != resource.data.status)
+        ? (resource.data.status == 'Open' && data.status == 'Acknowledged'
+           ? (resource.data.assigned_to == '' || operates)
+           : resource.data.status == 'Resolved'
+             ? manager
+             : operates)
+        : (data.assigned_to == resource.data.assigned_to && data.priority == resource.data.priority && data.due_at == resource.data.due_at
+           ? operates
+           : true);
+
+      return validPriority && validDue && validAssignment && validAuthority;
+    }
+
+    function validWorkUpdate(id, profile) {
+      let data = request.resource.data;
+      let changed = data.diff(resource.data).affectedKeys();
+      let manager = profile.role in ['ShiftHead','Manager','Admin'];
+      let operates = canOperateWork(profile);
+
+      return validWorkMutationBase(id)
+        && changed.hasOnly(['status','priority','assigned_to','assigned_by','acknowledged_at','acknowledged_by','started_at','started_by','resolution_summary','resolved_at','resolved_by','closed_at','closed_by','due_at','version','updated_at','last_activity_at','last_activity_id','last_audit_id'])
+        && validWorkLifecycle(data)
+        && validWorkFields(data, manager, operates);
+    }
+
+    function validWorkCreate(id) {
+      let data = request.resource.data;
+      let profile = ownProfile();
+      return signedIn() && hasWorkCompanionReferences(data)
+        && data.last_activity_id == 'WORKITEM_ACTIVITY_' + id + '_V1'
+        && data.last_audit_id == 'WORKITEM_' + id + '_V1'
+        && existsAfter(/databases/$(database)/documents/workItems/$(id)/activities/$(data.last_activity_id))
+        && existsAfter(/databases/$(database)/documents/auditLogs/$(data.last_audit_id))
+        && validWorkProfile(profile)
+        && validWorkItem(data, id, profile) && validWorkSource(data)
+        && data.status == 'Open' && data.version == 1
+        && data.opened_by == request.auth.uid && data.opened_by_name == profile.operator_name
+        && data.created_at == request.time && data.updated_at == request.time && data.last_activity_at == request.time
+        && data.acknowledged_at == null && data.acknowledged_by == '' && data.started_at == null && data.started_by == ''
+        && data.resolved_at == null && data.resolved_by == '' && data.closed_at == null && data.closed_by == '' && data.resolution_summary == ''
+        && validWorkAssignee(data.assigned_to, data.site_id)
+        && (profile.role in ['ShiftHead','Manager','Admin'] || data.assigned_to in ['', request.auth.uid]);
+    }
+
+    function validWorkUpdateRequest(id) {
+      let profile = ownProfile();
+      return signedIn() && validWorkProfile(profile)
+        && resource.data.site_id == profile.site_id
+        && hasWorkCompanionReferences(request.resource.data)
+        && existsAfter(/databases/$(database)/documents/workItems/$(id)/activities/$(request.resource.data.last_activity_id))
+        && existsAfter(/databases/$(database)/documents/auditLogs/$(request.resource.data.last_audit_id))
+        && validWorkUpdate(id, profile);
+    }
+
+    match /workItems/{id} {
+      allow get, list: if isActiveUser() && resource.data.site_id == activeSiteId();
+      allow create: if validWorkCreate(id);
+      allow update: if validWorkUpdateRequest(id);
+      allow delete: if false;
+      match /activities/{activityId} {
+        allow read: if isActiveUser() && get(/databases/$(database)/documents/workItems/$(id)).data.site_id == activeSiteId();
+        allow create: if isActiveUser()
+          && activityId.matches('^WORKITEM_ACTIVITY_' + id + '_V[1-9][0-9]*$')
+          && validWorkItemActivity(request.resource.data, activityId, id);
+        allow update, delete: if false;
+      }
     }
 
     match /parkingCardHistory/{id} {

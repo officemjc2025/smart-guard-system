@@ -2192,3 +2192,302 @@ test('optional Patrol abnormal_reason revision safely validates absent and prese
   await seedRevisionTarget('PatrolLogs', 'abnormal-present-false');
   await assertFails(correctionTransaction(database, 'PatrolLogs', 'abnormal-present-false', actor, { claimedBefore: 'ข้อมูลผิด' }));
 });
+
+const workItemPayload = (id: string, overrides: Record<string, unknown> = {}) => ({
+  work_item_id: id, site_id: 'site-a', source_module: 'General', source_record_id: '', source_label: '',
+  title: 'Emulator Work Item', description: '', status: 'Open', priority: 'Normal', assigned_to: '', assigned_by: '',
+  opened_by: 'guard-a', opened_by_name: 'Guard A', next_action: '', due_at: null, resolution_summary: '',
+  acknowledged_at: null, acknowledged_by: '', started_at: null, started_by: '', resolved_at: null, resolved_by: '',
+  closed_at: null, closed_by: '', last_activity_at: serverTimestamp(), created_at: serverTimestamp(), updated_at: serverTimestamp(),
+  version: 1, last_activity_id: `WORKITEM_ACTIVITY_${id}_V1`, last_audit_id: `WORKITEM_${id}_V1`, ...overrides,
+});
+
+const createWorkItemTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>, id: string,
+  actor = { uid: 'guard-a', name: 'Guard A', role: 'Guard' }, overrides: Record<string, unknown> = {},
+) => runTransaction(database, async transaction => {
+  const parent = doc(database, `workItems/${id}`);
+  const activityId = String(overrides.last_activity_id || `WORKITEM_ACTIVITY_${id}_V1`);
+  const auditId = String(overrides.last_audit_id || `WORKITEM_${id}_V1`);
+  const data = workItemPayload(id, overrides);
+  transaction.set(parent, data);
+  transaction.set(doc(parent, 'activities', activityId), {
+    activity_id: activityId, work_item_id: id, site_id: data.site_id, action: 'Created', actor_uid: actor.uid,
+    actor_name: actor.name, actor_role: actor.role, from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+  });
+  transaction.set(doc(database, `auditLogs/${auditId}`), {
+    audit_id: auditId, site_id: data.site_id, operator_id: actor.uid, account_uid: actor.uid, operator_name: actor.name, user_name: actor.name,
+    action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+  });
+});
+
+const mutateWorkItemTransaction = (
+  database: ReturnType<RulesTestContext['firestore']>, id: string,
+  actor: { uid: string; name: string; role: string }, action: string, auditAction: string,
+  changes: Record<string, unknown>, note = '',
+) => runTransaction(database, async transaction => {
+  const parent = doc(database, `workItems/${id}`); const snapshot = await transaction.get(parent);
+  const before = snapshot.data() as Record<string, unknown>; const version = Number(before.version) + 1;
+  const activityId = `WORKITEM_ACTIVITY_${id}_V${version}`; const auditId = `WORKITEM_${id}_V${version}`;
+  const next: Record<string, unknown> = { ...before, ...changes, version, last_activity_id: activityId, last_audit_id: auditId, last_activity_at: serverTimestamp(), updated_at: serverTimestamp() };
+  transaction.update(parent, next);
+  transaction.set(doc(parent, 'activities', activityId), { activity_id: activityId, work_item_id: id, site_id: before.site_id, action, actor_uid: actor.uid, actor_name: actor.name, actor_role: actor.role, from_status: before.status, to_status: next.status, note, created_at: serverTimestamp(), schema_version: 1 });
+  transaction.set(doc(database, `auditLogs/${auditId}`), { audit_id: auditId, site_id: before.site_id, operator_id: actor.uid, account_uid: actor.uid, operator_name: actor.name, user_name: actor.name, action: auditAction, module_name: 'WorkItems', record_id: id, old_value: before.status, new_value: next.status, action_result: 'Success', created_at: serverTimestamp() });
+});
+
+test('Work Item atomic General creation succeeds', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertSucceeds(createWorkItemTransaction(database, 'work-emulator-general-1'));
+});
+
+test('Work Item atomic same-site source-linked creation succeeds', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertSucceeds(createWorkItemTransaction(database, 'work-emulator-source-1', undefined, {
+    source_module: 'Vehicle', source_record_id: 'session-a', source_label: 'Vehicle session',
+  }));
+});
+
+test('Work Item parent creation without companions is denied', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(setDoc(doc(database, 'workItems/work-no-companions'), workItemPayload('work-no-companions')));
+});
+
+test('Work Item creation with only an activity companion is denied', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  const id = 'work-activity-only';
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); transaction.set(parent, workItemPayload(id));
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), { activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: 'site-a', action: 'Created', actor_uid: 'guard-a', actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1 });
+  }));
+});
+
+test('Work Item forged companion IDs and actions are denied', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(createWorkItemTransaction(database, 'work-forged-action', undefined, { last_activity_id: 'forged-id' }));
+});
+
+test('Work Item rejects invalid General and non-General sources', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  await assertFails(createWorkItemTransaction(database, 'work-general-source', undefined, { source_record_id: 'not-allowed' }));
+  await assertFails(createWorkItemTransaction(database, 'work-empty-source', undefined, { source_module: 'Vehicle', source_record_id: '' }));
+  await assertFails(createWorkItemTransaction(database, 'work-fake-source', undefined, { source_module: 'Vehicle', source_record_id: 'missing-session' }));
+});
+
+test('Work Item validates assignees and assignment authority', async () => {
+  const guard = environment.authenticatedContext('guard-a').firestore();
+  const manager = environment.authenticatedContext('manager-a').firestore();
+  await assertSucceeds(createWorkItemTransaction(manager, 'work-valid-assignee', { uid: 'manager-a', name: 'Manager A', role: 'Manager' }, { opened_by: 'manager-a', opened_by_name: 'Manager A', assigned_to: 'guard-b', assigned_by: 'manager-a' }));
+  await assertFails(createWorkItemTransaction(manager, 'work-inactive-assignee', { uid: 'manager-a', name: 'Manager A', role: 'Manager' }, { opened_by: 'manager-a', opened_by_name: 'Manager A', assigned_to: 'inactive-a', assigned_by: 'manager-a' }));
+  await assertFails(createWorkItemTransaction(guard, 'work-guard-assignee', undefined, { assigned_to: 'guard-b', assigned_by: 'guard-a' }));
+});
+
+test('Work Item acknowledge claims an unassigned item atomically', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore(); const id = 'work-acknowledge';
+  await assertSucceeds(createWorkItemTransaction(database, id));
+  await assertSucceeds(mutateWorkItemTransaction(database, id, { uid: 'guard-a', name: 'Guard A', role: 'Guard' }, 'Acknowledged', 'WorkItem:Acknowledged', { status: 'Acknowledged', acknowledged_at: serverTimestamp(), acknowledged_by: 'guard-a', assigned_to: 'guard-a', assigned_by: 'guard-a' }));
+});
+
+test('Work Item manager priority change succeeds with canonical companions', async () => {
+  const database = environment.authenticatedContext('manager-a').firestore();
+  const id = 'work-priority-change';
+
+  await assertSucceeds(createWorkItemTransaction(
+    database,
+    id,
+    { uid: 'manager-a', name: 'Manager A', role: 'Manager' },
+    { opened_by: 'manager-a', opened_by_name: 'Manager A' },
+  ));
+
+  await assertSucceeds(mutateWorkItemTransaction(
+    database,
+    id,
+    { uid: 'manager-a', name: 'Manager A', role: 'Manager' },
+    'PriorityChanged',
+    'WorkItem:Priority',
+    { priority: 'High' },
+    '',
+  ));
+});
+
+test('Work Item lifecycle rejects a status jump and missing companion', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore(); const id = 'work-invalid-transition';
+  await assertSucceeds(createWorkItemTransaction(database, id));
+  await assertFails(updateDoc(doc(database, `workItems/${id}`), { status: 'InProgress', version: 2, last_activity_id: `WORKITEM_ACTIVITY_${id}_V2`, last_audit_id: `WORKITEM_${id}_V2`, last_activity_at: serverTimestamp(), updated_at: serverTimestamp() }));
+});
+
+test('Work Item cross-site and anonymous creation are denied', async () => {
+  const crossSite = environment.authenticatedContext('admin-b').firestore();
+  const anonymous = environment.unauthenticatedContext().firestore();
+  await assertFails(createWorkItemTransaction(crossSite, 'work-cross-site', { uid: 'admin-b', name: 'Admin B', role: 'Admin' }, { site_id: 'site-a', opened_by: 'admin-b', opened_by_name: 'Admin B' }));
+  await assertFails(createWorkItemTransaction(anonymous, 'work-anonymous'));
+});
+
+test('Work Item create with parent and audit but no activity is denied', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore(); const id = 'work-audit-only';
+  await assertFails(runTransaction(database, async transaction => {
+    transaction.set(doc(database, `workItems/${id}`), workItemPayload(id));
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), { audit_id: `WORKITEM_${id}_V1`, site_id: 'site-a', operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A', action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp() });
+  }));
+});
+
+test('Work Item update with parent and audit but no activity is denied', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore(); const id = 'work-update-audit-only';
+  await assertSucceeds(createWorkItemTransaction(database, id));
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const before = (await transaction.get(parent)).data() as Record<string, unknown>;
+    transaction.update(parent, { ...before, status: 'Acknowledged', acknowledged_at: serverTimestamp(), acknowledged_by: 'guard-a', assigned_to: 'guard-a', assigned_by: 'guard-a', version: 2, last_activity_id: `WORKITEM_ACTIVITY_${id}_V2`, last_audit_id: `WORKITEM_${id}_V2`, last_activity_at: serverTimestamp(), updated_at: serverTimestamp() });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V2`), { audit_id: `WORKITEM_${id}_V2`, site_id: 'site-a', operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A', action: 'WorkItem:Acknowledged', module_name: 'WorkItems', record_id: id, old_value: 'Open', new_value: 'Acknowledged', action_result: 'Success', created_at: serverTimestamp() });
+  }));
+});
+
+test('Work Item rejects mismatched activity and audit actions', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore(); const id = 'work-mismatched-companions';
+  await assertSucceeds(createWorkItemTransaction(database, id));
+  await assertFails(mutateWorkItemTransaction(database, id, { uid: 'guard-a', name: 'Guard A', role: 'Guard' }, 'Acknowledged', 'WorkItem:Started', { status: 'Acknowledged', acknowledged_at: serverTimestamp(), acknowledged_by: 'guard-a', assigned_to: 'guard-a', assigned_by: 'guard-a' }));
+});
+
+test('Manager assignment transfer and release retain both Work Item companions', async () => {
+  const database = environment.authenticatedContext('manager-a').firestore(); const id = 'work-manager-assignment'; const manager = { uid: 'manager-a', name: 'Manager A', role: 'Manager' };
+  await assertSucceeds(createWorkItemTransaction(database, id, manager, { opened_by: 'manager-a', opened_by_name: 'Manager A' }));
+  await assertSucceeds(mutateWorkItemTransaction(database, id, manager, 'Assigned', 'WorkItem:Assigned', { assigned_to: 'guard-a', assigned_by: 'manager-a' }));
+  await assertSucceeds(mutateWorkItemTransaction(database, id, manager, 'Transferred', 'WorkItem:Transferred', { assigned_to: 'guard-b', assigned_by: 'manager-a' }));
+  await assertSucceeds(mutateWorkItemTransaction(database, id, manager, 'Released', 'WorkItem:Released', { assigned_to: '', assigned_by: 'manager-a' }));
+});
+
+test('Guard cannot assign another Work Item operator', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore(); const id = 'work-guard-assign';
+  await assertSucceeds(createWorkItemTransaction(database, id));
+  await assertFails(mutateWorkItemTransaction(database, id, { uid: 'guard-a', name: 'Guard A', role: 'Guard' }, 'Assigned', 'WorkItem:Assigned', { assigned_to: 'guard-b', assigned_by: 'guard-a' }));
+});
+
+test('Work Item companion forgery and standalone companion writes are denied', async () => {
+  const database = environment.authenticatedContext('guard-a').firestore();
+  const id = 'work-forgery-suite';
+
+  // 1. Forged last_audit_id
+  await assertFails(createWorkItemTransaction(database, id, undefined, { last_audit_id: 'forged-audit-id' }));
+
+  // 2. Activity work_item_id mismatch
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: 'mismatched-work-id', site_id: data.site_id, action: 'Created', actor_uid: 'guard-a',
+      actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: data.site_id, operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 3. Activity site_id mismatch
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: 'mismatched-site', action: 'Created', actor_uid: 'guard-a',
+      actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: data.site_id, operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 4. Activity actor UID / role forged
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: data.site_id, action: 'Created', actor_uid: 'manager-a',
+      actor_name: 'Manager A', actor_role: 'Manager', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: data.site_id, operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 5. Activity invalid from/to status on create
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: data.site_id, action: 'Created', actor_uid: 'guard-a',
+      actor_name: 'Guard A', actor_role: 'Guard', from_status: 'Open', to_status: 'InProgress', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: data.site_id, operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 6. Audit record_id mismatch
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: data.site_id, action: 'Created', actor_uid: 'guard-a',
+      actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: data.site_id, operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: 'mismatched-record-id', old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 7. Audit site_id mismatch
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: data.site_id, action: 'Created', actor_uid: 'guard-a',
+      actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: 'mismatched-site', operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 8. Audit actor forged
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: data.site_id, action: 'Created', actor_uid: 'guard-a',
+      actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: data.site_id, operator_id: 'manager-a', account_uid: 'manager-a', operator_name: 'Manager A', user_name: 'Manager A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 9. Audit old/new value mismatch on create
+  await assertFails(runTransaction(database, async transaction => {
+    const parent = doc(database, `workItems/${id}`); const data = workItemPayload(id);
+    transaction.set(parent, data);
+    transaction.set(doc(parent, 'activities', `WORKITEM_ACTIVITY_${id}_V1`), {
+      activity_id: `WORKITEM_ACTIVITY_${id}_V1`, work_item_id: id, site_id: data.site_id, action: 'Created', actor_uid: 'guard-a',
+      actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+    });
+    transaction.set(doc(database, `auditLogs/WORKITEM_${id}_V1`), {
+      audit_id: `WORKITEM_${id}_V1`, site_id: data.site_id, operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+      action: 'WorkItem:Create', module_name: 'WorkItems', record_id: id, old_value: 'Open', new_value: 'InProgress', action_result: 'Success', created_at: serverTimestamp(),
+    });
+  }));
+
+  // 10. Standalone activity create without parent
+  await assertFails(setDoc(doc(database, `workItems/work-standalone/activities/WORKITEM_ACTIVITY_work-standalone_V1`), {
+    activity_id: 'WORKITEM_ACTIVITY_work-standalone_V1', work_item_id: 'work-standalone', site_id: 'site-a', action: 'Created', actor_uid: 'guard-a',
+    actor_name: 'Guard A', actor_role: 'Guard', from_status: '', to_status: 'Open', note: '', created_at: serverTimestamp(), schema_version: 1,
+  }));
+
+  // 11. Standalone WorkItems audit create without parent
+  await assertFails(setDoc(doc(database, 'auditLogs/WORKITEM_work-standalone_V1'), {
+    audit_id: 'WORKITEM_work-standalone_V1', site_id: 'site-a', operator_id: 'guard-a', account_uid: 'guard-a', operator_name: 'Guard A', user_name: 'Guard A',
+    action: 'WorkItem:Create', module_name: 'WorkItems', record_id: 'work-standalone', old_value: '', new_value: 'Open', action_result: 'Success', created_at: serverTimestamp(),
+  }));
+});
