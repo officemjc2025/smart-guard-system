@@ -55,8 +55,12 @@ import {
   removeOfflineContractor,
 } from '../services/contractorOfflineQueue';
 
+import { auth } from '../firebase';
+import SourceWorkItemAction from './work-center/SourceWorkItemAction';
+
 interface ContractorLogsProps {
   guardName: string;
+  onOpenWorkCenter?: (workItemId?: string) => void;
 }
 
 const dateParts = (value?: string) => {
@@ -68,7 +72,7 @@ const dateParts = (value?: string) => {
 
 const isDataImage = (value: string) => value.startsWith('data:image/');
 
-export default function ContractorLogs({ guardName }: ContractorLogsProps) {
+export default function ContractorLogs({ guardName, onOpenWorkCenter }: ContractorLogsProps) {
   const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -528,6 +532,24 @@ export default function ContractorLogs({ guardName }: ContractorLogsProps) {
             </button>
           )}
         </div>
+
+        {workspace.record && (
+          <div className="mb-4">
+            <SourceWorkItemAction
+              siteId={siteId}
+              sourceModule="Contractor"
+              sourceRecordId={workspace.record.contractor_log_id}
+              sourceLabel={`ผู้รับเหมา: ${workspace.record.contractor_name} (ห้อง ${workspace.record.target_room})`}
+              defaultTitle={`ติดตามงานช่างผู้รับเหมา: ${workspace.record.contractor_name} - ${workspace.record.work_type}`}
+              defaultDescription={`ชื่อช่าง: ${workspace.record.contractor_name}\nบริษัท: ${workspace.record.company || 'ไม่ระบุ'}\nห้องติดต่อ: ${workspace.record.target_room}\nประเภทงาน: ${workspace.record.work_type}`}
+              defaultPriority="Normal"
+              operatorUid={auth.currentUser?.uid || ''}
+              operatorName={guardName}
+              role={sessionStorage.getItem('selected_operator_role') || 'Guard'}
+              onOpenWorkCenter={onOpenWorkCenter}
+            />
+          </div>
+        )}
 
         {blacklistWarning && <div className="mb-4 flex gap-2 rounded-xl border border-red-300 bg-red-50 p-3 text-sm font-bold text-red-800"><ShieldX className="h-5 w-5" />{blacklistWarning}</div>}
 

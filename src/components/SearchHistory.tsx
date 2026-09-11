@@ -15,6 +15,10 @@ import { listPatrolLogs } from '../services/patrolService';
 import { listIncidents } from '../services/incidentService';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 import { formatBangkokDateKey, formatThaiDateTime } from '../utils/dateTime';
+import { auth } from '../firebase';
+import SourceWorkItemAction from './work-center/SourceWorkItemAction';
+import type { WorkSourceModule, WorkItemPriority } from '../services/workItemService';
+import { resolveVehicleWorkItemSource } from '../services/workItemPolicy';
 import {
   contractorLifecycle,
   incidentLifecycle,
@@ -23,7 +27,11 @@ import {
   vehicleLifecycle,
 } from '../services/operationalLifecycle';
 
-export default function SearchHistory() {
+interface SearchHistoryProps {
+  onOpenWorkCenter?: (workItemId?: string) => void;
+}
+
+export default function SearchHistory({ onOpenWorkCenter }: SearchHistoryProps = {}) {
   const [activeModule, setActiveModule] = useState<'vehicles' | 'contractors' | 'keys' | 'patrols' | 'incidents'>('vehicles');
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -598,6 +606,94 @@ export default function SearchHistory() {
                   })}
                 </div>
               </div>
+              {/* Work Center Follow-up Integration */}
+              {(() => {
+                const getRecordSourceInfo = (record: any): {
+                  sourceModule: WorkSourceModule;
+                  sourceRecordId: string;
+                  sourceLabel: string;
+                  defaultTitle: string;
+                  defaultDescription: string;
+                  defaultPriority: WorkItemPriority;
+                } | null => {
+                  if (record.incident_id) {
+                    return {
+                      sourceModule: 'Incident',
+                      sourceRecordId: record.incident_id,
+                      sourceLabel: `เหตุการณ์: ${record.incident_id} (${record.incident_type || ''})`,
+                      defaultTitle: `ติดตามเหตุการณ์: ${record.incident_type || ''} ที่ ${record.location || ''}`,
+                      defaultDescription: `ประเภทเหตุการณ์: ${record.incident_type || ''}\nสถานที่: ${record.location || ''}\nรายละเอียด: ${record.description || ''}\nผู้รายงาน: ${record.reported_by || record.reporter_name || '-'}`,
+                      defaultPriority: record.priority === 'Emergency' ? 'Emergency' : record.priority === 'High' ? 'High' : record.priority === 'Low' ? 'Low' : 'Normal',
+                    };
+                  }
+                  if (record.contractor_log_id) {
+                    return {
+                      sourceModule: 'Contractor',
+                      sourceRecordId: record.contractor_log_id,
+                      sourceLabel: `ผู้รับเหมา: ${record.contractor_name || record.contractor_log_id} (ห้อง ${record.target_room || ''})`,
+                      defaultTitle: `ติดตามงานช่างผู้รับเหมา: ${record.contractor_name || ''} - ${record.work_type || ''}`,
+                      defaultDescription: `ชื่อช่าง: ${record.contractor_name || ''}\nบริษัท: ${record.company || ''}\nงาน: ${record.work_type || ''}\nห้องติดต่อ: ${record.target_room || ''}`,
+                      defaultPriority: 'Normal',
+                    };
+                  }
+                  if (record.key_log_id) {
+                    return {
+                      sourceModule: 'Key',
+                      sourceRecordId: record.key_log_id,
+                      sourceLabel: `เบิกกุญแจ: ${record.card_number || record.key_log_id} (ห้อง ${record.target_room || ''})`,
+                      defaultTitle: `ติดตามการเบิกคืนกุญแจห้อง: ${record.target_room || ''}`,
+                      defaultDescription: `ห้อง: ${record.target_room || ''}\nผู้เบิก: ${record.visitor_name || record.borrower_name || ''}\nเบอร์โทร: ${record.visitor_phone || ''}`,
+                      defaultPriority: 'Normal',
+                    };
+                  }
+                  if (record.patrol_log_id) {
+                    return {
+                      sourceModule: 'Patrol',
+                      sourceRecordId: record.patrol_log_id,
+                      sourceLabel: `ตรวจตรา: ${record.point_name || record.patrol_log_id}`,
+                      defaultTitle: `ติดตามการตรวจตราจุด: ${record.point_name || ''}`,
+                      defaultDescription: `จุดตรวจ: ${record.point_name || ''}\nสถานะ: ${record.status || ''}\nเหตุผล/ข้อสังเกต: ${record.abnormal_reason || record.reason || record.description || '-'}`,
+                      defaultPriority: record.status === 'abnormal' ? 'High' : 'Normal',
+                    };
+                  }
+                  return resolveVehicleWorkItemSource(record);
+                };
+
+                const sourceInfo = getRecordSourceInfo(selectedRecord);
+                if (!sourceInfo) {
+                  return (
+                    <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex flex-col gap-2">
+                      <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                        📋 การติดตามงาน (Work Center Follow-up)
+                      </span>
+                      <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-800 dark:text-amber-200">
+                        ไม่สามารถสร้างงานติดตามจากรายการรถเดิมนี้ได้ เนื่องจากไม่มีข้อมูลอ้างอิง Vehicle Session
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex flex-col gap-2">
+                    <span className="text-xs font-black text-slate-800 uppercase tracking-wider">
+                      📋 การติดตามงาน (Work Center Follow-up)
+                    </span>
+                    <SourceWorkItemAction
+                      siteId={sessionStorage.getItem('selected_site_id') || 'site-01'}
+                      sourceModule={sourceInfo.sourceModule}
+                      sourceRecordId={sourceInfo.sourceRecordId}
+                      sourceLabel={sourceInfo.sourceLabel}
+                      defaultTitle={sourceInfo.defaultTitle}
+                      defaultDescription={sourceInfo.defaultDescription}
+                      defaultPriority={sourceInfo.defaultPriority}
+                      operatorUid={auth.currentUser?.uid || ''}
+                      operatorName={sessionStorage.getItem('selected_operator_name') || 'ผู้ปฏิบัติงาน'}
+                      role={sessionStorage.getItem('selected_operator_role') || 'Guard'}
+                      onOpenWorkCenter={onOpenWorkCenter}
+                    />
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Modal Footer */}

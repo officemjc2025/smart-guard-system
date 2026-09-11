@@ -28,12 +28,15 @@ import UnitSearchSelect from './UnitSearchSelect';
 import { formatThaiDateTime } from '../utils/dateTime';
 import { createUuid } from '../utils/uuid';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
+import { auth } from '../firebase';
+import SourceWorkItemAction from './work-center/SourceWorkItemAction';
 
 interface KeyLogsProps {
   guardName: string;
+  onOpenWorkCenter?: (workItemId?: string) => void;
 }
 
-export default function KeyLogs({ guardName }: KeyLogsProps) {
+export default function KeyLogs({ guardName, onOpenWorkCenter }: KeyLogsProps) {
   const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
   const [activeTab, setActiveTab] = useState<'checkout' | 'return'>('checkout');
   const [loading, setLoading] = useState(false);
@@ -659,6 +662,21 @@ export default function KeyLogs({ guardName }: KeyLogsProps) {
                         🔑 รปภ.ผู้จ่ายออก: {k.issued_by} • หมายเหตุ: {k.note || '-'}
                       </p>
                       {(k.borrower_photo_url || k.signature_image_url) && <div className="mt-2 flex gap-2">{k.borrower_photo_url && <AuthenticatedEvidenceImage mediaReference={k.borrower_photo_url} alt="หลักฐานผู้ยืมกุญแจ" className="h-16 w-16 rounded object-cover" />}{k.signature_image_url && <AuthenticatedEvidenceImage mediaReference={k.signature_image_url} alt="ลายเซ็นรับกุญแจ" className="h-16 w-16 rounded object-cover" />}</div>}
+                      <div className="mt-3 pt-2 border-t border-slate-200">
+                        <SourceWorkItemAction
+                          siteId={siteId}
+                          sourceModule="Key"
+                          sourceRecordId={k.key_log_id}
+                          sourceLabel={`เบิกกุญแจ: ${k.card_number || k.key_log_id} (ห้อง ${k.room_number})`}
+                          defaultTitle={`ติดตามการคืนกุญแจห้อง: ${k.room_number}`}
+                          defaultDescription={`ห้อง: ${k.room_number}\nผู้เบิก: ${k.borrower_name}\nเบอร์โทร: ${k.borrower_phone || '-'}\nวัตถุประสงค์: ${k.purpose}\nผู้จ่ายกุญแจ: ${k.issued_by}`}
+                          defaultPriority="Normal"
+                          operatorUid={auth.currentUser?.uid || ''}
+                          operatorName={guardName}
+                          role={sessionStorage.getItem('selected_operator_role') || 'Guard'}
+                          onOpenWorkCenter={onOpenWorkCenter}
+                        />
+                      </div>
                     </div>
                   </div>
                   <div className="flex sm:flex-col items-end gap-3 justify-between sm:justify-center border-t sm:border-t-0 border-slate-200 pt-2 sm:pt-0">

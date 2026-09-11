@@ -93,8 +93,14 @@ export default function App() {
   const [setupStatus, setSetupStatus] = useState<'checking' | 'available' | 'error'>('checking');
   const [bootstrapPin, setBootstrapPin] = useState('');
   const [bootstrapConfirmPin, setBootstrapConfirmPin] = useState('');
+  const [focusWorkItemId, setFocusWorkItemId] = useState<string | undefined>(undefined);
   const bootstrapInProgressRef = useRef(false);
   const pinLoginInProgressRef = useRef(false);
+
+  const handleOpenWorkCenterItem = (workItemId?: string) => {
+    setFocusWorkItemId(workItemId);
+    setActiveTab('workCenter');
+  };
 
   useEffect(() => {
     console.log('[Smart Guard Debug] activeTab changed:', activeTab);
@@ -647,12 +653,12 @@ export default function App() {
           {activeTab === 'dashboard' && <DebugPage name="Dashboard"><Dashboard onNavigate={setActiveTab} activeRole={userRole} siteId={currentProfile.site_id} /></DebugPage>}
           {activeTab === 'vehicles' && <DebugPage name="VehicleEntryExit"><VehicleEntryExit guardName={guardName} userRole={userRole} /></DebugPage>}
           {activeTab === 'vehicleOperations' && <DebugPage name="VehicleOperations"><VehicleOperations siteId={currentProfile.site_id} operatorName={guardName} role={userRole} onOpenVehicleSession={() => setActiveTab('vehicles')} /></DebugPage>}
-          {activeTab === 'contractors' && <DebugPage name="ContractorLogs"><ContractorLogs guardName={guardName} /></DebugPage>}
-          {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} /></DebugPage>}
-          {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} userRole={userRole} /></DebugPage>}
-          {activeTab === 'incidents' && <DebugPage name="IncidentReports"><IncidentReports guardName={guardName} userRole={userRole} /></DebugPage>}
-          {activeTab === 'workCenter' && <DebugPage name="WorkCenter"><WorkCenter siteId={currentProfile.site_id} operatorUid={firebaseUser?.uid || ''} operatorName={guardName} role={userRole} onNavigate={setActiveTab} /></DebugPage>}
-          {activeTab === 'history' && <DebugPage name="SearchHistory"><SearchHistory /></DebugPage>}
+          {activeTab === 'contractors' && <DebugPage name="ContractorLogs"><ContractorLogs guardName={guardName} onOpenWorkCenter={handleOpenWorkCenterItem} /></DebugPage>}
+          {activeTab === 'keys' && <DebugPage name="KeyLogs"><KeyLogs guardName={guardName} onOpenWorkCenter={handleOpenWorkCenterItem} /></DebugPage>}
+          {activeTab === 'patrol' && <DebugPage name="PatrolLogs"><PatrolLogs guardName={guardName} userRole={userRole} onOpenWorkCenter={handleOpenWorkCenterItem} /></DebugPage>}
+          {activeTab === 'incidents' && <DebugPage name="IncidentReports"><IncidentReports guardName={guardName} userRole={userRole} onOpenWorkCenter={handleOpenWorkCenterItem} /></DebugPage>}
+          {activeTab === 'workCenter' && <DebugPage name="WorkCenter"><WorkCenter siteId={currentProfile.site_id} operatorUid={firebaseUser?.uid || ''} operatorName={guardName} role={userRole} onNavigate={setActiveTab} initialSelectedItemId={focusWorkItemId} onClearInitialSelectedItemId={() => setFocusWorkItemId(undefined)} /></DebugPage>}
+          {activeTab === 'history' && <DebugPage name="SearchHistory"><SearchHistory onOpenWorkCenter={handleOpenWorkCenterItem} /></DebugPage>}
           {activeTab === 'settings' && ['Admin', 'Manager'].includes(userRole) && <DebugPage name="MasterData"><MasterData /></DebugPage>}
           {activeTab === 'admin' && ['Admin', 'Manager'].includes(userRole) && (
             <DebugPage name="AdminPanel"><AdminPanel 

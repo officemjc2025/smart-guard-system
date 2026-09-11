@@ -292,3 +292,60 @@ export function findDuplicateActiveWorkItem(
       isWorkItemActive(item.status)
   );
 }
+
+export function findLatestCompletedWorkItem(
+  items: WorkItem[],
+  sourceModule: WorkSourceModule,
+  sourceRecordId?: string
+): WorkItem | undefined {
+  if (sourceModule === 'General' || !sourceRecordId?.trim()) return undefined;
+  const cleanId = sourceRecordId.trim();
+  return items.find(
+    item =>
+      item.source_module === sourceModule &&
+      item.source_record_id === cleanId &&
+      isWorkItemCompleted(item.status)
+  );
+}
+
+export interface VehicleWorkItemSourceInput {
+  vehicle_session_id?: string | null;
+  log_id?: string | null;
+  session_id?: string | null;
+  vehicle_plate?: string | null;
+  card_number?: string | null;
+  visitor_name?: string | null;
+  target_room?: string | null;
+  purpose?: string | null;
+}
+
+export interface VehicleWorkItemSourceResult {
+  sourceModule: 'Vehicle';
+  sourceRecordId: string;
+  sourceLabel: string;
+  defaultTitle: string;
+  defaultDescription: string;
+  defaultPriority: WorkItemPriority;
+}
+
+/**
+ * Resolves canonical Work Item source for a vehicle record.
+ * Must ONLY use canonical vehicle_session_id.
+ * Returns null if vehicle_session_id is missing (legacy vehicle log), preventing invalid Work Item creation.
+ */
+export function resolveVehicleWorkItemSource(
+  record: VehicleWorkItemSourceInput
+): VehicleWorkItemSourceResult | null {
+  const vehicleSessionId = String(record?.vehicle_session_id || '').trim();
+  if (!vehicleSessionId) {
+    return null;
+  }
+  return {
+    sourceModule: 'Vehicle',
+    sourceRecordId: vehicleSessionId,
+    sourceLabel: `รถยนต์: ${record.vehicle_plate || vehicleSessionId} (${record.card_number || ''})`,
+    defaultTitle: `ติดตามยานพาหนะ: ${record.vehicle_plate || vehicleSessionId}`,
+    defaultDescription: `ทะเบียนรถ: ${record.vehicle_plate || ''}\nผู้ขับขี่: ${record.visitor_name || ''}\nห้องติดต่อ: ${record.target_room || ''}\nวัตถุประสงค์: ${record.purpose || ''}`,
+    defaultPriority: 'Normal',
+  };
+}

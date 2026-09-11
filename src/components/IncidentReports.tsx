@@ -11,13 +11,19 @@ import { listActivePatrolPoints } from '../services/patrolService';
 import { extractPrivateMediaFileId, uploadImageToDrive } from '../services/mediaUploadService';
 import { createUuid } from '../utils/uuid';
 import { formatThaiDateTime } from '../utils/dateTime';
+import { auth } from '../firebase';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 import UnitSearchSelect from './UnitSearchSelect';
 import ConfirmModal from './ConfirmModal';
 import OperationalCorrectionDialog from './OperationalCorrectionDialog';
 import RevisionHistoryPanel from './RevisionHistoryPanel';
+import SourceWorkItemAction from './work-center/SourceWorkItemAction';
 
-interface IncidentReportsProps { guardName: string; userRole: string }
+interface IncidentReportsProps {
+  guardName: string;
+  userRole: string;
+  onOpenWorkCenter?: (workItemId?: string) => void;
+}
 
 const initialForm = () => ({
   incident_datetime: '',
@@ -37,8 +43,9 @@ const initialForm = () => ({
   priority: 'Normal' as NonNullable<IncidentReportRecord['priority']>,
 });
 
-export default function IncidentReports({ guardName, userRole }: IncidentReportsProps) {
+export default function IncidentReports({ guardName, userRole, onOpenWorkCenter }: IncidentReportsProps) {
   const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
+  const currentUid = auth.currentUser?.uid || '';
   const [activeTab, setActiveTab] = useState<'report' | 'list'>('report');
   const [form, setForm] = useState(initialForm);
   const [points, setPoints] = useState<PatrolPointRecord[]>([]);
@@ -193,8 +200,79 @@ export default function IncidentReports({ guardName, userRole }: IncidentReports
         <button disabled={loading} className="rounded-xl bg-red-600 py-4 font-bold text-white disabled:opacity-50">{loading ? 'กำลังบันทึก...' : 'ยืนยันบันทึกรายงานเหตุการณ์'}</button>
       </form> : <section className="rounded-2xl border bg-white p-5">
         <div className="mb-3 flex justify-between"><h2 className="font-black">Incident Log</h2><button onClick={() => void reload()}><RefreshCw className="h-4 w-4" /></button></div>
-        <div className="space-y-3">{incidents.map(incident => <article key={incident.incident_id} className="rounded-xl border p-4"><div className="flex justify-between"><b>{incident.incident_type}</b><span>{incident.incident_status || incident.status}</span></div><p className="text-xs text-slate-500"><Clock className="inline h-3" /> เหตุเกิด {formatThaiDateTime(incident.incident_datetime)} · รับรายงาน {formatThaiDateTime(incident.reported_at || incident.created_at)}</p><p className="text-sm">📍 {incident.location_name_snapshot || incident.location}</p><p className="text-sm">{incident.description}</p>{incident.photo_url && <AuthenticatedEvidenceImage mediaReference={incident.photo_url} alt={`หลักฐาน ${incident.incident_id}`} className="mt-2 h-40 w-full rounded-lg object-cover" />}{incident.has_corrections && <p className="mt-2 text-xs font-bold text-amber-700">Edited · Revision {incident.revision_number} · {incident.last_edited_by_name} · {formatThaiDateTime(incident.last_edited_at)}</p>}<div className="mt-2 flex flex-wrap gap-3"><button onClick={() => setCorrection(incident)} className="flex items-center gap-1 text-xs font-bold text-indigo-600"><Edit className="h-3" />แก้ไขพร้อม Revision</button><button onClick={() => setHistory(incident)} className="text-xs font-bold text-slate-600">ประวัติการแก้ไข</button>{['Manager', 'Admin'].includes(userRole) && <button onClick={() => { setSelected(incident); setIncidentAction(incident.incident_status === 'resolved' ? 'close' : incident.incident_status === 'acknowledged' ? 'start' : incident.incident_status === 'in_progress' ? 'resolve' : 'acknowledge'); setManagementNote(incident.management_note || ''); }} className="flex items-center gap-1 text-xs font-bold text-indigo-600"><Edit className="h-3" />จัดการเหตุ</button>}</div></article>)}</div>
-        {selected && <div className="mt-4 rounded-xl border bg-slate-50 p-4"><select value={incidentAction} onChange={e => setIncidentAction(e.target.value as IncidentAction)} className="w-full rounded-xl border p-3"><option value="acknowledge">รับทราบแล้ว</option><option value="start">เริ่มดำเนินการ</option><option value="resolve">แก้ไขแล้ว</option><option value="close">ปิดเหตุ</option></select><textarea value={managementNote} onChange={e => setManagementNote(e.target.value)} placeholder="สรุปการดำเนินการ/การแก้ไข" className="mt-3 w-full rounded-xl border p-3" /><button onClick={() => setShowConfirm(true)} className="mt-3 w-full rounded-xl bg-indigo-600 p-3 font-bold text-white">บันทึกการดำเนินการ</button></div>}
+        <div className="space-y-4">
+          {incidents.map(incident => (
+            <article key={incident.incident_id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs flex flex-col gap-3">
+              <div className="flex justify-between items-center">
+                <b className="text-base text-slate-900">{incident.incident_type}</b>
+                <span className="text-xs px-2.5 py-1 rounded-full font-bold bg-slate-100 text-slate-700">
+                  {incident.incident_status || incident.status}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                <Clock className="inline h-3.5 w-3.5 mr-1" /> เหตุเกิด {formatThaiDateTime(incident.incident_datetime)} · รับรายงาน {formatThaiDateTime(incident.reported_at || incident.created_at)}
+              </p>
+              <p className="text-sm font-semibold text-slate-800">📍 {incident.location_name_snapshot || incident.location}</p>
+              <p className="text-sm text-slate-600 whitespace-pre-line">{incident.description}</p>
+              {incident.photo_url && (
+                <AuthenticatedEvidenceImage mediaReference={incident.photo_url} alt={`หลักฐาน ${incident.incident_id}`} className="h-44 w-full rounded-lg object-cover" />
+              )}
+              {incident.has_corrections && (
+                <p className="text-xs font-bold text-amber-700 bg-amber-50 p-2 rounded-lg">
+                  Edited · Revision {incident.revision_number} · {incident.last_edited_by_name} · {formatThaiDateTime(incident.last_edited_at)}
+                </p>
+              )}
+
+              {/* Source Work Item Action integration */}
+              <div className="pt-2 border-t border-slate-100">
+                <SourceWorkItemAction
+                  siteId={siteId}
+                  sourceModule="Incident"
+                  sourceRecordId={incident.incident_id}
+                  sourceLabel={`เหตุการณ์: ${incident.incident_id} (${incident.incident_type})`}
+                  defaultTitle={`ติดตามเหตุการณ์: ${incident.incident_type} ที่ ${incident.location_name_snapshot || incident.location}`}
+                  defaultDescription={`ประเภทเหตุการณ์: ${incident.incident_type}\nสถานที่: ${incident.location_name_snapshot || incident.location}\nรายละเอียด: ${incident.description}\nผู้รายงาน: ${incident.reported_by || incident.reporter_name || '-'}`}
+                  defaultPriority={incident.priority === 'Emergency' ? 'Emergency' : incident.priority === 'High' ? 'High' : incident.priority === 'Low' ? 'Low' : 'Normal'}
+                  operatorUid={currentUid}
+                  operatorName={guardName}
+                  role={userRole}
+                  onOpenWorkCenter={onOpenWorkCenter}
+                />
+              </div>
+
+              <div className="flex flex-wrap gap-3 pt-2 border-t border-slate-100">
+                <button onClick={() => setCorrection(incident)} className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:underline cursor-pointer">
+                  <Edit className="h-3 w-3" />แก้ไขพร้อม Revision
+                </button>
+                <button onClick={() => setHistory(incident)} className="text-xs font-bold text-slate-600 hover:underline cursor-pointer">
+                  ประวัติการแก้ไข
+                </button>
+                {['Manager', 'Admin'].includes(userRole) && (
+                  <button onClick={() => {
+                    setSelected(incident);
+                    setIncidentAction(incident.incident_status === 'resolved' ? 'close' : incident.incident_status === 'acknowledged' ? 'start' : incident.incident_status === 'in_progress' ? 'resolve' : 'acknowledge');
+                    setManagementNote(incident.management_note || '');
+                  }} className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:underline cursor-pointer">
+                    <Edit className="h-3 w-3" />จัดการเหตุ
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+        {selected && (
+          <div className="mt-4 rounded-xl border bg-slate-50 p-4">
+            <h3 className="font-bold text-sm text-slate-800 mb-2">จัดการเหตุ: {selected.incident_id}</h3>
+            <select value={incidentAction} onChange={e => setIncidentAction(e.target.value as IncidentAction)} className="w-full rounded-xl border p-3">
+              <option value="acknowledge">รับทราบแล้ว</option>
+              <option value="start">เริ่มดำเนินการ</option>
+              <option value="resolve">แก้ไขแล้ว</option>
+              <option value="close">ปิดเหตุ</option>
+            </select>
+            <textarea value={managementNote} onChange={e => setManagementNote(e.target.value)} placeholder="สรุปการดำเนินการ/การแก้ไข" className="mt-3 w-full rounded-xl border p-3" />
+            <button onClick={() => setShowConfirm(true)} className="mt-3 w-full rounded-xl bg-indigo-600 p-3 font-bold text-white">บันทึกการดำเนินการ</button>
+          </div>
+        )}
       </section>}
       {correction && <OperationalCorrectionDialog module="IncidentReports" record={correction} siteId={siteId} operatorName={guardName} onClose={() => setCorrection(null)} onSaved={reload} />}
       {history && <RevisionHistoryPanel title={history.incident_id} load={() => listIncidentRevisions(siteId, history.incident_id)} onClose={() => setHistory(null)} />}

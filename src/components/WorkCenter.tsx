@@ -47,6 +47,8 @@ interface WorkCenterProps {
   operatorName: string;
   role: string;
   onNavigate?: (tab: string) => void;
+  initialSelectedItemId?: string;
+  onClearInitialSelectedItemId?: () => void;
 }
 
 export default function WorkCenter({
@@ -55,6 +57,8 @@ export default function WorkCenter({
   operatorName,
   role,
   onNavigate,
+  initialSelectedItemId,
+  onClearInitialSelectedItemId,
 }: WorkCenterProps) {
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -70,6 +74,16 @@ export default function WorkCenter({
   const [selectedItem, setSelectedItem] = useState<WorkItem | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+
+  // Deep focus initialSelectedItemId
+  useEffect(() => {
+    if (!initialSelectedItemId || workItems.length === 0) return;
+    const target = workItems.find(i => i.work_item_id === initialSelectedItemId);
+    if (target) {
+      setSelectedItem(target);
+      setIsDetailOpen(true);
+    }
+  }, [initialSelectedItemId, workItems]);
 
   // Realtime subscription
   useEffect(() => {
@@ -93,7 +107,7 @@ export default function WorkCenter({
       undefined,
       err => {
         console.error('WorkItems subscription error:', err);
-        setError('ไม่สามารถโหลดข้อมูลงานติดตามแบบ Realtime ได้: ' + err.message);
+        setError('ไม่สามารถโหลดงานติดตามได้ กรุณาลองใหม่อีกครั้ง');
         setIsLoading(false);
       }
     );
@@ -424,6 +438,7 @@ export default function WorkCenter({
         onClose={() => {
           setIsDetailOpen(false);
           setSelectedItem(null);
+          onClearInitialSelectedItemId?.();
         }}
         item={selectedItem}
         siteId={siteId}

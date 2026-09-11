@@ -12,15 +12,21 @@ import { extractPrivateMediaFileId, uploadImageToDrive } from '../services/media
 import { createUuid } from '../utils/uuid';
 import { stampEvidenceImage } from '../utils/evidenceStamp';
 import { formatThaiDateTime } from '../utils/dateTime';
+import { auth } from '../firebase';
 import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 import { patrolLifecycle } from '../services/operationalLifecycle';
 import OperationalCorrectionDialog from './OperationalCorrectionDialog';
 import RevisionHistoryPanel from './RevisionHistoryPanel';
+import SourceWorkItemAction from './work-center/SourceWorkItemAction';
 
-interface PatrolLogsProps { guardName: string; userRole: string }
+interface PatrolLogsProps {
+  guardName: string;
+  userRole: string;
+  onOpenWorkCenter?: (workItemId?: string) => void;
+}
 type PhotoSlot = 1 | 2;
 
-export default function PatrolLogs({ guardName }: PatrolLogsProps) {
+export default function PatrolLogs({ guardName, userRole, onOpenWorkCenter }: PatrolLogsProps) {
   const siteId = sessionStorage.getItem('selected_site_id') || 'site-01';
   const [points, setPoints] = useState<PatrolPointRecord[]>([]);
   const [logs, setLogs] = useState<PatrolLogRecord[]>([]);
@@ -228,6 +234,21 @@ export default function PatrolLogs({ guardName }: PatrolLogsProps) {
             ))}
           </div>
           {log.has_corrections && <p className="mt-2 text-xs font-bold text-amber-700">Edited · Revision {log.revision_number} · {log.last_edited_by_name} · {formatThaiDateTime(log.last_edited_at)}</p>}
+          <div className="mt-2 pt-2 border-t border-slate-100">
+            <SourceWorkItemAction
+              siteId={siteId}
+              sourceModule="Patrol"
+              sourceRecordId={log.patrol_log_id}
+              sourceLabel={`ตรวจตรา: ${log.patrol_point_name || log.point_name || log.patrol_log_id}`}
+              defaultTitle={`ติดตามการตรวจตราจุด: ${log.patrol_point_name || log.point_name || log.patrol_log_id}`}
+              defaultDescription={`จุดตรวจ: ${log.patrol_point_name || log.point_name || ''}\nสถานะ: ${log.status || log.area_status || ''}\nเหตุผล/ข้อสังเกต: ${log.abnormal_reason || log.description || log.notes || '-'}\nผู้ตรวจ: ${log.guard_name || guardName}`}
+              defaultPriority={log.area_status === 'abnormal' || log.status !== 'ปกติ' ? 'High' : 'Normal'}
+              operatorUid={auth.currentUser?.uid || ''}
+              operatorName={guardName}
+              role={userRole}
+              onOpenWorkCenter={onOpenWorkCenter}
+            />
+          </div>
           <div className="mt-2 flex gap-3"><button onClick={() => setCorrection(log)} className="text-xs font-bold text-indigo-600">แก้ไขพร้อม Revision</button><button onClick={() => setHistory(log)} className="text-xs font-bold text-slate-600">ประวัติการแก้ไข</button></div>
         </article>)}</div>
       </section>

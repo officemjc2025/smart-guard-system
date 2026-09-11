@@ -45,6 +45,9 @@ interface WorkItemCreateDialogProps {
   defaultSourceRecordId?: string;
   defaultSourceLabel?: string;
   defaultTitle?: string;
+  defaultDescription?: string;
+  defaultPriority?: WorkItemPriority;
+  lockSourceContext?: boolean;
   onItemCreated?: (createdId: string) => void;
 }
 
@@ -71,14 +74,17 @@ export default function WorkItemCreateDialog({
   defaultSourceRecordId = '',
   defaultSourceLabel = '',
   defaultTitle = '',
+  defaultDescription = '',
+  defaultPriority = 'Normal',
+  lockSourceContext = false,
   onItemCreated,
 }: WorkItemCreateDialogProps) {
   const [title, setTitle] = useState(defaultTitle);
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(defaultDescription);
   const [sourceModule, setSourceModule] = useState<WorkSourceModule>(defaultSourceModule);
   const [sourceRecordId, setSourceRecordId] = useState(defaultSourceRecordId);
   const [sourceLabel, setSourceLabel] = useState(defaultSourceLabel);
-  const [priority, setPriority] = useState<WorkItemPriority>('Normal');
+  const [priority, setPriority] = useState<WorkItemPriority>(defaultPriority);
   const [assignedTo, setAssignedTo] = useState<string>('');
   const [nextAction, setNextAction] = useState('');
   const [dueAtStr, setDueAtStr] = useState('');
@@ -93,17 +99,17 @@ export default function WorkItemCreateDialog({
   useEffect(() => {
     if (isOpen) {
       setTitle(defaultTitle);
-      setDescription('');
+      setDescription(defaultDescription);
       setSourceModule(defaultSourceModule);
       setSourceRecordId(defaultSourceRecordId);
       setSourceLabel(defaultSourceLabel);
-      setPriority('Normal');
+      setPriority(defaultPriority);
       setAssignedTo('');
       setNextAction('');
       setDueAtStr('');
       setErrorMsg(null);
     }
-  }, [isOpen, defaultTitle, defaultSourceModule, defaultSourceRecordId, defaultSourceLabel]);
+  }, [isOpen, defaultTitle, defaultDescription, defaultSourceModule, defaultSourceRecordId, defaultSourceLabel, defaultPriority]);
 
   // Load eligible assignees only if supervisor
   useEffect(() => {
@@ -121,8 +127,12 @@ export default function WorkItemCreateDialog({
 
   // Check duplicate active work item
   const duplicateActiveItem =
-    sourceModule !== 'General' && sourceRecordId.trim()
-      ? findDuplicateActiveWorkItem(existingItems, sourceModule, sourceRecordId.trim())
+    (lockSourceContext ? defaultSourceModule : sourceModule) !== 'General' && (lockSourceContext ? defaultSourceRecordId : sourceRecordId).trim()
+      ? findDuplicateActiveWorkItem(
+          existingItems,
+          lockSourceContext ? defaultSourceModule : sourceModule,
+          (lockSourceContext ? defaultSourceRecordId : sourceRecordId).trim()
+        )
       : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -162,11 +172,17 @@ export default function WorkItemCreateDialog({
         }
       }
 
+      const effectiveSourceModule = lockSourceContext ? defaultSourceModule : sourceModule;
+      const effectiveSourceRecordId = lockSourceContext
+        ? (defaultSourceModule === 'General' ? '' : defaultSourceRecordId.trim())
+        : (sourceModule === 'General' ? '' : sourceRecordId.trim());
+      const effectiveSourceLabel = lockSourceContext ? defaultSourceLabel.trim() : sourceLabel.trim();
+
       const createdId = await createWorkItem({
         siteId,
-        sourceModule,
-        sourceRecordId: sourceModule === 'General' ? '' : sourceRecordId.trim(),
-        sourceLabel: sourceLabel.trim(),
+        sourceModule: effectiveSourceModule,
+        sourceRecordId: effectiveSourceRecordId,
+        sourceLabel: effectiveSourceLabel,
         title: title.trim(),
         description: description.trim(),
         priority,
@@ -181,7 +197,7 @@ export default function WorkItemCreateDialog({
       onClose();
     } catch (err: unknown) {
       console.error('Failed to create work item:', err);
-      setErrorMsg(err instanceof Error ? err.message : 'เกิดข้อผิดพลาดในการสร้างงานติดตาม');
+      setErrorMsg('ไม่สามารถสร้างงานติดตามได้ กรุณาตรวจสอบข้อมูลและลองใหม่อีกครั้ง');
     } finally {
       setIsSubmitting(false);
     }
@@ -279,67 +295,100 @@ export default function WorkItemCreateDialog({
           </div>
 
           {/* Source Module & Context */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-800">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                โมดูลที่มา (Source Module)
-              </label>
-              <select
-                value={sourceModule}
-                onChange={e => setSourceModule(e.target.value as WorkSourceModule)}
-                className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {sourceOptions.map(opt => (
-                  <option key={opt} value={opt}>
-                    {WORK_SOURCE_MODULE_LABELS[opt]}
-                  </option>
-                ))}
-              </select>
+          {lockSourceContext ? (
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-800 flex flex-col gap-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  ข้อมูลต้นทาง (Source Context)
+                </span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+                  🔒 เชื่อมโยงกับบันทึกต้นทาง
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div className="bg-white dark:bg-slate-800 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <span className="text-[10px] text-slate-400 block font-semibold mb-0.5">โมดูล</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200">
+                    {WORK_SOURCE_MODULE_LABELS[defaultSourceModule] || defaultSourceModule}
+                  </span>
+                </div>
+                <div className="bg-white dark:bg-slate-800 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700">
+                  <span className="text-[10px] text-slate-400 block font-semibold mb-0.5">รหัสบันทึก</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-200 font-mono">
+                    {defaultSourceRecordId || '—'}
+                  </span>
+                </div>
+              </div>
+              {defaultSourceLabel && (
+                <div className="bg-white dark:bg-slate-800 p-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
+                  <span className="text-[10px] text-slate-400 block font-semibold mb-0.5">ป้ายกำกับ / อ้างอิง</span>
+                  <span className="font-semibold text-slate-700 dark:text-slate-300">{defaultSourceLabel}</span>
+                </div>
+              )}
             </div>
-
-            {sourceModule !== 'General' ? (
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200/80 dark:border-slate-800">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  ป้ายกำกับ / อ้างอิง (Label)
+                  โมดูลที่มา (Source Module)
                 </label>
-                <input
-                  type="text"
-                  value={sourceLabel}
-                  onChange={e => setSourceLabel(e.target.value)}
-                  placeholder="เช่น ทะเบียน 1กข 1234, ช่างแอร์"
+                <select
+                  value={sourceModule}
+                  onChange={e => setSourceModule(e.target.value as WorkSourceModule)}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                >
+                  {sourceOptions.map(opt => (
+                    <option key={opt} value={opt}>
+                      {WORK_SOURCE_MODULE_LABELS[opt]}
+                    </option>
+                  ))}
+                </select>
               </div>
-            ) : (
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  ป้ายกำกับทั่วไป (ไม่บังคับ)
-                </label>
-                <input
-                  type="text"
-                  value={sourceLabel}
-                  onChange={e => setSourceLabel(e.target.value)}
-                  placeholder="เช่น ตรวจตราพิเศษรอบดึก"
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            )}
 
-            {sourceModule !== 'General' && (
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  รหัสบันทึกต้นทาง (Source Record ID)
-                </label>
-                <input
-                  type="text"
-                  value={sourceRecordId}
-                  onChange={e => setSourceRecordId(e.target.value)}
-                  placeholder="เช่น veh_12345, contractor_67890 (ถ้ามี)"
-                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            )}
-          </div>
+              {sourceModule !== 'General' ? (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                    ป้ายกำกับ / อ้างอิง (Label)
+                  </label>
+                  <input
+                    type="text"
+                    value={sourceLabel}
+                    onChange={e => setSourceLabel(e.target.value)}
+                    placeholder="เช่น ทะเบียน 1กข 1234, ช่างแอร์"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                    ป้ายกำกับทั่วไป (ไม่บังคับ)
+                  </label>
+                  <input
+                    type="text"
+                    value={sourceLabel}
+                    onChange={e => setSourceLabel(e.target.value)}
+                    placeholder="เช่น ตรวจตราพิเศษรอบดึก"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
+
+              {sourceModule !== 'General' && (
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    รหัสบันทึกต้นทาง (Source Record ID)
+                  </label>
+                  <input
+                    type="text"
+                    value={sourceRecordId}
+                    onChange={e => setSourceRecordId(e.target.value)}
+                    placeholder="เช่น veh_12345, contractor_67890 (ถ้ามี)"
+                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Priority & Assignee Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">

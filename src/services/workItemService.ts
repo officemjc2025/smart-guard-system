@@ -94,6 +94,43 @@ export function subscribeWorkItems(siteId: string, callback: (items: WorkItem[])
   );
 }
 
+export function subscribeWorkItemsForSource(
+  siteId: string,
+  sourceModule: WorkSourceModule,
+  sourceRecordId: string,
+  callback: (items: WorkItem[]) => void,
+  onError?: (error: Error) => void
+): Unsubscribe {
+  const a = activeActor(); assertSite(a, siteId);
+  const constraints = [
+    where('site_id', '==', siteId),
+    where('source_module', '==', sourceModule),
+    where('source_record_id', '==', sourceRecordId),
+    orderBy('updated_at', 'desc')
+  ];
+  return onSnapshot(
+    query(collection(db, 'workItems'), ...constraints),
+    s => callback(s.docs.map(d => d.data() as WorkItem)),
+    err => onError?.(err instanceof Error ? err : new Error(String(err)))
+  );
+}
+
+export async function listWorkItemsForSource(
+  siteId: string,
+  sourceModule: WorkSourceModule,
+  sourceRecordId: string
+): Promise<WorkItem[]> {
+  const a = activeActor(); assertSite(a, siteId);
+  const constraints = [
+    where('site_id', '==', siteId),
+    where('source_module', '==', sourceModule),
+    where('source_record_id', '==', sourceRecordId),
+    orderBy('updated_at', 'desc')
+  ];
+  const s = await getDocs(query(collection(db, 'workItems'), ...constraints));
+  return s.docs.map(d => d.data() as WorkItem);
+}
+
 export interface AssigneeOption {
   uid: string;
   name: string;

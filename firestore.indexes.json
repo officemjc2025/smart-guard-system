@@ -198,6 +198,33 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "updated_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workItems",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "assigned_to", "order": "ASCENDING" },
+        { "fieldPath": "updated_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workItems",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
+        { "fieldPath": "source_module", "order": "ASCENDING" },
+        { "fieldPath": "source_record_id", "order": "ASCENDING" },
+        { "fieldPath": "updated_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workItems",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "site_id", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "updated_at", "order": "DESCENDING" }
       ]
