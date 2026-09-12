@@ -146,23 +146,23 @@ export default function WorkCenter({
   return (
     <div className="w-full max-w-[1600px] mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 animate-fade-in">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-2 border-b border-slate-200/80 dark:border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 rounded-2xl border border-indigo-700/50 bg-gradient-to-r from-slate-900 via-indigo-950 to-blue-950 p-4 sm:p-5 shadow-md">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-500/20 shrink-0">
+          <div className="p-2.5 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-500/30 border border-blue-400/30 shrink-0">
             <ClipboardList className="w-6 h-6" />
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-black text-slate-950 dark:text-white tracking-tight">
+              <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
                 งานติดตาม (Work Center)
               </h1>
               {supervisor && (
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-100 text-indigo-900 border border-indigo-300 dark:bg-indigo-950/80 dark:text-indigo-200 dark:border-indigo-700 shadow-2xs">
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-white/10 text-indigo-100 border border-indigo-300/40">
                   สิทธิ์ผู้ดูแล
                 </span>
               )}
             </div>
-            <p className="text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 mt-0.5">
+            <p className="text-xs sm:text-sm font-medium text-slate-200 mt-0.5">
               ศูนย์ประสานงานและติดตามสถานะงานทุกโมดูลแบบ Real-time
             </p>
           </div>
