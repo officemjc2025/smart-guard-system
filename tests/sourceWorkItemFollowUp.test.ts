@@ -13,6 +13,10 @@ import {
   canReopen,
   canClose,
   isSupervisor,
+  canActorCreateAssignedWork,
+  CANONICAL_WORK_ITEM_ROLES,
+  isCanonicalWorkItemRole,
+  resolveWorkItemActor,
   WORK_ITEM_STATUS_LABELS,
   WORK_ITEM_PRIORITY_LABELS,
   resolveVehicleWorkItemSource,
@@ -426,5 +430,268 @@ describe('SGS Work Center – Phase 3: Source Record Follow-up Integration Tests
       /if \(!sourceInfo\) \{[\s\S]*?ไม่สามารถสร้างงานติดตามจากรายการรถเดิมนี้ได้[\s\S]*?return \([\s\S]*?<SourceWorkItemAction/,
       'SearchHistory must guard SourceWorkItemAction behind non-null sourceInfo check'
     );
+  });
+
+  // Test 20: Work Item creation authorization policy and actor resolution behavior
+  it('20. Evaluates canActorCreateAssignedWork and resolveWorkItemActor: supervisors can assign others, guards fail closed, storage cannot elevate role', () => {
+    const adminActor = { uid: 'admin_001', role: 'Admin' };
+    const managerActor = { uid: 'mgr_001', role: 'Manager' };
+    const shiftHeadActor = { uid: 'sh_001', role: 'ShiftHead' };
+    const guardActor = { uid: 'guard_001', role: 'Guard' };
+    const unknownActor = { uid: 'anon_001', role: 'Anonymous' };
+    const targetAssignee = 'operator_999';
+
+    // 1. Supervisors can assign work to another operator
+    assert.equal(canActorCreateAssignedWork(adminActor, targetAssignee), true, 'Admin can assign to another operator');
+    assert.equal(canActorCreateAssignedWork(managerActor, targetAssignee), true, 'Manager can assign to another operator');
+    assert.equal(canActorCreateAssignedWork(shiftHeadActor, targetAssignee), true, 'ShiftHead can assign to another operator');
+
+    // 2. Guard CANNOT assign work to another operator
+    assert.equal(canActorCreateAssignedWork(guardActor, targetAssignee), false, 'Guard cannot assign to another operator');
+
+    // Guard CAN create unassigned work
+    assert.equal(canActorCreateAssignedWork(guardActor, ''), true, 'Guard can create unassigned work');
+    assert.equal(canActorCreateAssignedWork(guardActor, undefined), true, 'Guard can create unassigned work (undefined)');
+
+    // Guard CAN self-assign
+    assert.equal(canActorCreateAssignedWork(guardActor, 'guard_001'), true, 'Guard can assign work to self');
+
+    // Supervisor can self-assign and create unassigned
+    assert.equal(canActorCreateAssignedWork(adminActor, 'admin_001'), true, 'Admin can assign to self');
+    assert.equal(canActorCreateAssignedWork(adminActor, ''), true, 'Admin can create unassigned work');
+
+    // Unknown or invalid roles must fail closed when assigning to another operator
+    assert.equal(canActorCreateAssignedWork(unknownActor, targetAssignee), false, 'Unknown role cannot assign to another operator');
+    assert.equal(canActorCreateAssignedWork({ uid: 'guest', role: '' }, targetAssignee), false, 'Empty role cannot assign to another operator');
+
+    // Behavioral tests for resolveWorkItemActor:
+    // 3. activeActor / resolveWorkItemActor rejects mismatched Firebase UID vs canonical actor UID
+    assert.throws(
+      () => resolveWorkItemActor({
+        currentAuthUid: 'auth_uid_123',
+        canonicalActor: { uid: 'different_uid_456', siteId: 'site-01', role: 'Admin', name: 'Spoofed Admin' },
+      }),
+      /Work Item actor identity mismatch\./
+    );
+
+    // 4. Missing canonical actor CANNOT gain supervisor privilege through sessionStorage
+    const unhydratedWithAdminStorage = resolveWorkItemActor({
+      currentAuthUid: 'guard_001',
+      canonicalActor: null,
+      sessionStorageSiteId: 'site-01',
+      sessionStorageName: 'Guard Somchai',
+      sessionStorageRole: 'Admin', // Injected/tampered role in sessionStorage
+    });
+    assert.equal(unhydratedWithAdminStorage.role, 'Guard', 'Storage cannot elevate role to Admin when unhydrated');
+    assert.equal(canActorCreateAssignedWork(unhydratedWithAdminStorage, targetAssignee), false, 'Unhydrated actor cannot assign other operators');
+
+    const unhydratedWithManagerStorage = resolveWorkItemActor({
+      currentAuthUid: 'guard_001',
+      canonicalActor: null,
+      sessionStorageSiteId: 'site-01',
+      sessionStorageName: 'Guard Somchai',
+      sessionStorageRole: 'Manager',
+    });
+    assert.equal(unhydratedWithManagerStorage.role, 'Guard', 'Storage cannot elevate role to Manager when unhydrated');
+
+    const unhydratedWithShiftHeadStorage = resolveWorkItemActor({
+      currentAuthUid: 'guard_001',
+      canonicalActor: null,
+      sessionStorageSiteId: 'site-01',
+      sessionStorageName: 'Guard Somchai',
+      sessionStorageRole: 'ShiftHead',
+    });
+    assert.equal(unhydratedWithShiftHeadStorage.role, 'Guard', 'Storage cannot elevate role to ShiftHead when unhydrated');
+
+    // 5. Invalid stored role cannot elevate privileges
+    const unhydratedWithInvalidRole = resolveWorkItemActor({
+      currentAuthUid: 'guard_001',
+      canonicalActor: null,
+      sessionStorageSiteId: 'site-01',
+      sessionStorageName: 'Attacker',
+      sessionStorageRole: 'SuperAdmin',
+    });
+    assert.equal(unhydratedWithInvalidRole.role, 'Guard', 'Invalid stored role must default safely to Guard');
+
+    // Rejects missing auth UID
+    assert.throws(
+      () => resolveWorkItemActor({ currentAuthUid: null, canonicalActor: null }),
+      /Authenticated active site is required\./
+    );
+
+    // Rejects missing siteId when canonical actor is absent
+    assert.throws(
+      () => resolveWorkItemActor({ currentAuthUid: 'user_001', canonicalActor: null, sessionStorageSiteId: '' }),
+      /Canonical Work Item actor is not initialized\./
+    );
+
+    // Rejects invalid canonical actor role
+    assert.throws(
+      () => resolveWorkItemActor({
+        currentAuthUid: 'user_001',
+        canonicalActor: { uid: 'user_001', siteId: 'site-01', role: 'InvalidRole', name: 'User' },
+      }),
+      /Invalid Work Item actor role: InvalidRole/
+    );
+
+    // Rejects empty canonical actor siteId
+    assert.throws(
+      () => resolveWorkItemActor({
+        currentAuthUid: 'user_001',
+        canonicalActor: { uid: 'user_001', siteId: '', role: 'Admin', name: 'User' },
+      }),
+      /Work Item actor requires non-empty siteId\./
+    );
+
+    // Valid canonical actors preserve authenticated roles
+    const validAdmin = resolveWorkItemActor({
+      currentAuthUid: 'admin_001',
+      canonicalActor: { uid: 'admin_001', siteId: 'site-01', role: 'Admin', name: 'Verified Admin' },
+    });
+    assert.equal(validAdmin.role, 'Admin');
+    assert.equal(validAdmin.siteId, 'site-01');
+  });
+
+  // Test 21: Canonical actor role and identity synchronization across App.tsx, workItemService.ts, and WorkItemCreateDialog.tsx
+  it('21. Synchronizes canonical operator role and identity across App, workItemService, and WorkItemCreateDialog', () => {
+    const appPath = path.resolve(process.cwd(), 'src/App.tsx');
+    const appContent = fs.readFileSync(appPath, 'utf8');
+
+    // 7. App.tsx imports and calls setCanonicalWorkItemActor from validated profile and clears on unauthenticated/sign-out
+    assert.match(
+      appContent,
+      /import\s*\{[^}]*setCanonicalWorkItemActor[^}]*\}\s*from\s*['"]\.\/services\/workItemService['"]/,
+      'App.tsx must import setCanonicalWorkItemActor'
+    );
+
+    assert.match(
+      appContent,
+      /sessionStorage\.setItem\(['"]selected_operator_name['"],\s*resolvedOperatorName\)/,
+      'App.tsx must save selected_operator_name to sessionStorage'
+    );
+    assert.match(
+      appContent,
+      /sessionStorage\.setItem\(['"]selected_operator_role['"],\s*canonicalProfile\.role\)/,
+      'App.tsx must save selected_operator_role to sessionStorage'
+    );
+
+    assert.match(
+      appContent,
+      /setCanonicalWorkItemActor\(\s*\{[\s\S]*?uid:\s*user\.uid[\s\S]*?siteId:\s*canonicalProfile\.site_id[\s\S]*?name:\s*resolvedOperatorName[\s\S]*?role:\s*canonicalProfile\.role/,
+      'App.tsx must initialize canonical actor override with profile data'
+    );
+
+    assert.match(
+      appContent,
+      /sessionStorage\.removeItem\(['"]selected_operator_role['"]\)/,
+      'App.tsx must clear selected_operator_role on sign out'
+    );
+
+    // workItemService.ts exports setter/getter and validates canonical roles
+    const servicePath = path.resolve(process.cwd(), 'src/services/workItemService.ts');
+    const serviceContent = fs.readFileSync(servicePath, 'utf8');
+
+    assert.match(
+      serviceContent,
+      /export\s+function\s+setCanonicalWorkItemActor/,
+      'workItemService must export setCanonicalWorkItemActor'
+    );
+    assert.match(
+      serviceContent,
+      /export\s+function\s+getCanonicalWorkItemActor/,
+      'workItemService must export getCanonicalWorkItemActor'
+    );
+    assert.match(
+      serviceContent,
+      /isCanonicalWorkItemRole\(actor\.role\)/,
+      'setCanonicalWorkItemActor must validate canonical roles'
+    );
+
+    // 6. WorkItemCreateDialog does NOT use selected_operator_role as supervisor authority
+    const dialogPath = path.resolve(process.cwd(), 'src/components/work-center/WorkItemCreateDialog.tsx');
+    const dialogContent = fs.readFileSync(dialogPath, 'utf8');
+
+    assert.ok(
+      !dialogContent.includes("sessionStorage.getItem('selected_operator_role')") &&
+      !dialogContent.includes('sessionStorage.getItem("selected_operator_role")'),
+      'WorkItemCreateDialog must not read selected_operator_role from sessionStorage for role authority'
+    );
+
+    assert.match(
+      dialogContent,
+      /const\s+effectiveRole\s*=\s*CANONICAL_WORK_ITEM_ROLES\.includes\(role\s+as\s+any\)\s*\?\s*role\s*:\s*['"]Guard['"]/,
+      'WorkItemCreateDialog must derive effectiveRole strictly from role prop validated against CANONICAL_WORK_ITEM_ROLES'
+    );
+  });
+
+  // Test 22: Dashboard renders incident evidence thumbnail when photo_url is present and forbids raw img
+  it('22. Dashboard imports AuthenticatedEvidenceImage, renders thumbnail when photo_url exists, and avoids raw img', () => {
+    const dashboardPath = path.resolve(process.cwd(), 'src/components/Dashboard.tsx');
+    const dashboardContent = fs.readFileSync(dashboardPath, 'utf8');
+
+    // 8. Dashboard imports AuthenticatedEvidenceImage
+    assert.match(
+      dashboardContent,
+      /import\s+AuthenticatedEvidenceImage\s+from\s+['"]\.\/AuthenticatedEvidenceImage['"]/,
+      'Dashboard must import AuthenticatedEvidenceImage'
+    );
+
+    // 9. Dashboard renders AuthenticatedEvidenceImage guarded by incident.photo_url
+    assert.match(
+      dashboardContent,
+      /\{incident\.photo_url\s*&&\s*\(\s*<div[^>]*>[\s\S]*?<AuthenticatedEvidenceImage[\s\S]*?mediaReference=\{incident\.photo_url\}[\s\S]*?\/>/,
+      'Dashboard must conditionally render AuthenticatedEvidenceImage for incidents with photo_url'
+    );
+
+    // 10. No raw <img src={incident.photo_url}>
+    assert.ok(
+      !dashboardContent.includes('<img') || !dashboardContent.includes('photo_url'),
+      'Dashboard must not use raw <img with incident.photo_url'
+    );
+    assert.equal(
+      dashboardContent.includes('<img src={incident.photo_url}'),
+      false,
+      'Dashboard must not contain raw <img src={incident.photo_url}>'
+    );
+  });
+
+  // Test 23: Audit touched files for malformed concatenated Tailwind classes
+  it('23. Audit touched files for malformed concatenated Tailwind tokens', () => {
+    const touchedFiles = [
+      'src/components/Dashboard.tsx',
+      'src/components/work-center/WorkItemCreateDialog.tsx',
+      'src/components/work-center/WorkItemDetailDialog.tsx',
+      'src/components/work-center/SourceWorkItemAction.tsx',
+      'src/components/WorkCenter.tsx',
+      'src/App.tsx',
+      'src/services/workItemService.ts',
+    ];
+
+    const malformedTailwindRegex = /(?:text-xsfont-|text-whiteshadow-|transition-allactive:|items-centergap-|h-[0-9.]+text-|font-blackpx-|font-semiboldtext-)/;
+
+    // Self-tests: verify that all targeted patterns are caught
+    assert.match('class text-xsfont-bold', malformedTailwindRegex);
+    assert.match('class text-whiteshadow-sm', malformedTailwindRegex);
+    assert.match('class transition-allactive:scale-95', malformedTailwindRegex);
+    assert.match('class items-centergap-2', malformedTailwindRegex);
+    assert.match('class h-4text-blue-500', malformedTailwindRegex);
+    assert.match('class font-blackpx-2', malformedTailwindRegex);
+    assert.match('class font-semiboldtext-slate-600', malformedTailwindRegex);
+
+    // Self-tests: verify that valid separated patterns are NOT caught
+    assert.doesNotMatch('text-xs font-bold', malformedTailwindRegex);
+    assert.doesNotMatch('text-white shadow', malformedTailwindRegex);
+    assert.doesNotMatch('transition-all active:scale-98', malformedTailwindRegex);
+    assert.doesNotMatch('items-center gap-2', malformedTailwindRegex);
+    assert.doesNotMatch('h-4 text-blue-500', malformedTailwindRegex);
+    assert.doesNotMatch('font-black px-2', malformedTailwindRegex);
+    assert.doesNotMatch('font-semibold text-slate-600', malformedTailwindRegex);
+
+    for (const relFile of touchedFiles) {
+      const fullPath = path.resolve(process.cwd(), relFile);
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const match = content.match(malformedTailwindRegex);
+      assert.equal(match, null, `Found malformed Tailwind token concatenation in ${relFile}: ${match?.[0]}`);
+    }
   });
 });

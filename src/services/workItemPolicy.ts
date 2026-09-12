@@ -69,8 +69,72 @@ export const WORK_ACTIVITY_ACTION_LABELS: Record<WorkActivityAction, string> = {
   Closed: 'ปิดงานสมบูรณ์',
 };
 
+export type CanonicalWorkItemRole = 'Guard' | 'ShiftHead' | 'Manager' | 'Admin';
+export const CANONICAL_WORK_ITEM_ROLES: readonly CanonicalWorkItemRole[] = ['Guard', 'ShiftHead', 'Manager', 'Admin'];
+
+export function isCanonicalWorkItemRole(role: unknown): role is CanonicalWorkItemRole {
+  return typeof role === 'string' && (CANONICAL_WORK_ITEM_ROLES as readonly string[]).includes(role);
+}
+
 export function isSupervisor(role: string): boolean {
   return ['ShiftHead', 'Manager', 'Admin'].includes(role);
+}
+
+export interface ResolveWorkItemActorParams {
+  currentAuthUid: string | undefined | null;
+  canonicalActor: {
+    uid: string;
+    siteId: string;
+    name?: string;
+    role: string;
+  } | null;
+  sessionStorageSiteId?: string | null;
+  sessionStorageName?: string | null;
+  sessionStorageRole?: string | null;
+}
+
+export function resolveWorkItemActor(params: ResolveWorkItemActorParams): {
+  uid: string;
+  siteId: string;
+  name: string;
+  role: CanonicalWorkItemRole;
+} {
+  const { currentAuthUid, canonicalActor, sessionStorageSiteId, sessionStorageName } = params;
+  if (!currentAuthUid) {
+    throw new Error('Authenticated active site is required.');
+  }
+
+  if (canonicalActor) {
+    if (canonicalActor.uid !== currentAuthUid) {
+      throw new Error('Work Item actor identity mismatch.');
+    }
+    if (!canonicalActor.siteId) {
+      throw new Error('Work Item actor requires non-empty siteId.');
+    }
+    if (!isCanonicalWorkItemRole(canonicalActor.role)) {
+      throw new Error(`Invalid Work Item actor role: ${canonicalActor.role}`);
+    }
+    return {
+      uid: canonicalActor.uid,
+      siteId: canonicalActor.siteId,
+      name: canonicalActor.name || canonicalActor.uid,
+      role: canonicalActor.role,
+    };
+  }
+
+  // Canonical actor not yet hydrated: fallback MUST NEVER grant supervisor privileges.
+  // sessionStorage.selected_operator_role is strictly ignored for privilege elevation.
+  const fallbackSiteId = sessionStorageSiteId || '';
+  if (!fallbackSiteId) {
+    throw new Error('Canonical Work Item actor is not initialized.');
+  }
+
+  return {
+    uid: currentAuthUid,
+    siteId: fallbackSiteId,
+    name: sessionStorageName || currentAuthUid,
+    role: 'Guard',
+  };
 }
 
 export function isAllowedWorkItemTransition(
@@ -127,6 +191,16 @@ export function canClose(role: string, item: Pick<WorkItem, 'status'>): boolean 
 export function canAssign(role: string, item: Pick<WorkItem, 'status'>): boolean {
   if (item.status === 'Closed') return false;
   return isSupervisor(role);
+}
+
+export function canActorCreateAssignedWork(
+  actor: { role: string; uid: string },
+  targetAssignee?: string
+): boolean {
+  if (!targetAssignee || targetAssignee === actor.uid) {
+    return true;
+  }
+  return isSupervisor(actor.role);
 }
 
 export function canRelease(role: string, item: Pick<WorkItem, 'status' | 'assigned_to'>, uid: string): boolean {

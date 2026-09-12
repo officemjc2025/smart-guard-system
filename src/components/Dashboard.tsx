@@ -25,6 +25,7 @@ import {
 } from '../services/authDiagnostics';
 import { canLoadDashboard } from '../services/authFlowPolicy';
 import { formatThaiTime } from '../utils/dateTime';
+import AuthenticatedEvidenceImage from './AuthenticatedEvidenceImage';
 
 interface DashboardProps {
   onNavigate: (tab: TabType) => void;
@@ -387,7 +388,16 @@ export default function Dashboard({ onNavigate, activeRole, siteId }: DashboardP
                         <span className="text-[11px] font-bold text-slate-600 block mt-1">📍 {incident.location}</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 self-end sm:self-center">
+                    <div className="flex items-center gap-3 self-end sm:self-center">
+                      {incident.photo_url && (
+                        <div className="w-14 h-14 sm:w-16 sm:h-16 shrink-0 rounded-lg overflow-hidden border border-slate-200 bg-slate-100">
+                          <AuthenticatedEvidenceImage
+                            mediaReference={incident.photo_url}
+                            alt={`หลักฐาน ${incident.incident_id || incident.incident_type || ''}`}
+                            className="w-full h-full rounded-lg object-cover"
+                          />
+                        </div>
+                      )}
                       <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
                         incident.status === 'แจ้งแล้ว' ? 'bg-red-100 text-red-700' :
                         incident.status === 'กำลังดำเนินการ' ? 'bg-amber-100 text-amber-700' :

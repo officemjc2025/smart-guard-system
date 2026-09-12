@@ -30,6 +30,7 @@ import {
 import { shouldHydrateAuthProfile } from './services/authFlowPolicy';
 import { writeAuditLog } from './services/auditService';
 import { listSystemSettings } from './services/systemSettingsService';
+import { setCanonicalWorkItemActor } from './services/workItemService';
 import ConfirmModal from './components/ConfirmModal';
 import ReportErrorBoundary from './components/ReportErrorBoundary';
 import MobileMoreMenu from './components/work-center/MobileMoreMenu';
@@ -134,10 +135,19 @@ export default function App() {
 
   const applyProfile = async (user: any, profile: any) => {
     const canonicalProfile = validateOperatorSessionProfile(user.uid, profile);
+    const resolvedOperatorName = canonicalProfile.operator_name || canonicalProfile.username || 'ผู้ใช้งาน';
     sessionStorage.setItem('selected_site_id', canonicalProfile.site_id);
+    sessionStorage.setItem('selected_operator_name', resolvedOperatorName);
+    sessionStorage.setItem('selected_operator_role', canonicalProfile.role);
+    setCanonicalWorkItemActor({
+      uid: user.uid,
+      siteId: canonicalProfile.site_id,
+      name: resolvedOperatorName,
+      role: canonicalProfile.role,
+    });
     setFirebaseUser(user);
     setCurrentProfile(canonicalProfile);
-    setGuardName(canonicalProfile.operator_name || canonicalProfile.username || 'ผู้ใช้งาน');
+    setGuardName(resolvedOperatorName);
     setUserRole(canonicalProfile.role);
     setActiveTab('dashboard');
     await initFirestoreDatabase();
@@ -166,6 +176,10 @@ export default function App() {
           setUserRole('Guard');
           setAuthSessionState('idle');
           setAuthLoading(false);
+          sessionStorage.removeItem('selected_site_id');
+          sessionStorage.removeItem('selected_operator_name');
+          sessionStorage.removeItem('selected_operator_role');
+          setCanonicalWorkItemActor(null);
           return;
         }
         if (!shouldHydrateAuthProfile(pinLoginInProgressRef.current)) return;
@@ -308,6 +322,9 @@ export default function App() {
     setUserRole('Guard');
     setAuthSessionState('idle');
     sessionStorage.removeItem('selected_site_id');
+    sessionStorage.removeItem('selected_operator_name');
+    sessionStorage.removeItem('selected_operator_role');
+    setCanonicalWorkItemActor(null);
     setUsername('');
     setOperatorPin('');
     setLoginError(null);

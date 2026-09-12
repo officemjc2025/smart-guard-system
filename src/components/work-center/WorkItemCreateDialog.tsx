@@ -31,6 +31,7 @@ import {
   WORK_SOURCE_MODULE_LABELS,
   isSupervisor,
   findDuplicateActiveWorkItem,
+  CANONICAL_WORK_ITEM_ROLES,
 } from '../../services/workItemPolicy';
 
 interface WorkItemCreateDialogProps {
@@ -93,7 +94,9 @@ export default function WorkItemCreateDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const supervisor = isSupervisor(role);
+  const effectiveRole = CANONICAL_WORK_ITEM_ROLES.includes(role as any) ? role : 'Guard';
+  const effectiveOperatorName = operatorName || sessionStorage.getItem('selected_operator_name') || 'ผู้ปฏิบัติงาน';
+  const supervisor = isSupervisor(effectiveRole);
 
   // Initialize or reset defaults when dialog opens
   useEffect(() => {
@@ -444,7 +447,7 @@ export default function WorkItemCreateDialog({
                   className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">-- ยังไม่มอบหมาย (Unassigned) --</option>
-                  <option value={operatorUid}>ตนเอง ({operatorName})</option>
+                  <option value={operatorUid}>ตนเอง ({effectiveOperatorName})</option>
                   {assigneeOptions
                     .filter(opt => opt.uid !== operatorUid)
                     .map(opt => (
@@ -461,7 +464,7 @@ export default function WorkItemCreateDialog({
                     className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">-- ยังไม่มอบหมาย --</option>
-                    <option value={operatorUid}>รับมอบหมายให้ตนเอง ({operatorName})</option>
+                    <option value={operatorUid}>รับมอบหมายให้ตนเอง ({effectiveOperatorName})</option>
                   </select>
                   <p className="text-[11px] text-slate-400">
                     * เจ้าหน้าที่ทั่วไปสามารถรับงานให้ตนเอง หรือปล่อยว่างไว้ให้หัวหน้ากะมอบหมาย

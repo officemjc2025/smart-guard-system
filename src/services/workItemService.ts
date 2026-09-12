@@ -5,6 +5,7 @@ import {
 import { auth, db, type SmartGuardRole } from '../firebase';
 import { createUuid } from '../utils/uuid';
 import { listEligibleQueueOperators } from './vehicleAssignmentService';
+import { isCanonicalWorkItemRole, resolveWorkItemActor } from './workItemPolicy';
 export { isAllowedWorkItemTransition } from './workItemPolicy';
 
 export type WorkItemStatus = 'Open' | 'Acknowledged' | 'InProgress' | 'Waiting' | 'Resolved' | 'Closed';
@@ -27,17 +28,45 @@ export interface WorkItemActivity { activity_id: string; work_item_id: string; s
 
 
 const sourceCollections: Record<Exclude<WorkSourceModule, 'General'>, string> = { Vehicle: 'vehicleSessions', Contractor: 'contractorLogs', Key: 'keyLogs', Patrol: 'patrolLogs', Incident: 'incidentReports' };
-const activeActor = (): WorkItemActor => {
-  const uid = auth.currentUser?.uid;
-  const siteId = sessionStorage.getItem('selected_site_id') || '';
-  if (!uid || !siteId) throw new Error('Authenticated active site is required.');
-  return { uid, siteId, name: sessionStorage.getItem('selected_operator_name') || uid, role: sessionStorage.getItem('selected_operator_role') || 'Guard' };
+let canonicalActorOverride: WorkItemActor | null = null;
+
+export function setCanonicalWorkItemActor(actor: WorkItemActor | null): void {
+  if (!actor) {
+    canonicalActorOverride = null;
+    return;
+  }
+  if (!actor.uid || !actor.siteId) {
+    throw new Error('Work Item actor requires non-empty uid and siteId.');
+  }
+  if (!isCanonicalWorkItemRole(actor.role)) {
+    throw new Error(`Invalid Work Item actor role: ${actor.role}`);
+  }
+  canonicalActorOverride = {
+    uid: actor.uid,
+    siteId: actor.siteId,
+    name: actor.name || actor.uid,
+    role: actor.role,
+  };
+}
+
+export function getCanonicalWorkItemActor(): WorkItemActor | null {
+  return canonicalActorOverride;
+}
+
+export const activeActor = (): WorkItemActor => {
+  return resolveWorkItemActor({
+    currentAuthUid: auth.currentUser?.uid,
+    canonicalActor: canonicalActorOverride,
+    sessionStorageSiteId: sessionStorage.getItem('selected_site_id'),
+    sessionStorageName: sessionStorage.getItem('selected_operator_name'),
+    sessionStorageRole: sessionStorage.getItem('selected_operator_role'),
+  });
 };
 const ensureText = (value: string, field: string) => { if (!value.trim()) throw new Error(`${field} is required.`); return value.trim(); };
 const actionFor = (action: WorkActivityAction) => `WorkItem:${action === 'PriorityChanged' ? 'Priority' : action === 'DueDateChanged' ? 'DueDate' : action}`;
 
 function assertSite(actor: WorkItemActor, siteId: string) { if (actor.siteId !== siteId) throw new Error('Cross-site Work Item access is denied.'); }
-function canManage(actor: WorkItemActor) { return ['ShiftHead', 'Manager', 'Admin'].includes(actor.role); }
+export function canManage(actor: WorkItemActor) { return ['ShiftHead', 'Manager', 'Admin'].includes(actor.role); }
 function canOperate(actor: WorkItemActor, item: WorkItem) { return canManage(actor) || item.assigned_to === actor.uid || (!item.assigned_to && actor.role === 'Guard'); }
 function isEligibleAssignee(profile: { exists: () => boolean; data: () => Record<string, unknown> | undefined }, siteId: string) {
   const data = profile.data();
