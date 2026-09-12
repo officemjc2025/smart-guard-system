@@ -139,15 +139,15 @@ export default function SourceWorkItemAction({
     <div className={`flex flex-col gap-2 ${className}`}>
       {/* Case 1: Active Work Item Exists */}
       {activeItem ? (
-        <div className="rounded-xl border border-blue-200 dark:border-blue-800/60 bg-blue-50/70 dark:bg-blue-950/40 p-3 flex flex-col gap-2 shadow-xs">
+        <div className="rounded-2xl border border-blue-200 dark:border-blue-800/60 bg-blue-50/80 dark:bg-blue-950/40 p-3.5 flex flex-col gap-2.5 shadow-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <ClipboardList className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
-              <span className="text-xs font-bold text-blue-950 dark:text-blue-200">
+              <span className="text-xs sm:text-sm font-bold text-blue-950 dark:text-blue-100">
                 งานติดตาม: {WORK_ITEM_STATUS_LABELS[activeItem.status] || activeItem.status}
               </span>
               <span
-                className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                className={`text-xs font-bold px-2 py-0.5 rounded-full ${
                   activeItem.priority === 'Emergency'
                     ? 'bg-red-100 text-red-700 dark:bg-red-900/60 dark:text-red-300'
                     : activeItem.priority === 'High'
@@ -158,7 +158,7 @@ export default function SourceWorkItemAction({
                 {WORK_ITEM_PRIORITY_LABELS[activeItem.priority] || activeItem.priority}
               </span>
               {isItemOverdue(activeItem) && (
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-red-600 text-white animate-pulse">
+                <span className="text-xs font-black px-2 py-0.5 rounded-full bg-red-600 text-white animate-pulse">
                   เกินกำหนด
                 </span>
               )}
@@ -167,29 +167,29 @@ export default function SourceWorkItemAction({
             <button
               type="button"
               onClick={() => handleOpenDetail(activeItem)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-1.5 px-3 py-2 min-h-[38px] bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-xs"
             >
               <ExternalLink className="w-3.5 h-3.5" />
               <span>เปิดงานติดตาม</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs text-slate-600 dark:text-slate-400 pt-1 border-t border-blue-100 dark:border-blue-900/40">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-700 dark:text-slate-300 pt-2 border-t border-blue-100 dark:border-blue-900/40">
             <div className="flex items-center gap-1.5">
               <User className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <span>
-                ผู้รับผิดชอบ: <strong className="text-slate-800 dark:text-slate-200">{activeItem.assigned_to ? (activeItem.assigned_to === operatorUid ? `ตนเอง (${operatorName})` : activeItem.assigned_to) : 'ยังไม่มอบหมาย'}</strong>
+                ผู้รับผิดชอบ: <strong className="text-slate-900 dark:text-slate-100">{activeItem.assigned_to ? (activeItem.assigned_to === operatorUid ? `ตนเอง (${operatorName})` : activeItem.assigned_to) : 'ยังไม่มอบหมาย'}</strong>
               </span>
             </div>
             {activeItem.next_action && (
               <div className="flex items-center gap-1.5 truncate">
-                <span className="text-slate-400">ถัดไป:</span>
-                <span className="truncate font-semibold text-slate-700 dark:text-slate-300">{activeItem.next_action}</span>
+                <span className="text-slate-500">ถัดไป:</span>
+                <span className="truncate font-semibold text-slate-800 dark:text-slate-200">{activeItem.next_action}</span>
               </div>
             )}
             {activeItem.due_at && (
-              <div className="flex items-center gap-1.5 text-[11px]">
-                <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+              <div className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
+                <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 <span>กำหนดเสร็จ: {formatThaiDateTime(activeItem.due_at)}</span>
               </div>
             )}
@@ -199,34 +199,34 @@ export default function SourceWorkItemAction({
         /* Case 2: No Active Work Item */
         <div className="flex flex-col gap-2">
           {latestCompleted && (
-            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 p-2.5 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 p-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700 dark:text-slate-300">
               <div className="flex items-center gap-1.5">
-                <History className="w-3.5 h-3.5 text-slate-400" />
+                <History className="w-4 h-4 text-slate-400 shrink-0" />
                 <span>
-                  ประวัติงานล่าสุด: <strong>{WORK_ITEM_STATUS_LABELS[latestCompleted.status]}</strong> ({latestCompleted.resolution_summary || 'เสร็จสมบูรณ์'})
+                  ประวัติงานล่าสุด: <strong className="font-bold">{WORK_ITEM_STATUS_LABELS[latestCompleted.status]}</strong> ({latestCompleted.resolution_summary || 'เสร็จสมบูรณ์'})
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => handleOpenDetail(latestCompleted)}
-                className="text-[11px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                className="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer py-1"
               >
                 ดูรายละเอียดเดิม
               </button>
             </div>
           )}
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
               onClick={() => setIsCreateOpen(true)}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-black rounded-xl transition-all shadow-sm hover:shadow cursor-pointer"
+              className="inline-flex items-center gap-2 px-4 py-2.5 min-h-[44px] bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white text-xs sm:text-sm font-bold rounded-xl transition-all shadow-sm hover:shadow cursor-pointer"
             >
               <ClipboardList className="w-4 h-4" />
               <span>ติดตามงานนี้</span>
             </button>
             {latestCompleted && (
-              <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+              <span className="text-xs text-amber-700 dark:text-amber-400 font-medium">
                 * รายการนี้เคยมีงานติดตามที่เสร็จสิ้นแล้ว สามารถสร้างงานติดตามใหม่ได้
               </span>
             )}

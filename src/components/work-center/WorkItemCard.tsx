@@ -112,7 +112,7 @@ export default function WorkItemCard({
   return (
     <div
       onClick={onClick}
-      className={`group relative flex flex-col justify-between rounded-2xl border bg-white p-5 shadow-xs transition-all cursor-pointer hover:shadow-md ${
+      className={`group relative flex flex-col justify-between rounded-2xl border bg-white p-4 sm:p-5 shadow-xs transition-all cursor-pointer hover:shadow-md active:scale-[0.99] select-none ${
         isSelected
           ? 'border-blue-500 ring-2 ring-blue-500/20 shadow-md'
           : 'border-slate-200 hover:border-slate-300'
@@ -121,31 +121,31 @@ export default function WorkItemCard({
       <div>
         {/* Top bar: Source badge + Status badge + Priority */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             <span
               className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-bold ${sourceColor}`}
             >
-              <SourceIcon className="h-3.5 w-3.5" />
-              {WORK_SOURCE_MODULE_LABELS[item.source_module]}
+              <SourceIcon className="h-3.5 w-3.5 shrink-0" />
+              <span>{WORK_SOURCE_MODULE_LABELS[item.source_module]}</span>
               {item.source_label && (
-                <span className="text-[11px] opacity-80 font-normal">
+                <span className="text-xs opacity-90 font-normal">
                   • {item.source_label}
                 </span>
               )}
             </span>
 
             <span
-              className={`inline-flex items-center rounded-lg border px-2 py-0.5 text-[11px] font-bold ${priorityBadge.style}`}
+              className={`inline-flex items-center rounded-lg border px-2.5 py-1 text-xs font-bold ${priorityBadge.style}`}
             >
               {priorityBadge.label}
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             {overdue && (
-              <span className="inline-flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2 py-0.5 text-[11px] font-black text-red-700">
-                <AlertCircle className="h-3.5 w-3.5 text-red-600" />
-                เกินกำหนด
+              <span className="inline-flex items-center gap-1 rounded-lg border border-red-300 bg-red-50 px-2.5 py-1 text-xs font-black text-red-700">
+                <AlertCircle className="h-3.5 w-3.5 text-red-600 shrink-0" />
+                <span>เกินกำหนด</span>
               </span>
             )}
             <span
@@ -157,21 +157,21 @@ export default function WorkItemCard({
         </div>
 
         {/* Title & Description preview */}
-        <h3 className="text-base font-black text-slate-900 leading-snug group-hover:text-blue-600 transition-colors">
+        <h3 className="text-base sm:text-lg font-bold text-slate-900 leading-snug group-hover:text-blue-600 transition-colors">
           {item.title}
         </h3>
 
         {item.description && (
-          <p className="mt-1.5 line-clamp-2 text-xs text-slate-600 font-normal leading-relaxed">
+          <p className="mt-1.5 line-clamp-2 text-sm text-slate-600 font-normal leading-relaxed">
             {item.description}
           </p>
         )}
 
         {/* Next Action Pill if present */}
         {item.next_action && (
-          <div className="mt-3 flex items-start gap-1.5 rounded-xl border border-blue-100 bg-blue-50/60 p-2 text-xs text-blue-900">
-            <ArrowRight className="h-3.5 w-3.5 shrink-0 text-blue-600 mt-0.5" />
-            <span className="font-semibold line-clamp-1">
+          <div className="mt-3 flex items-start gap-2 rounded-xl border border-blue-100 bg-blue-50/70 p-2.5 text-sm text-blue-950">
+            <ArrowRight className="h-4 w-4 shrink-0 text-blue-600 mt-0.5" />
+            <span className="font-semibold leading-snug line-clamp-2">
               ต่อไป: {item.next_action}
             </span>
           </div>
@@ -179,38 +179,38 @@ export default function WorkItemCard({
       </div>
 
       {/* Footer metadata */}
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs text-slate-500">
-        <div className="flex items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-slate-100 pt-3 text-xs text-slate-600">
+        <div className="flex flex-wrap items-center gap-3">
           {/* Assignee */}
-          <div className="flex items-center gap-1">
-            <UserCheck className="h-3.5 w-3.5 text-slate-400" />
+          <div className="flex items-center gap-1.5">
+            <UserCheck className="h-4 w-4 text-slate-400 shrink-0" />
             {item.assigned_to ? (
-              <span className="font-bold text-slate-700">
+              <span className="font-bold text-slate-800">
                 {item.assigned_to === item.opened_by
                   ? item.opened_by_name
                   : item.assigned_to}
               </span>
             ) : (
-              <span className="italic text-slate-400">ยังไม่มอบหมาย</span>
+              <span className="italic text-slate-500">ยังไม่มอบหมาย</span>
             )}
           </div>
 
           {/* Due date if set */}
           {item.due_at && (
             <div
-              className={`flex items-center gap-1 ${
-                overdue ? 'font-bold text-red-600' : 'text-slate-500'
+              className={`flex items-center gap-1.5 ${
+                overdue ? 'font-bold text-red-700' : 'text-slate-600'
               }`}
             >
-              <Calendar className="h-3.5 w-3.5" />
+              <Calendar className="h-4 w-4 shrink-0" />
               <span>{formatThaiDateTime(item.due_at)}</span>
             </div>
           )}
         </div>
 
         {/* Last activity timestamp */}
-        <div className="flex items-center gap-1 text-[11px] text-slate-400">
-          <Clock className="h-3 w-3" />
+        <div className="flex items-center gap-1 text-xs text-slate-500 font-medium">
+          <Clock className="h-3.5 w-3.5 shrink-0" />
           <span>{formatThaiDateTime(item.last_activity_at || item.updated_at)}</span>
         </div>
       </div>

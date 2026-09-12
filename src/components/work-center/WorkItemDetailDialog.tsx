@@ -336,11 +336,11 @@ export default function WorkItemDetailDialog({
   const overdue = isItemOverdue(item);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-3 sm:p-6 overflow-y-auto animate-fade-in">
-      <div className="relative w-full max-w-3xl rounded-3xl border border-slate-700 bg-slate-900 text-white shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-2.5 sm:p-6 overflow-y-auto animate-fade-in">
+      <div className="relative w-full max-w-3xl rounded-2xl sm:rounded-3xl border border-slate-700 bg-slate-900 text-white shadow-2xl overflow-hidden my-auto max-h-[94vh] flex flex-col">
         {/* Modal Header */}
-        <div className="flex items-start justify-between border-b border-slate-800 p-5 sm:p-6 bg-slate-950/50 shrink-0">
-          <div className="flex flex-col gap-2">
+        <div className="flex items-start justify-between border-b border-slate-800 p-4 sm:p-6 bg-slate-950/50 shrink-0 gap-3">
+          <div className="flex flex-col gap-2 min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300">
                 <SourceIcon className="h-3.5 w-3.5 text-blue-400" />
@@ -372,10 +372,10 @@ export default function WorkItemDetailDialog({
               )}
             </div>
 
-            <h2 className="text-xl font-black text-white tracking-tight">
+            <h2 className="text-lg sm:text-xl font-black text-white tracking-tight break-words">
               {item.title}
             </h2>
-            <span className="text-[11px] text-slate-400 font-mono">
+            <span className="text-[11px] sm:text-xs text-slate-400 font-mono">
               ID: {item.work_item_id} • Version: {item.version}
             </span>
           </div>
@@ -383,14 +383,15 @@ export default function WorkItemDetailDialog({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl p-2 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+            className="rounded-xl p-2.5 min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:bg-slate-800 hover:text-white transition-colors shrink-0 cursor-pointer"
+            aria-label="Close dialog"
           >
             <X className="h-6 w-6" />
           </button>
         </div>
 
         {/* Scrollable Modal Body */}
-        <div className="p-5 sm:p-6 overflow-y-auto space-y-6 flex-1 text-slate-200 text-sm">
+        <div className="p-4 sm:p-6 overflow-y-auto space-y-5 sm:space-y-6 flex-1 text-slate-200 text-sm">
           {actionError && (
             <div className="rounded-xl border border-red-500/30 bg-red-500/15 p-4 text-xs font-bold text-red-300 flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" />
@@ -404,14 +405,14 @@ export default function WorkItemDetailDialog({
               การดำเนินการตามขั้นตอน (Workflow Actions)
             </span>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2.5">
               {/* Acknowledge */}
               {canAcknowledge(role, item, operatorUid) && (
                 <button
                   type="button"
                   disabled={Boolean(busyAction)}
                   onClick={handleAcknowledge}
-                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 font-bold text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {busyAction === 'Acknowledge' ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -428,7 +429,7 @@ export default function WorkItemDetailDialog({
                   type="button"
                   disabled={Boolean(busyAction)}
                   onClick={handleStart}
-                  className="flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-2.5 font-bold text-xs text-white hover:bg-amber-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-amber-600 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-white hover:bg-amber-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {busyAction === 'Start' ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -448,7 +449,7 @@ export default function WorkItemDetailDialog({
                     setPromptAction('Waiting');
                     setPromptText('');
                   }}
-                  className="flex items-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 font-bold text-xs text-white hover:bg-purple-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-purple-600 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-white hover:bg-purple-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <Pause className="h-4 w-4" />
                   รอข้อมูลเพิ่มเติม (Wait)
@@ -461,7 +462,7 @@ export default function WorkItemDetailDialog({
                   type="button"
                   disabled={Boolean(busyAction)}
                   onClick={handleResume}
-                  className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 font-bold text-xs text-white hover:bg-emerald-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-white hover:bg-emerald-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {busyAction === 'Resume' ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -481,7 +482,7 @@ export default function WorkItemDetailDialog({
                     setPromptAction('Resolve');
                     setPromptText('');
                   }}
-                  className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 font-bold text-xs text-white hover:bg-emerald-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-white hover:bg-emerald-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <Check className="h-4 w-4" />
                   แก้ไขแล้วเสร็จ (Resolve)
@@ -497,7 +498,7 @@ export default function WorkItemDetailDialog({
                     setPromptAction('Reopen');
                     setPromptText('');
                   }}
-                  className="flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 font-bold text-xs text-white hover:bg-orange-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-orange-600 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-white hover:bg-orange-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <RotateCcw className="h-4 w-4" />
                   เปิดงานอีกครั้ง (Reopen)
@@ -510,7 +511,7 @@ export default function WorkItemDetailDialog({
                   type="button"
                   disabled={Boolean(busyAction)}
                   onClick={handleClose}
-                  className="flex items-center gap-2 rounded-xl bg-slate-700 px-4 py-2.5 font-bold text-xs text-white hover:bg-slate-600 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-slate-700 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-white hover:bg-slate-600 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {busyAction === 'Close' ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -527,7 +528,7 @@ export default function WorkItemDetailDialog({
                   type="button"
                   disabled={Boolean(busyAction)}
                   onClick={handleOpenAssignModal}
-                  className="flex items-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-4 py-2.5 font-bold text-xs text-slate-200 hover:bg-slate-700 hover:text-white disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-slate-200 hover:bg-slate-700 hover:text-white active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <UserCheck className="h-4 w-4 text-blue-400" />
                   {item.assigned_to ? 'โอนย้ายผู้รับผิดชอบ' : 'มอบหมายงาน'}
@@ -540,7 +541,7 @@ export default function WorkItemDetailDialog({
                   type="button"
                   disabled={Boolean(busyAction)}
                   onClick={handleRelease}
-                  className="flex items-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-4 py-2.5 font-bold text-xs text-amber-400 hover:bg-slate-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-4 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-amber-400 hover:bg-slate-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {busyAction === 'Release' ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -559,7 +560,7 @@ export default function WorkItemDetailDialog({
                     setSelectedPriority(item.priority);
                     setShowPriorityModal(true);
                   }}
-                  className="flex items-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-3.5 py-2.5 font-bold text-xs text-slate-300 hover:bg-slate-700"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-3.5 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-slate-300 hover:bg-slate-700 active:scale-[0.98] transition-all cursor-pointer"
                 >
                   <Tag className="h-4 w-4 text-amber-400" />
                   เปลี่ยนความสำคัญ
@@ -574,7 +575,7 @@ export default function WorkItemDetailDialog({
                     setDueDateValue('');
                     setShowDueDateModal(true);
                   }}
-                  className="flex items-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-3.5 py-2.5 font-bold text-xs text-slate-300 hover:bg-slate-700"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-slate-800 border border-slate-700 px-3.5 py-2.5 min-h-[44px] font-bold text-xs sm:text-sm text-slate-300 hover:bg-slate-700 active:scale-[0.98] transition-all cursor-pointer"
                 >
                   <Calendar className="h-4 w-4 text-blue-400" />
                   กำหนดส่งงาน
@@ -596,16 +597,16 @@ export default function WorkItemDetailDialog({
                 onChange={e => setPromptText(e.target.value)}
                 placeholder="กรอกรายละเอียด..."
                 rows={3}
-                className="w-full rounded-xl border border-slate-700 bg-slate-900 p-3 text-sm text-white placeholder-slate-500 outline-hidden focus:border-blue-500"
+                className="w-full min-h-[80px] rounded-xl border border-slate-700 bg-slate-900 p-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
               />
-              <div className="flex justify-end gap-2">
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5">
                 <button
                   type="button"
                   onClick={() => {
                     setPromptAction(null);
                     setPromptText('');
                   }}
-                  className="rounded-xl px-4 py-2 text-xs font-bold text-slate-400 hover:bg-slate-800"
+                  className="rounded-xl px-4 py-2.5 min-h-[44px] text-xs sm:text-sm font-bold text-slate-300 hover:bg-slate-800 border border-slate-700 cursor-pointer flex items-center justify-center"
                 >
                   ยกเลิก
                 </button>
@@ -613,7 +614,7 @@ export default function WorkItemDetailDialog({
                   type="button"
                   disabled={!promptText.trim() || Boolean(busyAction)}
                   onClick={handlePromptSubmit}
-                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 min-h-[44px] text-xs sm:text-sm font-bold text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                 >
                   {busyAction ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   ยืนยัน
@@ -756,28 +757,28 @@ export default function WorkItemDetailDialog({
             {/* Add Note Input Area */}
             {canAddNote(role, item, operatorUid) && (
               <form onSubmit={handleAddNoteSubmit} className="pt-3 border-t border-slate-800 flex flex-col gap-2">
-                <span className="text-xs font-bold text-slate-400">
+                <span className="text-xs sm:text-sm font-bold text-slate-300">
                   เพิ่มบันทึกข้อความ / ความคืบหน้า
                 </span>
-                <div className="flex gap-2">
+                <div className="flex flex-col sm:flex-row gap-2.5">
                   <textarea
                     value={noteText}
                     onChange={e => setNoteText(e.target.value)}
                     placeholder="พิมพ์ข้อความบันทึกความคืบหน้า..."
                     rows={2}
-                    className="flex-1 rounded-xl border border-slate-800 bg-slate-900 p-3 text-xs text-white placeholder-slate-500 outline-hidden focus:border-blue-500"
+                    className="flex-1 min-h-[52px] rounded-xl border border-slate-800 bg-slate-900 p-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
                   />
                   <button
                     type="submit"
                     disabled={!noteText.trim() || Boolean(busyAction)}
-                    className="self-end rounded-xl bg-blue-600 px-4 py-3 font-bold text-xs text-white hover:bg-blue-700 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                    className="self-stretch sm:self-end rounded-xl bg-blue-600 px-5 py-2.5 min-h-[44px] font-bold text-sm text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
                   >
                     {busyAction === 'Note' ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <Send className="h-4 w-4" />
                     )}
-                    ส่ง
+                    <span>ส่งบันทึก</span>
                   </button>
                 </div>
               </form>
@@ -786,11 +787,11 @@ export default function WorkItemDetailDialog({
         </div>
 
         {/* Modal Footer */}
-        <div className="border-t border-slate-800 bg-slate-950/80 p-4 px-6 flex justify-end shrink-0">
+        <div className="border-t border-slate-800 bg-slate-950/80 p-4 sm:px-6 flex justify-end shrink-0">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl bg-slate-800 hover:bg-slate-700 px-5 py-2.5 text-xs font-bold text-white transition-colors"
+            className="w-full sm:w-auto rounded-xl bg-slate-800 hover:bg-slate-700 px-6 py-2.5 min-h-[44px] text-sm font-bold text-white transition-colors cursor-pointer flex items-center justify-center"
           >
             ปิดหน้าต่าง
           </button>
@@ -800,20 +801,20 @@ export default function WorkItemDetailDialog({
       {/* Sub-modal: Assignee Selector */}
       {showAssignModal && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-950/80 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl space-y-4">
-            <h3 className="text-base font-black text-white">มอบหมาย / โอนย้ายผู้รับผิดชอบ</h3>
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 sm:p-6 text-white shadow-2xl space-y-4">
+            <h3 className="text-base sm:text-lg font-black text-white">มอบหมาย / โอนย้ายผู้รับผิดชอบ</h3>
             {loadingAssignees ? (
-              <div className="py-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+              <div className="py-6 text-center text-sm text-slate-400 flex items-center justify-center gap-2">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 กำลังโหลดรายชื่อเจ้าหน้าที่...
               </div>
             ) : (
-              <div className="space-y-3">
-                <label className="text-xs text-slate-400 block">เลือกเจ้าหน้าที่ในสังกัด:</label>
+              <div className="space-y-2">
+                <label className="text-xs sm:text-sm font-semibold text-slate-300 block">เลือกเจ้าหน้าที่ในสังกัด:</label>
                 <select
                   value={selectedAssigneeUid}
                   onChange={e => setSelectedAssigneeUid(e.target.value)}
-                  className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs text-white outline-hidden"
+                  className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 min-h-[44px] text-sm text-white focus:outline-none focus:border-blue-500"
                 >
                   <option value="">-- เลือกเจ้าหน้าที่ --</option>
                   {eligibleAssignees.map(a => (
@@ -824,11 +825,11 @@ export default function WorkItemDetailDialog({
                 </select>
               </div>
             )}
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-2">
               <button
                 type="button"
                 onClick={() => setShowAssignModal(false)}
-                className="rounded-xl px-4 py-2 text-xs font-bold text-slate-400 hover:bg-slate-800"
+                className="rounded-xl px-4 py-2.5 min-h-[44px] text-sm font-semibold text-slate-300 hover:bg-slate-800 border border-slate-700 cursor-pointer flex items-center justify-center"
               >
                 ยกเลิก
               </button>
@@ -836,7 +837,7 @@ export default function WorkItemDetailDialog({
                 type="button"
                 disabled={!selectedAssigneeUid || Boolean(busyAction)}
                 onClick={handleAssignSubmit}
-                className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+                className="rounded-xl bg-blue-600 px-5 py-2.5 min-h-[44px] text-sm font-semibold text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer flex items-center justify-center"
               >
                 {busyAction === 'Assign' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'ยืนยันการมอบหมาย'}
               </button>
@@ -848,23 +849,26 @@ export default function WorkItemDetailDialog({
       {/* Sub-modal: Priority Selector */}
       {showPriorityModal && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-950/80 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl space-y-4">
-            <h3 className="text-base font-black text-white">เปลี่ยนระดับความสำคัญ</h3>
-            <select
-              value={selectedPriority}
-              onChange={e => setSelectedPriority(e.target.value as WorkItemPriority)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs text-white outline-hidden"
-            >
-              <option value="Low">ต่ำ (Low)</option>
-              <option value="Normal">ปกติ (Normal)</option>
-              <option value="High">สูง (High)</option>
-              <option value="Emergency">ฉุกเฉิน (Emergency)</option>
-            </select>
-            <div className="flex justify-end gap-2 pt-2">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 sm:p-6 text-white shadow-2xl space-y-4">
+            <h3 className="text-base sm:text-lg font-black text-white">เปลี่ยนระดับความสำคัญ</h3>
+            <div className="space-y-2">
+              <label className="text-xs sm:text-sm font-semibold text-slate-300 block">เลือกระดับความสำคัญใหม่:</label>
+              <select
+                value={selectedPriority}
+                onChange={e => setSelectedPriority(e.target.value as WorkItemPriority)}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 min-h-[44px] text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="Low">ต่ำ (Low)</option>
+                <option value="Normal">ปกติ (Normal)</option>
+                <option value="High">สูง (High)</option>
+                <option value="Emergency">ฉุกเฉิน (Emergency)</option>
+              </select>
+            </div>
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-2">
               <button
                 type="button"
                 onClick={() => setShowPriorityModal(false)}
-                className="rounded-xl px-4 py-2 text-xs font-bold text-slate-400 hover:bg-slate-800"
+                className="rounded-xl px-4 py-2.5 min-h-[44px] text-sm font-semibold text-slate-300 hover:bg-slate-800 border border-slate-700 cursor-pointer flex items-center justify-center"
               >
                 ยกเลิก
               </button>
@@ -872,7 +876,7 @@ export default function WorkItemDetailDialog({
                 type="button"
                 disabled={Boolean(busyAction)}
                 onClick={handlePrioritySubmit}
-                className="rounded-xl bg-amber-600 px-4 py-2 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+                className="rounded-xl bg-amber-600 px-5 py-2.5 min-h-[44px] text-sm font-semibold text-white hover:bg-amber-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer flex items-center justify-center"
               >
                 {busyAction === 'Priority' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'บันทึก'}
               </button>
@@ -884,19 +888,22 @@ export default function WorkItemDetailDialog({
       {/* Sub-modal: Due Date Selector */}
       {showDueDateModal && (
         <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-950/80 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 text-white shadow-2xl space-y-4">
-            <h3 className="text-base font-black text-white">กำหนดวันส่งงาน</h3>
-            <input
-              type="datetime-local"
-              value={dueDateValue}
-              onChange={e => setDueDateValue(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs text-white outline-hidden"
-            />
-            <div className="flex justify-end gap-2 pt-2">
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 sm:p-6 text-white shadow-2xl space-y-4">
+            <h3 className="text-base sm:text-lg font-black text-white">กำหนดวันส่งงาน</h3>
+            <div className="space-y-2">
+              <label className="text-xs sm:text-sm font-semibold text-slate-300 block">เลือกวันและเวลาที่กำหนดส่ง:</label>
+              <input
+                type="datetime-local"
+                value={dueDateValue}
+                onChange={e => setDueDateValue(e.target.value)}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 min-h-[44px] text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2.5 pt-2">
               <button
                 type="button"
                 onClick={() => setShowDueDateModal(false)}
-                className="rounded-xl px-4 py-2 text-xs font-bold text-slate-400 hover:bg-slate-800"
+                className="rounded-xl px-4 py-2.5 min-h-[44px] text-sm font-semibold text-slate-300 hover:bg-slate-800 border border-slate-700 cursor-pointer flex items-center justify-center"
               >
                 ยกเลิก
               </button>
@@ -904,7 +911,7 @@ export default function WorkItemDetailDialog({
                 type="button"
                 disabled={Boolean(busyAction)}
                 onClick={handleDueDateSubmit}
-                className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50"
+                className="rounded-xl bg-blue-600 px-5 py-2.5 min-h-[44px] text-sm font-semibold text-white hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer flex items-center justify-center"
               >
                 {busyAction === 'DueDate' ? <Loader2 className="h-4 w-4 animate-spin" /> : 'บันทึกกำหนดส่ง'}
               </button>

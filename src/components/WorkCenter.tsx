@@ -144,25 +144,25 @@ export default function WorkCenter({
   const supervisor = isSupervisor(role);
 
   return (
-    <div className="w-full max-w-7xl mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 animate-fade-in">
+    <div className="w-full max-w-[1600px] mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 animate-fade-in">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-1 border-b border-slate-200/80 dark:border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-2 border-b border-slate-200/80 dark:border-slate-800">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-500/20">
+          <div className="p-2.5 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-md shadow-blue-500/20 shrink-0">
             <ClipboardList className="w-6 h-6" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-slate-100">
                 งานติดตาม (Work Center)
               </h1>
               {supervisor && (
-                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-200/60 dark:border-indigo-800/60">
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-200/60 dark:border-indigo-800/60">
                   สิทธิ์ผู้ดูแล
                 </span>
               )}
             </div>
-            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5">
               ศูนย์ประสานงานและติดตามสถานะงานทุกโมดูลแบบ Real-time
             </p>
           </div>
@@ -170,7 +170,7 @@ export default function WorkCenter({
 
         <button
           onClick={() => setIsCreateOpen(true)}
-          className="self-stretch sm:self-auto px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-98 text-white text-sm font-semibold shadow-sm hover:shadow transition-all flex items-center justify-center gap-2"
+          className="w-full sm:w-auto px-4 py-2.5 min-h-[44px] rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-sm font-semibold shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>สร้างงานติดตามใหม่</span>
@@ -178,18 +178,18 @@ export default function WorkCenter({
       </div>
 
       {/* KPI Cards Strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2.5 sm:gap-3.5">
         <button
           onClick={() => setActiveTab('all')}
-          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all ${
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all min-h-[76px] flex flex-col justify-between ${
             activeTab === 'all'
               ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-400 dark:border-blue-700 shadow-sm'
               : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+          <div className="flex items-center justify-between text-slate-600 dark:text-slate-400 mb-1">
             <span className="text-xs font-medium">งานเปิดทั้งหมด</span>
-            <Inbox className="w-4 h-4 text-blue-500" />
+            <Inbox className="w-4 h-4 text-blue-500 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-slate-100">
             {kpis.openCount}
@@ -198,15 +198,15 @@ export default function WorkCenter({
 
         <button
           onClick={() => setActiveTab('mine')}
-          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all ${
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all min-h-[76px] flex flex-col justify-between ${
             activeTab === 'mine'
               ? 'bg-indigo-50 dark:bg-indigo-950/40 border-indigo-400 dark:border-indigo-700 shadow-sm'
               : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+          <div className="flex items-center justify-between text-slate-600 dark:text-slate-400 mb-1">
             <span className="text-xs font-medium">งานของฉัน</span>
-            <UserCheck className="w-4 h-4 text-indigo-500" />
+            <UserCheck className="w-4 h-4 text-indigo-500 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-indigo-600 dark:text-indigo-400">
             {kpis.myCount}
@@ -215,15 +215,15 @@ export default function WorkCenter({
 
         <button
           onClick={() => setActiveTab('unassigned')}
-          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all ${
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all min-h-[76px] flex flex-col justify-between ${
             activeTab === 'unassigned'
               ? 'bg-purple-50 dark:bg-purple-950/40 border-purple-400 dark:border-purple-700 shadow-sm'
               : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+          <div className="flex items-center justify-between text-slate-600 dark:text-slate-400 mb-1">
             <span className="text-xs font-medium">ยังไม่มอบหมาย</span>
-            <HelpCircle className="w-4 h-4 text-purple-500" />
+            <HelpCircle className="w-4 h-4 text-purple-500 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-purple-600 dark:text-purple-400">
             {kpis.unassignedCount}
@@ -232,15 +232,15 @@ export default function WorkCenter({
 
         <button
           onClick={() => setActiveTab('inProgress')}
-          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all ${
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all min-h-[76px] flex flex-col justify-between ${
             activeTab === 'inProgress'
               ? 'bg-cyan-50 dark:bg-cyan-950/40 border-cyan-400 dark:border-cyan-700 shadow-sm'
               : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+          <div className="flex items-center justify-between text-slate-600 dark:text-slate-400 mb-1">
             <span className="text-xs font-medium">กำลังทำ / รอ</span>
-            <Clock className="w-4 h-4 text-cyan-500" />
+            <Clock className="w-4 h-4 text-cyan-500 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-cyan-600 dark:text-cyan-400">
             {kpis.inProgressCount + kpis.waitingCount}
@@ -249,15 +249,15 @@ export default function WorkCenter({
 
         <button
           onClick={() => setActiveTab('overdue')}
-          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all ${
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all min-h-[76px] flex flex-col justify-between ${
             activeTab === 'overdue'
               ? 'bg-red-50 dark:bg-red-950/40 border-red-400 dark:border-red-700 shadow-sm'
               : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+          <div className="flex items-center justify-between text-slate-600 dark:text-slate-400 mb-1">
             <span className="text-xs font-medium">เกินกำหนด</span>
-            <AlertTriangle className="w-4 h-4 text-red-500" />
+            <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-red-600 dark:text-red-400">
             {kpis.overdueCount}
@@ -266,15 +266,15 @@ export default function WorkCenter({
 
         <button
           onClick={() => setActiveTab('completed')}
-          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all ${
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all min-h-[76px] flex flex-col justify-between ${
             activeTab === 'completed'
               ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-400 dark:border-emerald-700 shadow-sm'
               : 'bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
-          <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+          <div className="flex items-center justify-between text-slate-600 dark:text-slate-400 mb-1">
             <span className="text-xs font-medium">เสร็จสิ้นแล้ว</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+            <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-emerald-600 dark:text-emerald-400">
             {kpis.completedCount}
@@ -283,7 +283,7 @@ export default function WorkCenter({
       </div>
 
       {/* Main Tab Strip */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none border-b border-slate-200 dark:border-slate-800">
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-none border-b border-slate-200 dark:border-slate-800 -mx-3 px-3 sm:mx-0 sm:px-0">
         {[
           { id: 'all', label: 'ทั้งหมด', count: kpis.openCount },
           { id: 'mine', label: 'งานของฉัน', count: kpis.myCount },
@@ -298,7 +298,7 @@ export default function WorkCenter({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as WorkCenterTab)}
-              className={`px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-1.5 whitespace-nowrap transition-all ${
+              className={`px-3.5 py-2.5 min-h-[40px] rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 transition-all cursor-pointer ${
                 isActive
                   ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 shadow-sm'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -307,7 +307,7 @@ export default function WorkCenter({
               <span>{tab.label}</span>
               {tab.count !== undefined && (
                 <span
-                  className={`px-1.5 py-0.5 rounded-full text-[11px] font-bold ${
+                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
                     isActive
                       ? 'bg-white/20 dark:bg-slate-800/20 text-white dark:text-slate-900'
                       : tab.alert
@@ -324,25 +324,25 @@ export default function WorkCenter({
       </div>
 
       {/* Search & Filter Bar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm">
+      <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs">
         {/* Search */}
         <div className="relative flex-1">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
           <input
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="ค้นหาตามชื่องาน, รายละเอียด, ป้ายกำกับ, ผู้สร้าง..."
-            className="w-full pl-9 pr-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 placeholder-slate-400 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full pl-9.5 pr-3.5 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-900 dark:text-slate-100 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
 
-        {/* Priority Filter */}
-        <div className="flex items-center gap-1.5">
+        {/* Filters */}
+        <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 shrink-0">
           <select
             value={priorityFilter}
             onChange={e => setPriorityFilter(e.target.value as WorkItemPriority | 'All')}
-            className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full sm:w-auto px-3 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
             <option value="All">ความสำคัญทั้งหมด</option>
             <option value="Emergency">🚨 ฉุกเฉิน</option>
@@ -351,11 +351,10 @@ export default function WorkCenter({
             <option value="Low">⚪ ต่ำ</option>
           </select>
 
-          {/* Source Module Filter */}
           <select
             value={sourceFilter}
             onChange={e => setSourceFilter(e.target.value as WorkSourceModule | 'All')}
-            className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full sm:w-auto px-3 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
           >
             <option value="All">โมดูลทั้งหมด</option>
             <option value="General">งานทั่วไป</option>
@@ -401,13 +400,13 @@ export default function WorkCenter({
           </div>
           <button
             onClick={() => setIsCreateOpen(true)}
-            className="mt-2 px-4 py-2 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/60 text-xs sm:text-sm font-semibold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors"
+            className="mt-2 px-4 py-2 min-h-[44px] rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/60 text-xs sm:text-sm font-semibold hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors cursor-pointer"
           >
             สร้างงานติดตามใหม่
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-3.5 sm:gap-4">
           {displayedItems.map(item => (
             <WorkItemCard
               key={item.work_item_id}

@@ -338,7 +338,7 @@ export default function WorkItemCreateDialog({
                 <select
                   value={sourceModule}
                   onChange={e => setSourceModule(e.target.value as WorkSourceModule)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   {sourceOptions.map(opt => (
                     <option key={opt} value={opt}>
@@ -358,7 +358,7 @@ export default function WorkItemCreateDialog({
                     value={sourceLabel}
                     onChange={e => setSourceLabel(e.target.value)}
                     placeholder="เช่น ทะเบียน 1กข 1234, ช่างแอร์"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               ) : (
@@ -371,7 +371,7 @@ export default function WorkItemCreateDialog({
                     value={sourceLabel}
                     onChange={e => setSourceLabel(e.target.value)}
                     placeholder="เช่น ตรวจตราพิเศษรอบดึก"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               )}
@@ -386,7 +386,7 @@ export default function WorkItemCreateDialog({
                     value={sourceRecordId}
                     onChange={e => setSourceRecordId(e.target.value)}
                     placeholder="เช่น veh_12345, contractor_67890 (ถ้ามี)"
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3.5 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
               )}
@@ -413,7 +413,7 @@ export default function WorkItemCreateDialog({
                       disabled={disabled}
                       onClick={() => setPriority(p)}
                       title={disabled ? 'เฉพาะหัวหน้ากะ/ผู้จัดการ' : undefined}
-                      className={`px-3 py-2 rounded-xl text-xs font-semibold border flex items-center justify-center gap-1.5 transition-all ${
+                      className={`px-3 py-2.5 min-h-[44px] rounded-xl text-xs sm:text-sm font-semibold border flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                         disabled
                           ? 'opacity-40 cursor-not-allowed bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400'
                           : isSelected
@@ -427,8 +427,8 @@ export default function WorkItemCreateDialog({
                           : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-750'
                       }`}
                     >
-                      {isSelected && <CheckCircle2 className="w-3.5 h-3.5" />}
-                      {WORK_ITEM_PRIORITY_LABELS[p]}
+                      {isSelected && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                      <span>{WORK_ITEM_PRIORITY_LABELS[p]}</span>
                     </button>
                   );
                 })}
@@ -444,7 +444,7 @@ export default function WorkItemCreateDialog({
                 <select
                   value={assignedTo}
                   onChange={e => setAssignedTo(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
                 >
                   <option value="">-- ยังไม่มอบหมาย (Unassigned) --</option>
                   <option value={operatorUid}>ตนเอง ({effectiveOperatorName})</option>
@@ -461,12 +461,12 @@ export default function WorkItemCreateDialog({
                   <select
                     value={assignedTo}
                     onChange={e => setAssignedTo(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
                   >
                     <option value="">-- ยังไม่มอบหมาย --</option>
                     <option value={operatorUid}>รับมอบหมายให้ตนเอง ({effectiveOperatorName})</option>
                   </select>
-                  <p className="text-[11px] text-slate-400">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
                     * เจ้าหน้าที่ทั่วไปสามารถรับงานให้ตนเอง หรือปล่อยว่างไว้ให้หัวหน้ากะมอบหมาย
                   </p>
                 </div>
@@ -486,7 +486,7 @@ export default function WorkItemCreateDialog({
                 value={nextAction}
                 onChange={e => setNextAction(e.target.value)}
                 placeholder="เช่น โทรติดต่อเจ้าของบ้าน, ไปตรวจจุดเกิดเหตุ"
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3.5 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
@@ -498,25 +498,25 @@ export default function WorkItemCreateDialog({
                 type="datetime-local"
                 value={dueAtStr}
                 onChange={e => setDueAtStr(e.target.value)}
-                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3.5 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
           </div>
 
           {/* Footer buttons */}
-          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2.5">
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-end gap-2.5">
             <button
               type="button"
               disabled={isSubmitting}
               onClick={onClose}
-              className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-sm font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+              className="px-4 py-2.5 min-h-[44px] rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-sm font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center"
             >
               ยกเลิก
             </button>
             <button
               type="submit"
               disabled={isSubmitting || !title.trim()}
-              className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm hover:shadow transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-5 py-2.5 min-h-[44px] rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold shadow-sm hover:shadow transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {isSubmitting ? (
                 <>
