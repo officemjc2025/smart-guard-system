@@ -153,16 +153,16 @@ export default function WorkCenter({
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-bold text-slate-800 dark:text-slate-100">
+              <h1 className="text-xl sm:text-2xl font-black text-slate-950 dark:text-white tracking-tight">
                 งานติดตาม (Work Center)
               </h1>
               {supervisor && (
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 border border-indigo-200/60 dark:border-indigo-800/60">
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-100 text-indigo-900 border border-indigo-300 dark:bg-indigo-950/80 dark:text-indigo-200 dark:border-indigo-700 shadow-2xs">
                   สิทธิ์ผู้ดูแล
                 </span>
               )}
             </div>
-            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-0.5">
+            <p className="text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 mt-0.5">
               ศูนย์ประสานงานและติดตามสถานะงานทุกโมดูลแบบ Real-time
             </p>
           </div>
@@ -282,45 +282,53 @@ export default function WorkCenter({
         </button>
       </div>
 
-      {/* Main Tab Strip */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-none border-b border-slate-200 dark:border-slate-800 -mx-3 px-3 sm:mx-0 sm:px-0">
-        {[
-          { id: 'all', label: 'ทั้งหมด', count: kpis.openCount },
-          { id: 'mine', label: 'งานของฉัน', count: kpis.myCount },
-          { id: 'unassigned', label: 'ยังไม่มอบหมาย', count: kpis.unassignedCount },
-          { id: 'inProgress', label: 'กำลังดำเนินการ', count: kpis.inProgressCount },
-          { id: 'waiting', label: 'รอข้อมูล', count: kpis.waitingCount },
-          { id: 'overdue', label: 'เกินกำหนด', count: kpis.overdueCount, alert: kpis.overdueCount > 0 },
-          { id: 'completed', label: 'เสร็จสิ้น / ประวัติ', count: kpis.completedCount },
-        ].map(tab => {
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as WorkCenterTab)}
-              className={`px-3.5 py-2.5 min-h-[40px] rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 transition-all cursor-pointer ${
-                isActive
-                  ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 shadow-sm'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-            >
-              <span>{tab.label}</span>
-              {tab.count !== undefined && (
-                <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                    isActive
-                      ? 'bg-white/20 dark:bg-slate-800/20 text-white dark:text-slate-900'
-                      : tab.alert
-                      ? 'bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
-                  }`}
-                >
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      {/* Main Tab Strip with Mobile Scroll Discoverability Cue */}
+      <div className="relative -mx-3 sm:mx-0">
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-none border-b border-slate-200 dark:border-slate-800 px-3 sm:px-0 pr-9 sm:pr-0">
+          {[
+            { id: 'all', label: 'ทั้งหมด', count: kpis.openCount },
+            { id: 'mine', label: 'งานของฉัน', count: kpis.myCount },
+            { id: 'unassigned', label: 'ยังไม่มอบหมาย', count: kpis.unassignedCount },
+            { id: 'inProgress', label: 'กำลังดำเนินการ', count: kpis.inProgressCount },
+            { id: 'waiting', label: 'รอข้อมูล', count: kpis.waitingCount },
+            { id: 'overdue', label: 'เกินกำหนด', count: kpis.overdueCount, alert: kpis.overdueCount > 0 },
+            { id: 'completed', label: 'เสร็จสิ้น / ประวัติ', count: kpis.completedCount },
+          ].map(tab => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as WorkCenterTab)}
+                className={`px-3.5 py-2.5 min-h-[40px] rounded-xl text-xs sm:text-sm font-semibold flex items-center gap-2 whitespace-nowrap shrink-0 transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <span>{tab.label}</span>
+                {tab.count !== undefined && (
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                      isActive
+                        ? 'bg-white/20 dark:bg-slate-800/20 text-white dark:text-slate-900'
+                        : tab.alert
+                        ? 'bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Subtle Right Edge Fade Indicator showing scrollability on mobile */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute right-0 top-0 bottom-1.5 w-8 bg-gradient-to-l from-slate-50 via-slate-50/80 to-transparent dark:from-slate-900 dark:via-slate-900/80 sm:hidden"
+        />
       </div>
 
       {/* Search & Filter Bar */}

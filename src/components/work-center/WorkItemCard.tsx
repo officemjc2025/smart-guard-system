@@ -98,6 +98,38 @@ const priorityBadgeMap: Record<
   },
 };
 
+/**
+ * Formats the source label for card display, prioritizing human-readable labels
+ * (e.g. incident type, contractor name, room number) over long technical UUIDs.
+ */
+function formatCardSourceLabel(sourceLabel?: string, moduleLabel?: string): string {
+  if (!sourceLabel) return '';
+  let trimmed = sourceLabel.trim();
+
+  // If label contains parentheses with readable text, extract that:
+  // e.g. "เหตุการณ์: INC_dc03cf90-700b-4f2a-a1de-9f4469114870 (น้ำท่วม/ท่อแตก)" -> "น้ำท่วม/ท่อแตก"
+  const parenMatch = trimmed.match(/^(?:.*:\s*)?[A-Za-z0-9_.-]{8,}\s*\((.+)\)$/);
+  if (parenMatch && parenMatch[1]) {
+    trimmed = parenMatch[1].trim();
+  }
+
+  // Strip redundant module prefix if present (e.g. "ผู้รับเหมา: บ.เอซี" -> "บ.เอซี")
+  if (moduleLabel) {
+    trimmed = trimmed.replace(new RegExp(`^${moduleLabel}:\\s*`), '');
+  }
+
+  // Truncate raw technical UUID if still present without readable label:
+  // e.g. "INC_dc03cf90-700b-4f2a-a1de-9f4469114870" -> "INC_dc03...4870"
+  const uuidMatch = trimmed.match(/([A-Za-z0-9_]*[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F-]{4,})/);
+  if (uuidMatch && uuidMatch[1]) {
+    const fullUuid = uuidMatch[1];
+    const shortUuid = fullUuid.length > 14 ? `${fullUuid.slice(0, 8)}...${fullUuid.slice(-4)}` : fullUuid;
+    trimmed = trimmed.replace(fullUuid, shortUuid);
+  }
+
+  return trimmed;
+}
+
 export default function WorkItemCard({
   item,
   isSelected,
@@ -108,6 +140,8 @@ export default function WorkItemCard({
   const statusBadge = statusBadgeMap[item.status] || statusBadgeMap.Open;
   const priorityBadge = priorityBadgeMap[item.priority] || priorityBadgeMap.Normal;
   const overdue = isItemOverdue(item);
+  const moduleLabel = WORK_SOURCE_MODULE_LABELS[item.source_module];
+  const displaySourceLabel = formatCardSourceLabel(item.source_label, moduleLabel);
 
   return (
     <div
@@ -123,13 +157,14 @@ export default function WorkItemCard({
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             <span
+              title={item.source_record_id ? `รหัสอ้างอิง: ${item.source_record_id}` : undefined}
               className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-bold ${sourceColor}`}
             >
               <SourceIcon className="h-3.5 w-3.5 shrink-0" />
-              <span>{WORK_SOURCE_MODULE_LABELS[item.source_module]}</span>
-              {item.source_label && (
-                <span className="text-xs opacity-90 font-normal">
-                  • {item.source_label}
+              <span>{moduleLabel}</span>
+              {displaySourceLabel && (
+                <span className="text-xs opacity-90 font-normal truncate max-w-[200px] sm:max-w-xs">
+                  • {displaySourceLabel}
                 </span>
               )}
             </span>
